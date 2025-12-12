@@ -71,16 +71,19 @@ def _flatten_config(config: Dict[str, Any], parent_key: str = '', sep: str = '_'
     """
     Flatten nested dictionaries for argparse compatibility.
     
+    Recursively flattens nested dicts, preserving the full key path.
+    
     Example:
         {'optimizer': {'lr': 1e-3}} -> {'optimizer_lr': 1e-3}
-        But also keeps: {'lr': 1e-3} -> {'lr': 1e-3}
+        {'optimizer': {'params': {'beta1': 0.9}}} -> {'optimizer_params_beta1': 0.9}
+        {'lr': 1e-3} -> {'lr': 1e-3}
     """
     items = []
     for key, value in config.items():
         new_key = f"{parent_key}{sep}{key}" if parent_key else key
         if isinstance(value, dict):
-            # Keep both nested and flat versions
-            items.extend(_flatten_config(value, key, sep).items())
+            # Recursively flatten, passing full accumulated key path
+            items.extend(_flatten_config(value, new_key, sep).items())
         else:
             items.append((new_key, value))
     return dict(items)

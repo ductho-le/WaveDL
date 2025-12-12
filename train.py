@@ -707,6 +707,15 @@ def main():
         logger.error(f"Critical error: {e}", exc_info=True)
         raise
     
+    else:
+        # Training completed normally (reached max epochs without early stopping)
+        # Create completion flag to prevent auto-resume on re-run
+        if accelerator.is_main_process:
+            if not os.path.exists(complete_flag_path):
+                with open(complete_flag_path, "w") as f:
+                    f.write(f"Training completed normally after {args.epochs} epochs\n")
+                logger.info(f"✅ Training completed after {args.epochs} epochs")
+    
     finally:
         if args.wandb and WANDB_AVAILABLE:
             accelerator.end_training()

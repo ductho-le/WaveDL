@@ -160,6 +160,27 @@ class CNN(BaseModel):
             nn.Linear(128, out_size)
         )
     
+    @staticmethod
+    def _compute_num_groups(num_channels: int, target_groups: int = 4) -> int:
+        """
+        Compute valid num_groups for GroupNorm that divides num_channels.
+        
+        Finds the largest divisor of num_channels that is <= target_groups,
+        or falls back to 1 if no suitable divisor exists.
+        
+        Args:
+            num_channels: Number of channels (must be positive)
+            target_groups: Desired number of groups (default: 4)
+            
+        Returns:
+            Valid num_groups that satisfies num_channels % num_groups == 0
+        """
+        # Try target_groups down to 1, return first valid divisor
+        for g in range(min(target_groups, num_channels), 0, -1):
+            if num_channels % g == 0:
+                return g
+        return 1  # Fallback (always valid)
+    
     def _make_conv_block(
         self, 
         in_channels: int, 
@@ -177,9 +198,11 @@ class CNN(BaseModel):
         Returns:
             Sequential block: Conv → GroupNorm → LeakyReLU → MaxPool [→ Dropout]
         """
+        num_groups = self._compute_num_groups(out_channels, target_groups=4)
+        
         layers = [
             self._Conv(in_channels, out_channels, kernel_size=3, padding=1),
-            nn.GroupNorm(max(1, out_channels // 4), out_channels),  # Dimension-agnostic
+            nn.GroupNorm(num_groups, out_channels),
             nn.LeakyReLU(0.01, inplace=True),
             self._MaxPool(2)
         ]

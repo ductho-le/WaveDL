@@ -36,22 +36,45 @@ from sklearn.metrics import r2_score, mean_absolute_error
 class CVDataset(torch.utils.data.Dataset):
     """Simple in-memory dataset for cross-validation."""
     
-    def __init__(self, X: np.ndarray, y: np.ndarray):
+    def __init__(self, X: np.ndarray, y: np.ndarray, expected_spatial_ndim: int = None):
         """
-        Initialize CV dataset with automatic channel dimension handling.
+        Initialize CV dataset with explicit channel dimension handling.
         
         Args:
-            X: Input data (N, L), (N, H, W), or (N, D, H, W)
+            X: Input data with shape (N, *spatial_dims) or (N, C, *spatial_dims)
             y: Target data (N, T)
+            expected_spatial_ndim: Expected number of spatial dimensions (1, 2, or 3).
+                If provided, uses explicit logic instead of heuristics.
+                If None, falls back to ndim-based inference (legacy behavior).
+        
+        Channel Dimension Logic:
+            - If X.ndim == expected_spatial_ndim + 1: Add channel dim (N, *spatial) -> (N, 1, *spatial)
+            - If X.ndim == expected_spatial_ndim + 2: Already has channel (N, C, *spatial)
+            - If expected_spatial_ndim is None: Use legacy ndim-based inference
         """
-        # Add channel dimension if needed
-        if X.ndim == 2:  # 1D signals: (N, L) -> (N, 1, L)
-            X = X[:, np.newaxis, :]
-        elif X.ndim == 3:  # 2D images: (N, H, W) -> (N, 1, H, W)
-            X = X[:, np.newaxis, :, :]
-        # 4D already has channel: (N, C, ...) or needs channel (N, D, H, W)
-        elif X.ndim == 4 and X.shape[1] > 16:  # Heuristic: not a channel dim
-            X = X[:, np.newaxis, :, :, :]
+        if expected_spatial_ndim is not None:
+            # Explicit mode: use expected_spatial_ndim to determine if channel exists
+            if X.ndim == expected_spatial_ndim + 1:
+                # Shape is (N, *spatial) - needs channel dimension
+                X = np.expand_dims(X, axis=1)
+            elif X.ndim == expected_spatial_ndim + 2:
+                # Shape is (N, C, *spatial) - already has channel
+                pass
+            else:
+                raise ValueError(
+                    f"Input shape {X.shape} incompatible with expected_spatial_ndim={expected_spatial_ndim}. "
+                    f"Expected ndim={expected_spatial_ndim + 1} or {expected_spatial_ndim + 2}, got {X.ndim}."
+                )
+        else:
+            # Legacy mode: infer from ndim (for backwards compatibility)
+            # Assumes single-channel data without explicit channel dimension
+            if X.ndim == 2:  # 1D signals: (N, L) -> (N, 1, L)
+                X = X[:, np.newaxis, :]
+            elif X.ndim == 3:  # 2D images: (N, H, W) -> (N, 1, H, W)
+                X = X[:, np.newaxis, :, :]
+            elif X.ndim == 4:  # 3D volumes: (N, D, H, W) -> (N, 1, D, H, W)
+                X = X[:, np.newaxis, :, :, :]
+            # ndim >= 5 assumed to already have channel dimension
         
         self.X = torch.tensor(X, dtype=torch.float32)
         self.y = torch.tensor(y, dtype=torch.float32)
@@ -333,9 +356,12 @@ def run_cross_validation(
         y_train_scaled = scaler.fit_transform(y_train)
         y_val_scaled = scaler.transform(y_val)
         
-        # Create datasets and loaders
-        train_ds = CVDataset(X_train.astype(np.float32), y_train_scaled.astype(np.float32))
-        val_ds = CVDataset(X_val.astype(np.float32), y_val_scaled.astype(np.float32))
+        # Create datasets and loaders with explicit spatial dimensionality
+        spatial_ndim = len(in_shape)
+        train_ds = CVDataset(X_train.astype(np.float32), y_train_scaled.astype(np.float32), 
+                             expected_spatial_ndim=spatial_ndim)
+        val_ds = CVDataset(X_val.astype(np.float32), y_val_scaled.astype(np.float32),
+                           expected_spatial_ndim=spatial_ndim)
         
         train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
                                    num_workers=workers, pin_memory=True)
