@@ -6,6 +6,7 @@ Provides memory-efficient data loading for large-scale datasets with:
 - Memory-mapped file support for datasets exceeding RAM
 - DDP-safe data preparation with proper synchronization
 - Thread-safe DataLoader worker initialization
+- Multi-format support (NPZ, HDF5, MAT)
 
 Author: Ductho Le (ductho.le@outlook.com)
 Version: 1.0.0
@@ -15,9 +16,12 @@ import os
 import gc
 import pickle
 import logging
-from typing import Tuple, Optional, Any
+from abc import ABC, abstractmethod
+from pathlib import Path
+from typing import Tuple, Optional, Any, List
 
 import numpy as np
+import h5py
 import torch
 from torch.utils.data import Dataset, DataLoader
 from tqdm.auto import tqdm
@@ -26,6 +30,210 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
 from accelerate import Accelerator
+
+# Optional scipy.io for MATLAB files
+try:
+    import scipy.io
+    HAS_SCIPY_IO = True
+except ImportError:
+    HAS_SCIPY_IO = False
+
+
+# ==============================================================================
+# DATA SOURCE ABSTRACTION
+# ==============================================================================
+
+# Supported key names for input/output arrays (priority order, pairwise aligned)
+INPUT_KEYS = ['input_train', 'input_test', 'X', 'data', 'inputs', 'features', 'x']
+OUTPUT_KEYS = ['output_train', 'output_test', 'Y', 'labels', 'outputs', 'targets', 'y']
+
+
+class DataSource(ABC):
+    """
+    Abstract base class for data loaders supporting multiple file formats.
+    
+    Subclasses must implement the `load()` method to return input/output arrays.
+    """
+    
+    @abstractmethod
+    def load(self, path: str) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Load input and output arrays from a file.
+        
+        Args:
+            path: Path to the data file
+            
+        Returns:
+            Tuple of (inputs, outputs) as numpy arrays
+        """
+        pass
+    
+    @staticmethod
+    def detect_format(path: str) -> str:
+        """
+        Auto-detect file format from extension.
+        
+        Args:
+            path: Path to data file
+            
+        Returns:
+            Format string: 'npz', 'hdf5', or 'mat'
+        """
+        ext = Path(path).suffix.lower()
+        format_map = {
+            '.npz': 'npz',
+            '.h5': 'hdf5',
+            '.hdf5': 'hdf5',
+            '.mat': 'mat',
+        }
+        return format_map.get(ext, 'npz')
+    
+    @staticmethod
+    def _find_key(available_keys: List[str], candidates: List[str]) -> Optional[str]:
+        """Find first matching key from candidates in available keys."""
+        for key in candidates:
+            if key in available_keys:
+                return key
+        return None
+
+
+class NPZSource(DataSource):
+    """Load data from NumPy .npz archives."""
+    
+    def load(self, path: str) -> Tuple[np.ndarray, np.ndarray]:
+        data = np.load(path, allow_pickle=True)
+        keys = list(data.keys())
+        
+        input_key = self._find_key(keys, INPUT_KEYS)
+        output_key = self._find_key(keys, OUTPUT_KEYS)
+        
+        if input_key is None or output_key is None:
+            raise KeyError(
+                f"NPZ must contain input and output arrays. "
+                f"Supported keys: {INPUT_KEYS} / {OUTPUT_KEYS}. "
+                f"Found: {keys}"
+            )
+        
+        inp = data[input_key]
+        outp = data[output_key]
+        
+        # Handle object arrays (e.g., sparse matrices stored as objects)
+        if inp.dtype == object:
+            inp = np.array([x.toarray() if hasattr(x, 'toarray') else x for x in inp])
+        
+        return inp, outp
+
+
+class HDF5Source(DataSource):
+    """Load data from HDF5 (.h5, .hdf5) files."""
+    
+    def load(self, path: str) -> Tuple[np.ndarray, np.ndarray]:
+        with h5py.File(path, 'r') as f:
+            keys = list(f.keys())
+            
+            input_key = self._find_key(keys, INPUT_KEYS)
+            output_key = self._find_key(keys, OUTPUT_KEYS)
+            
+            if input_key is None or output_key is None:
+                raise KeyError(
+                    f"HDF5 must contain input and output datasets. "
+                    f"Supported keys: {INPUT_KEYS} / {OUTPUT_KEYS}. "
+                    f"Found: {keys}"
+                )
+            
+            # Load into memory (HDF5 datasets are lazy by default)
+            inp = f[input_key][:]
+            outp = f[output_key][:]
+        
+        return inp, outp
+
+
+class MATSource(DataSource):
+    """Load data from MATLAB .mat files."""
+    
+    def load(self, path: str) -> Tuple[np.ndarray, np.ndarray]:
+        if not HAS_SCIPY_IO:
+            raise ImportError("scipy required for MAT files: pip install scipy")
+        
+        mat = scipy.io.loadmat(path)
+        keys = [k for k in mat.keys() if not k.startswith('__')]
+        
+        input_key = self._find_key(keys, INPUT_KEYS)
+        output_key = self._find_key(keys, OUTPUT_KEYS)
+        
+        if input_key is None or output_key is None:
+            raise KeyError(
+                f"MAT file must contain input and output arrays. "
+                f"Supported keys: {INPUT_KEYS} / {OUTPUT_KEYS}. "
+                f"Found: {keys}"
+            )
+        
+        inp = mat[input_key]
+        outp = mat[output_key]
+        
+        # Handle sparse matrices (MATLAB sparse → scipy.sparse → dense)
+        if issparse(inp):
+            inp = inp.toarray()
+        if issparse(outp):
+            outp = outp.toarray()
+        
+        # Handle MATLAB's column-major quirks
+        if inp.ndim == 2 and inp.shape[0] == 1:
+            inp = inp.T
+        if outp.ndim == 2 and outp.shape[0] < outp.shape[1] and outp.shape[0] <= 10:
+            outp = outp.T
+        
+        return inp, outp
+
+
+def get_data_source(format: str) -> DataSource:
+    """
+    Factory function to get the appropriate DataSource for a format.
+    
+    Args:
+        format: One of 'npz', 'hdf5', 'mat'
+        
+    Returns:
+        DataSource instance
+    """
+    sources = {
+        'npz': NPZSource,
+        'hdf5': HDF5Source,
+        'mat': MATSource,
+    }
+    
+    if format not in sources:
+        raise ValueError(f"Unsupported format: {format}. Supported: {list(sources.keys())}")
+    
+    return sources[format]()
+
+
+def load_training_data(path: str, format: str = 'auto') -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Load training data from file with automatic format detection.
+    
+    Supports:
+        - NPZ: NumPy compressed archives (.npz)
+        - HDF5: Hierarchical Data Format (.h5, .hdf5)
+        - MAT: MATLAB files (.mat)
+    
+    Flexible key detection supports: input_train/X/data and output_train/y/labels.
+    
+    Args:
+        path: Path to data file
+        format: Format hint ('npz', 'hdf5', 'mat', or 'auto' for detection)
+        
+    Returns:
+        Tuple of (inputs, outputs) arrays
+    """
+    if format == 'auto':
+        format = DataSource.detect_format(path)
+    
+    source = get_data_source(format)
+    return source.load(path)
+
+
+
 
 
 # ==============================================================================
@@ -179,19 +387,19 @@ def prepare_data(
         )
         
         if not cache_exists:
-            logger.info(f"⚡ [Rank 0] Initializing Data Processing from: {args.data_path}")
+            # Detect format from extension
+            data_format = DataSource.detect_format(args.data_path)
+            logger.info(f"⚡ [Rank 0] Initializing Data Processing from: {args.data_path} (format: {data_format})")
             
             # Validate data file exists
             if not os.path.exists(args.data_path):
                 raise FileNotFoundError(f"CRITICAL: Data file not found: {args.data_path}")
             
-            # Load raw data
+            # Load raw data using multi-format loader
             try:
-                raw = np.load(args.data_path, allow_pickle=True)
-                inp = raw['input_train']
-                outp = raw['output_train']
+                inp, outp = load_training_data(args.data_path, format=data_format)
             except Exception as e:
-                logger.error(f"Failed to load NPZ file: {e}")
+                logger.error(f"Failed to load data file: {e}")
                 raise
             
             # Detect shape (handle sparse matrices) - DIMENSION AGNOSTIC
@@ -268,7 +476,7 @@ def prepare_data(
                     pickle.dump(scaler, f)
             
             # Cleanup
-            del inp, outp, raw
+            del inp, outp
             gc.collect()
     
     # ==========================================================================
@@ -290,7 +498,8 @@ def prepare_data(
         raise RuntimeError("CRITICAL: Scaler is not properly fitted (scale_ is None)")
     
     # Load targets (lightweight compared to input data)
-    outp = np.load(args.data_path, allow_pickle=True)['output_train']
+    # Use multi-format loader to get outputs
+    _, outp = load_training_data(args.data_path)
     y_scaled = scaler.transform(outp).astype(np.float32)
     y_tensor = torch.tensor(y_scaled)
     

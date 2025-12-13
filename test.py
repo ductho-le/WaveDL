@@ -90,7 +90,7 @@ def parse_args() -> argparse.Namespace:
                         help=f"Model architecture (auto-detect if not specified). Available: {list_models()}")
     
     # Data format
-    parser.add_argument('--format', type=str, default='auto', choices=['auto', 'npz', 'mat'],
+    parser.add_argument('--format', type=str, default='auto', choices=['auto', 'npz', 'mat', 'hdf5'],
                         help="Data format (auto-detect by extension)")
     parser.add_argument('--param_names', type=str, nargs='+', default=None,
                         help="Parameter names for output (e.g., 'h' 'v11' 'v12')")
@@ -135,19 +135,28 @@ def load_npz_data(file_path: str) -> Tuple[torch.Tensor, torch.Tensor]:
         - 3D: (N, D, H, W) → (N, 1, D, H, W)
         - Already has channel: (N, C, ...) → unchanged
     
-    Expected keys: 'input_test', 'output_test' (or 'input_train', 'output_train')
+    Supports flexible key names: input_test, input_train, X, data, etc.
     """
+    # Supported key names (priority order - test keys first for inference, pairwise aligned)
+    INPUT_KEYS = ['input_test', 'input_train', 'X', 'data', 'inputs', 'features', 'x']
+    OUTPUT_KEYS = ['output_test', 'output_train', 'Y', 'labels', 'outputs', 'targets', 'y']
+    
     data = np.load(file_path, allow_pickle=True)
+    keys = list(data.keys())
     
-    # Try test keys first, fallback to train keys
-    input_key = 'input_test' if 'input_test' in data else 'input_train'
-    output_key = 'output_test' if 'output_test' in data else 'output_train'
+    input_key = next((k for k in INPUT_KEYS if k in keys), None)
+    output_key = next((k for k in OUTPUT_KEYS if k in keys), None)
     
-    if input_key not in data or output_key not in data:
-        raise KeyError(f"NPZ must contain '{input_key}' and '{output_key}'. Found: {list(data.keys())}")
+    if input_key is None:
+        raise KeyError(f"NPZ must contain input array. Supported keys: {INPUT_KEYS}. Found: {keys}")
     
     X = data[input_key]
-    y = data[output_key]
+    
+    if output_key:
+        y = data[output_key]
+    else:
+        logging.warning(f"No target data found in NPZ. Proceeding with predictions only.")
+        y = np.zeros((len(X), 1))
     
     # Handle sparse matrices (requires scipy)
     if HAS_SCIPY:
@@ -188,19 +197,30 @@ def load_mat_data(file_path: str) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Load test data from legacy MATLAB .mat format.
     
-    Attempts to auto-detect input/output keys from common patterns.
+    Supports flexible key names: input_test, input_train, X, data, etc.
     """
     if not HAS_SCIPY:
         raise ImportError("scipy required for MAT files: pip install scipy")
     
+    # Supported key names (priority order - test keys first for inference, pairwise aligned)
+    INPUT_KEYS = ['input_test', 'input_train', 'X', 'data', 'inputs', 'features', 'x']
+    OUTPUT_KEYS = ['output_test', 'output_train', 'Y', 'labels', 'outputs', 'targets', 'y']
+    
     mat = scipy.io.loadmat(file_path)
     valid_keys = [k for k in mat.keys() if not k.startswith('__')]
     
-    # Auto-detect input key
-    input_key = next(
-        (k for k in valid_keys if any(s in k.lower() for s in ['input', 'mat', 'kf', 'image'])),
-        valid_keys[0]
-    )
+    # Try flexible key detection first, then fallback to legacy auto-detect
+    input_key = next((k for k in INPUT_KEYS if k in valid_keys), None)
+    
+    # Fallback: legacy auto-detect for old-style MAT files
+    if input_key is None:
+        input_key = next(
+            (k for k in valid_keys if any(s in k.lower() for s in ['input', 'mat', 'kf', 'image'])),
+            valid_keys[0] if valid_keys else None
+        )
+    
+    if input_key is None:
+        raise KeyError(f"MAT must contain input array. Supported keys: {INPUT_KEYS}. Found: {valid_keys}")
     
     data = mat[input_key]
     
@@ -241,14 +261,18 @@ def load_mat_data(file_path: str) -> Tuple[torch.Tensor, torch.Tensor]:
     
     X = torch.stack(imgs).unsqueeze(1)  # Add channel dim
     
-    # Auto-detect target key
-    target_key = next(
-        (k for k in valid_keys if any(s in k.lower() for s in ['sample', 'target', 'output', 'label'])),
-        None
-    )
+    # Try flexible key detection for output
+    output_key = next((k for k in OUTPUT_KEYS if k in valid_keys), None)
     
-    if target_key and target_key in mat:
-        y_np = mat[target_key]
+    # Fallback: legacy auto-detect
+    if output_key is None:
+        output_key = next(
+            (k for k in valid_keys if any(s in k.lower() for s in ['sample', 'target', 'output', 'label'])),
+            None
+        )
+    
+    if output_key and output_key in mat:
+        y_np = mat[output_key]
         # Transpose if needed (parameters as rows -> parameters as columns)
         if y_np.shape[0] < y_np.shape[1] and y_np.shape[0] <= 10:
             y_np = y_np.T
@@ -263,9 +287,57 @@ def load_mat_data(file_path: str) -> Tuple[torch.Tensor, torch.Tensor]:
     return X, y
 
 
+def load_hdf5_data(file_path: str) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Load test data from HDF5 (.h5, .hdf5) format.
+    
+    Supports flexible key detection: input_test, input_train, X, data, etc.
+    """
+    import h5py
+    
+    # Supported key names (priority order)
+    INPUT_KEYS = ['input_test', 'input_train', 'X', 'data', 'inputs', 'features', 'x']
+    OUTPUT_KEYS = ['output_test', 'output_train', 'Y', 'labels', 'outputs', 'targets', 'y']
+    
+    with h5py.File(file_path, 'r') as f:
+        keys = list(f.keys())
+        
+        input_key = next((k for k in INPUT_KEYS if k in keys), None)
+        output_key = next((k for k in OUTPUT_KEYS if k in keys), None)
+        
+        if input_key is None:
+            raise KeyError(f"HDF5 must contain input array. Supported keys: {INPUT_KEYS}. Found: {keys}")
+        
+        X = f[input_key][:]
+        
+        if output_key:
+            y = f[output_key][:]
+        else:
+            logging.warning(f"No target data found in HDF5. Proceeding with predictions only.")
+            y = np.zeros((len(X), 1))
+    
+    X = torch.tensor(X, dtype=torch.float32)
+    y = torch.tensor(y, dtype=torch.float32)
+    
+    # Add channel dimension if needed (same logic as load_npz_data)
+    if X.ndim == 2:
+        X = X.unsqueeze(1)
+    elif X.ndim == 3:
+        X = X.unsqueeze(1)
+    elif X.ndim == 4:
+        if X.shape[1] <= 16:
+            logging.info(f"   Detected existing channel dimension (C={X.shape[1]})")
+        else:
+            X = X.unsqueeze(1)
+    
+    return X, y
+
+
 def load_test_data(file_path: str, format: str = 'auto') -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Load test data with automatic format detection.
+    
+    Supports NPZ, MAT, and HDF5 formats.
     
     Returns:
         X: Input tensor (N, 1, H, W)
@@ -278,7 +350,9 @@ def load_test_data(file_path: str, format: str = 'auto') -> Tuple[torch.Tensor, 
     
     # Auto-detect format
     if format == 'auto':
-        format = 'npz' if file_path.suffix == '.npz' else 'mat'
+        suffix = file_path.suffix.lower()
+        format_map = {'.npz': 'npz', '.mat': 'mat', '.h5': 'hdf5', '.hdf5': 'hdf5'}
+        format = format_map.get(suffix, 'npz')
     
     logging.info(f"Loading test data from: {file_path} (format: {format})")
     
@@ -286,8 +360,10 @@ def load_test_data(file_path: str, format: str = 'auto') -> Tuple[torch.Tensor, 
         X, y = load_npz_data(str(file_path))
     elif format == 'mat':
         X, y = load_mat_data(str(file_path))
+    elif format == 'hdf5':
+        X, y = load_hdf5_data(str(file_path))
     else:
-        raise ValueError(f"Unsupported format: {format}")
+        raise ValueError(f"Unsupported format: {format}. Supported: npz, mat, hdf5")
     
     logging.info(f"   ✔ Loaded {len(X)} samples | Input: {X.shape} | Target: {y.shape}")
     

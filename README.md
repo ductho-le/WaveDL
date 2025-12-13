@@ -543,16 +543,28 @@ precision: bf16
 
 ## 📈 Data Preparation
 
-WaveDL accepts NumPy `.npz` archives with input representations and target vectors. **The framework automatically detects 1D, 2D, or 3D data** — you only need to provide the appropriate model architecture.
+WaveDL supports multiple data formats for training and inference:
+
+| Format | Extension | Key Advantages |
+|--------|-----------|----------------|
+| **NPZ** | `.npz` | Native NumPy, fast loading, recommended |
+| **HDF5** | `.h5`, `.hdf5` | Large datasets, hierarchical, cross-platform |
+| **MAT** | `.mat` | MATLAB compatibility |
+
+**The framework automatically detects file format and data dimensionality** (1D, 2D, or 3D) — you only need to provide the appropriate model architecture.
 
 | Key | Shape | Type | Description |
 |-----|-------|------|-------------|
-| `input_train` | `(N, L)`, `(N, H, W)`, or `(N, D, H, W)` | `float32` | N samples of 1D/2D/3D representations |
-| `output_train` | `(N, T)` | `float32` | N samples with T regression targets |
+| `input_train` / `input_test` | `(N, L)`, `(N, H, W)`, or `(N, D, H, W)` | `float32` | N samples of 1D/2D/3D representations |
+| `output_train` / `output_test` | `(N, T)` | `float32` | N samples with T regression targets |
 
 > [!TIP]
-> - **Automatic Dimension Detection**: WaveDL automatically detects your data dimensionality and adds the channel dimension. No manual reshaping required!
-> - **Automatic Format Handling**: Seamlessly processes both dense NumPy arrays and sparse SciPy matrices.
+> - **Flexible Key Names**: WaveDL auto-detects common key pairs:
+>   - `input_train`/`output_train`, `input_test`/`output_test` (WaveDL standard)
+>   - `X`/`Y`, `x`/`y` (ML convention)
+>   - `data`/`labels`, `inputs`/`outputs`, `features`/`targets`
+> - **Automatic Dimension Detection**: Channel dimension is added automatically. No manual reshaping required!
+> - **Sparse Matrix Support**: NPZ and MAT files with scipy/MATLAB sparse matrices are automatically converted to dense arrays.
 > - **Auto-Normalization**: Target values are automatically standardized during training. MAE is reported in original physical units.
 
 <details>
@@ -651,11 +663,11 @@ The WaveDL framework is ready to implement a wide range of NDE/SHM regression pr
 
 | Application | Input | Output |
 |-------------|-------|--------|
-| Defect Sizing | B-scans, C-scans, ... | Crack length, depth, ... |
-| Corrosion Estimation | Guided wave signals, ... | Wall thickness, corrosion rate, ... |
+| Defect Sizing | A-scans, phased array images, FMC/TFM, ... | Crack length, depth, ... |
+| Corrosion Estimation | Thickness maps, resonance spectra, ... | Wall thickness, corrosion rate, ... |
 | Weld Quality Assessment | Phased array images, TOFD, ... | Porosity %, penetration depth, ... |
-| RUL Prediction | Sensor data, damage trends, ... | Cycles to failure, ... |
-| Damage Localization | Sensor array signals, ... | Damage coordinates (x, y, z) |
+| RUL Prediction | Acoustic emission (AE), vibration spectra, ... | Cycles to failure, ... |
+| Damage Localization | Wavefield images, DAS/DVS data, ... | Damage coordinates (x, y, z) |
 | *...and more* | | |
 
 > [!NOTE]

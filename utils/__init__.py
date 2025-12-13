@@ -20,6 +20,13 @@ from utils.data import (
     MemmapDataset,
     memmap_worker_init_fn,
     prepare_data,
+    # Multi-format data loading
+    DataSource,
+    NPZSource,
+    HDF5Source,
+    MATSource,
+    get_data_source,
+    load_training_data,
 )
 
 from utils.distributed import (
@@ -73,6 +80,12 @@ __all__ = [
     "MemmapDataset",
     "memmap_worker_init_fn",
     "prepare_data",
+    "DataSource",
+    "NPZSource",
+    "HDF5Source",
+    "MATSource",
+    "get_data_source",
+    "load_training_data",
     # Distributed
     "broadcast_early_stop",
     "broadcast_value",

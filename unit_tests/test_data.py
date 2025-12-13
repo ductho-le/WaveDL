@@ -6,6 +6,7 @@ Comprehensive tests for:
 - MemmapDataset: memory-mapped dataset functionality
 - memmap_worker_init_fn: worker initialization
 - Data format validation
+- Multi-format data sources (NPZ, HDF5, MAT)
 
 Author: Ductho Le (ductho.le@outlook.com)
 """
@@ -17,10 +18,20 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import numpy as np
+import h5py
 import torch
 from torch.utils.data import DataLoader
 
-from utils.data import MemmapDataset, memmap_worker_init_fn
+from utils.data import (
+    MemmapDataset,
+    memmap_worker_init_fn,
+    DataSource,
+    NPZSource,
+    HDF5Source,
+    MATSource,
+    get_data_source,
+    load_training_data,
+)
 
 
 # ==============================================================================
@@ -451,3 +462,199 @@ class TestDataEdgeCases:
         
         _, y = dataset[0]
         assert y.shape == (n_targets,)
+
+
+# ==============================================================================
+# MULTI-FORMAT DATA SOURCE TESTS
+# ==============================================================================
+class TestFormatAutoDetection:
+    """Tests for automatic file format detection."""
+    
+    def test_npz_extension_detection(self):
+        """Test NPZ format is detected from .npz extension."""
+        assert DataSource.detect_format("data.npz") == "npz"
+        assert DataSource.detect_format("/path/to/data.NPZ") == "npz"
+    
+    def test_hdf5_extension_detection(self):
+        """Test HDF5 format is detected from .h5 and .hdf5 extensions."""
+        assert DataSource.detect_format("data.h5") == "hdf5"
+        assert DataSource.detect_format("data.hdf5") == "hdf5"
+        assert DataSource.detect_format("/path/to/data.H5") == "hdf5"
+    
+    def test_mat_extension_detection(self):
+        """Test MAT format is detected from .mat extension."""
+        assert DataSource.detect_format("data.mat") == "mat"
+        assert DataSource.detect_format("/path/to/data.MAT") == "mat"
+    
+    def test_unknown_extension_defaults_to_npz(self):
+        """Test unknown extension defaults to NPZ."""
+        assert DataSource.detect_format("data.xyz") == "npz"
+        assert DataSource.detect_format("data.txt") == "npz"
+
+
+class TestNPZSource:
+    """Tests for NPZ data source."""
+    
+    def test_load_standard_keys(self, temp_dir):
+        """Test loading with standard input_train/output_train keys."""
+        X = np.random.randn(50, 64, 64).astype(np.float32)
+        y = np.random.randn(50, 5).astype(np.float32)
+        
+        path = os.path.join(temp_dir, "data.npz")
+        np.savez(path, input_train=X, output_train=y)
+        
+        source = NPZSource()
+        X_loaded, y_loaded = source.load(path)
+        
+        np.testing.assert_array_equal(X_loaded, X)
+        np.testing.assert_array_equal(y_loaded, y)
+    
+    def test_load_alternate_keys_x_y(self, temp_dir):
+        """Test loading with X/y keys."""
+        X = np.random.randn(30, 32, 32).astype(np.float32)
+        y = np.random.randn(30, 3).astype(np.float32)
+        
+        path = os.path.join(temp_dir, "data.npz")
+        np.savez(path, X=X, y=y)
+        
+        source = NPZSource()
+        X_loaded, y_loaded = source.load(path)
+        
+        np.testing.assert_array_equal(X_loaded, X)
+        np.testing.assert_array_equal(y_loaded, y)
+    
+    def test_load_alternate_keys_data_labels(self, temp_dir):
+        """Test loading with data/labels keys."""
+        X = np.random.randn(20, 16).astype(np.float32)  # 1D data
+        y = np.random.randn(20, 2).astype(np.float32)
+        
+        path = os.path.join(temp_dir, "data.npz")
+        np.savez(path, data=X, labels=y)
+        
+        source = NPZSource()
+        X_loaded, y_loaded = source.load(path)
+        
+        np.testing.assert_array_equal(X_loaded, X)
+        np.testing.assert_array_equal(y_loaded, y)
+    
+    def test_raises_on_missing_keys(self, temp_dir):
+        """Test that KeyError is raised when keys are not found."""
+        X = np.random.randn(10, 32, 32).astype(np.float32)
+        
+        path = os.path.join(temp_dir, "invalid.npz")
+        np.savez(path, unknown_key=X)
+        
+        source = NPZSource()
+        with pytest.raises(KeyError):
+            source.load(path)
+
+
+class TestHDF5Source:
+    """Tests for HDF5 data source."""
+    
+    def test_load_standard_keys(self, temp_dir):
+        """Test loading HDF5 with standard keys."""
+        X = np.random.randn(50, 64, 64).astype(np.float32)
+        y = np.random.randn(50, 5).astype(np.float32)
+        
+        path = os.path.join(temp_dir, "data.h5")
+        with h5py.File(path, 'w') as f:
+            f.create_dataset('input_train', data=X)
+            f.create_dataset('output_train', data=y)
+        
+        source = HDF5Source()
+        X_loaded, y_loaded = source.load(path)
+        
+        np.testing.assert_array_equal(X_loaded, X)
+        np.testing.assert_array_equal(y_loaded, y)
+    
+    def test_load_alternate_keys(self, temp_dir):
+        """Test loading HDF5 with X/y keys."""
+        X = np.random.randn(30, 128).astype(np.float32)  # 1D
+        y = np.random.randn(30, 4).astype(np.float32)
+        
+        path = os.path.join(temp_dir, "data.hdf5")
+        with h5py.File(path, 'w') as f:
+            f.create_dataset('X', data=X)
+            f.create_dataset('y', data=y)
+        
+        source = HDF5Source()
+        X_loaded, y_loaded = source.load(path)
+        
+        np.testing.assert_array_equal(X_loaded, X)
+        np.testing.assert_array_equal(y_loaded, y)
+    
+    def test_raises_on_missing_keys(self, temp_dir):
+        """Test that KeyError is raised when keys are not found."""
+        X = np.random.randn(10, 32, 32).astype(np.float32)
+        
+        path = os.path.join(temp_dir, "invalid.h5")
+        with h5py.File(path, 'w') as f:
+            f.create_dataset('unknown_key', data=X)
+        
+        source = HDF5Source()
+        with pytest.raises(KeyError):
+            source.load(path)
+
+
+class TestLoadTrainingData:
+    """Tests for the load_training_data convenience function."""
+    
+    def test_auto_detect_npz(self, temp_dir):
+        """Test auto-detection for NPZ files."""
+        X = np.random.randn(25, 32, 32).astype(np.float32)
+        y = np.random.randn(25, 3).astype(np.float32)
+        
+        path = os.path.join(temp_dir, "train.npz")
+        np.savez(path, input_train=X, output_train=y)
+        
+        X_loaded, y_loaded = load_training_data(path)
+        
+        np.testing.assert_array_equal(X_loaded, X)
+        np.testing.assert_array_equal(y_loaded, y)
+    
+    def test_auto_detect_hdf5(self, temp_dir):
+        """Test auto-detection for HDF5 files."""
+        X = np.random.randn(25, 64).astype(np.float32)
+        y = np.random.randn(25, 2).astype(np.float32)
+        
+        path = os.path.join(temp_dir, "train.h5")
+        with h5py.File(path, 'w') as f:
+            f.create_dataset('X', data=X)
+            f.create_dataset('y', data=y)
+        
+        X_loaded, y_loaded = load_training_data(path)
+        
+        np.testing.assert_array_equal(X_loaded, X)
+        np.testing.assert_array_equal(y_loaded, y)
+    
+    def test_explicit_format_override(self, temp_dir):
+        """Test explicit format specification."""
+        X = np.random.randn(15, 16, 16).astype(np.float32)
+        y = np.random.randn(15, 1).astype(np.float32)
+        
+        # Save as NPZ - np.savez adds .npz if not present
+        path = os.path.join(temp_dir, "data.npz")
+        np.savez(path, input_train=X, output_train=y)
+        
+        # Explicitly specify format (even though auto-detect would work)
+        X_loaded, y_loaded = load_training_data(path, format='npz')
+        
+        np.testing.assert_array_equal(X_loaded, X)
+        np.testing.assert_array_equal(y_loaded, y)
+
+
+class TestGetDataSource:
+    """Tests for the get_data_source factory function."""
+    
+    def test_returns_correct_source_types(self):
+        """Test that correct source types are returned."""
+        assert isinstance(get_data_source('npz'), NPZSource)
+        assert isinstance(get_data_source('hdf5'), HDF5Source)
+        assert isinstance(get_data_source('mat'), MATSource)
+    
+    def test_raises_on_unsupported_format(self):
+        """Test that ValueError is raised for unsupported formats."""
+        with pytest.raises(ValueError):
+            get_data_source('unsupported')
+

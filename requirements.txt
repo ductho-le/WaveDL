@@ -9,6 +9,7 @@ tqdm>=4.65.0
 wandb>=0.15.0
 pytest>=7.0.0
 pyyaml>=6.0.0
+h5py>=3.8.0
 
 # Optional: ONNX export (for model deployment)
 # onnx>=1.14.0
