@@ -246,6 +246,79 @@ class HDF5Source(DataSource):
         return outp
 
 
+class _TransposedH5Dataset:
+    """
+    Lazy transpose wrapper for h5py datasets.
+    
+    MATLAB stores arrays in column-major (Fortran) order, while Python/NumPy
+    expects row-major (C) order. This wrapper provides a transposed view
+    without loading the entire dataset into memory.
+    
+    Supports:
+        - len(): Returns the transposed first dimension
+        - []: Returns slices with automatic transpose
+        - shape: Returns the transposed shape
+        - dtype: Returns the underlying dtype
+    
+    This is critical for MATSource.load_mmap() to return consistent axis
+    ordering with the eager loader (MATSource.load()).
+    """
+    
+    def __init__(self, h5_dataset):
+        self._dataset = h5_dataset
+        # Transpose shape: MATLAB (cols, rows, ...) -> Python (rows, cols, ...)
+        self.shape = tuple(reversed(h5_dataset.shape))
+        self.dtype = h5_dataset.dtype
+        
+        # Precompute transpose axis order for efficiency
+        # For shape (A, B, C) -> reversed (C, B, A), transpose axes are (2, 1, 0)
+        self._transpose_axes = tuple(range(len(h5_dataset.shape) - 1, -1, -1))
+    
+    def __len__(self) -> int:
+        return self.shape[0]
+    
+    def __getitem__(self, idx):
+        """
+        Fetch data with automatic full transpose.
+        
+        Handles integer indexing, slices, and fancy indexing.
+        All operations return data with fully reversed axes to match .T behavior.
+        """
+        if isinstance(idx, (int, np.integer)):
+            # Single sample: index into last axis of h5py dataset (column-major)
+            # Result needs full transpose of remaining dimensions
+            data = self._dataset[..., idx]
+            if data.ndim == 0:
+                return data
+            elif data.ndim == 1:
+                return data  # 1D doesn't need transpose
+            else:
+                # Full transpose: reverse all axes
+                return np.transpose(data)
+        
+        elif isinstance(idx, slice):
+            # Slice indexing: fetch from last axis, then fully transpose
+            start, stop, step = idx.indices(self.shape[0])
+            data = self._dataset[..., start:stop:step]
+            
+            # Handle special case: 1D result (e.g., row vector)
+            if data.ndim == 1:
+                return data
+            
+            # Full transpose: reverse ALL axes (not just moveaxis)
+            # This matches the behavior of .T on a numpy array
+            return np.transpose(data, axes=self._transpose_axes)
+        
+        elif isinstance(idx, (list, np.ndarray)):
+            # Fancy indexing: load samples one at a time (h5py limitation)
+            # This is slower but necessary for compatibility
+            samples = [self[i] for i in idx]
+            return np.stack(samples, axis=0)
+        
+        else:
+            raise TypeError(f"Unsupported index type: {type(idx)}")
+
+
 class MATSource(DataSource):
     """
     Load data from MATLAB .mat files (v7.3+ only, which uses HDF5 format).
@@ -341,7 +414,7 @@ class MATSource(DataSource):
         avoiding loading the entire file into RAM.
         
         Note: For sparse matrices, this will load and convert them.
-        For dense arrays, returns h5py datasets with lazy access.
+        For dense arrays, returns a transposed view wrapper for consistent axis ordering.
         """
         try:
             f = h5py.File(path, 'r')  # Keep file open for lazy access
@@ -365,12 +438,15 @@ class MATSource(DataSource):
             if self._is_sparse_dataset(inp_dataset):
                 inp = self._load_sparse_to_dense(inp_dataset).T
             else:
-                inp = inp_dataset  # Lazy h5py dataset
+                # Wrap h5py dataset with transpose view for consistent axis order
+                # MATLAB stores column-major, Python expects row-major
+                inp = _TransposedH5Dataset(inp_dataset)
             
             if self._is_sparse_dataset(outp_dataset):
                 outp = self._load_sparse_to_dense(outp_dataset).T
             else:
-                outp = outp_dataset  # Lazy h5py dataset
+                # Wrap h5py dataset with transpose view
+                outp = _TransposedH5Dataset(outp_dataset)
             
             return inp, outp
             
@@ -380,6 +456,7 @@ class MATSource(DataSource):
                 f"Ensure it's saved as v7.3: save('file.mat', '-v7.3'). "
                 f"Original error: {e}"
             )
+
     
     def load_outputs_only(self, path: str) -> np.ndarray:
         """Load only targets from MAT v7.3 file (avoids loading large input arrays)."""
@@ -732,8 +809,22 @@ def prepare_data(
             
             if not os.path.exists(SCALER_FILE):
                 logger.info("   Fitting StandardScaler (training set only)...")
+                
+                # Convert lazy datasets to numpy for reliable indexing
+                # (h5py and _TransposedH5Dataset may not support fancy indexing)
+                if hasattr(outp, '_dataset') or hasattr(outp, 'file'):
+                    # Lazy h5py or _TransposedH5Dataset - load training subset
+                    outp_train = np.array([outp[i] for i in tr_idx])
+                else:
+                    # Already numpy array
+                    outp_train = outp[tr_idx]
+                
+                # Ensure 2D for StandardScaler: (N,) -> (N, 1)
+                if outp_train.ndim == 1:
+                    outp_train = outp_train.reshape(-1, 1)
+                
                 scaler = StandardScaler()
-                scaler.fit(outp[tr_idx])
+                scaler.fit(outp_train)
                 with open(SCALER_FILE, 'wb') as f:
                     pickle.dump(scaler, f)
             

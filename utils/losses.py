@@ -122,15 +122,25 @@ class WeightedMSELoss(nn.Module):
             
         Returns:
             Loss value (scalar if reduction is 'mean' or 'sum')
+            
+        Raises:
+            ValueError: If weight dimension doesn't match target dimension
         """
         mse = (pred - target) ** 2
         
         if self.weights is not None:
+            # Validate weight dimension matches target dimension
+            if self.weights.shape[0] != pred.shape[-1]:
+                raise ValueError(
+                    f"Weight dimension ({self.weights.shape[0]}) must match "
+                    f"output dimension ({pred.shape[-1]}). "
+                    f"Check your --loss_weights argument."
+                )
             # Ensure weights are on same device
             if self.weights.device != mse.device:
                 self.weights = self.weights.to(mse.device)
-            # Apply per-target weights
-            mse = mse * self.weights.unsqueeze(0)
+            # Apply per-target weights with correct broadcasting: (N, T) * (T,) -> (N, T)
+            mse = mse * self.weights
         
         if self.reduction == 'none':
             return mse

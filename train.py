@@ -37,11 +37,19 @@ Author: Ductho Le (ductho.le@outlook.com)
 Version: 1.0.0 (WaveDL - Guided Wave Inversion Framework)
 """
 
+# ==============================================================================
+# ENVIRONMENT CONFIGURATION FOR HPC SYSTEMS
+# ==============================================================================
+# IMPORTANT: These must be set BEFORE matplotlib is imported to be effective
 import os
+os.environ.setdefault('MPLCONFIGDIR', os.getenv('TMPDIR', '/tmp') + '/matplotlib')
+os.environ.setdefault('FONTCONFIG_PATH', '/etc/fonts')
+
 import sys
 import argparse
 import logging
 import pickle
+import shutil
 import warnings
 from typing import Dict, Any, Optional, List
 
@@ -82,13 +90,6 @@ try:
     WANDB_AVAILABLE = True
 except ImportError:
     WANDB_AVAILABLE = False
-
-# ==============================================================================
-# ENVIRONMENT CONFIGURATION FOR HPC SYSTEMS
-# ==============================================================================
-# Suppress matplotlib/font warnings on systems with restricted home directories
-os.environ.setdefault('MPLCONFIGDIR', os.getenv('TMPDIR', '/tmp') + '/matplotlib')
-os.environ.setdefault('FONTCONFIG_PATH', '/etc/fonts')
 
 # Filter non-critical warnings for cleaner training logs
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -244,6 +245,10 @@ def main():
         # Handle sparse matrices
         if hasattr(X[0], 'toarray'):
             X = np.stack([x.toarray() for x in X])
+        
+        # Normalize target shape: (N,) -> (N, 1) for consistency
+        if y.ndim == 1:
+            y = y.reshape(-1, 1)
         
         # Determine input shape (spatial dimensions only, channel is added during training)
         # Data from NPZ: (N, *spatial) where spatial can be (L,), (H, W), or (D, H, W)
@@ -409,6 +414,7 @@ def main():
             min_lr=args.min_lr,
             patience=args.scheduler_patience,
             factor=args.scheduler_factor,
+            gamma=args.scheduler_factor,  # For Step/MultiStep/Exponential schedulers
             step_size=args.step_size,
             milestones=milestones,
             warmup_epochs=args.warmup_epochs,
@@ -426,6 +432,7 @@ def main():
             min_lr=args.min_lr,
             patience=args.scheduler_patience,
             factor=args.scheduler_factor,
+            gamma=args.scheduler_factor,  # For Step/MultiStep/Exponential schedulers
             step_size=args.step_size,
             milestones=milestones,
             warmup_epochs=args.warmup_epochs,
@@ -594,14 +601,15 @@ def main():
             ).item()
             
             avg_val_loss = val_metrics_sync[0].item() / total_val_samples
-            avg_mae_per_param = (val_metrics_sync[1:] / total_val_samples).cpu().numpy()
+            # Cast to float32 before numpy (bf16 tensors can't convert directly)
+            avg_mae_per_param = (val_metrics_sync[1:] / total_val_samples).float().cpu().numpy()
             avg_mae = avg_mae_per_param.mean()
             
             # ==================== LOGGING & CHECKPOINTING ====================
             if accelerator.is_main_process:
-                # Scientific metrics
-                y_pred = torch.cat(preds_buffer).numpy()
-                y_true = torch.cat(targets_buffer).numpy()
+                # Scientific metrics - cast to float32 before numpy (bf16 can't convert)
+                y_pred = torch.cat(preds_buffer).float().numpy()
+                y_true = torch.cat(targets_buffer).float().numpy()
                 
                 # Trim DDP padding
                 real_len = len(val_dl.dataset)
@@ -610,7 +618,11 @@ def main():
                     y_true = y_true[:real_len]
                 
                 from sklearn.metrics import r2_score
-                r2 = r2_score(y_true, y_pred)
+                # Guard against tiny validation sets (R² undefined for <2 samples)
+                if len(y_true) >= 2:
+                    r2 = r2_score(y_true, y_pred)
+                else:
+                    r2 = float('nan')
                 pcc = calc_pearson(y_true, y_pred)
                 current_lr = get_lr(optimizer)
                 
@@ -663,14 +675,28 @@ def main():
                         plt.close(fig)
                     
                     accelerator.log(log_dict)
-                
-                # Best model checkpoint
+            
+            # ==========================================================================
+            # DDP-SAFE CHECKPOINT LOGIC
+            # ==========================================================================
+            # Step 1: Determine if this is the best epoch (BEFORE updating best_val_loss)
+            is_best_epoch = False
+            if accelerator.is_main_process:
                 if avg_val_loss < best_val_loss:
-                    best_val_loss = avg_val_loss
+                    is_best_epoch = True
+            
+            # Step 2: Broadcast decision to all ranks (required for save_state)
+            is_best_epoch = broadcast_early_stop(is_best_epoch, accelerator)
+            
+            # Step 3: Save checkpoint with all ranks participating
+            if is_best_epoch:
+                ckpt_dir = os.path.join(args.output_dir, "best_checkpoint")
+                accelerator.save_state(ckpt_dir)  # All ranks must call this
+                
+                # Step 4: Rank 0 handles metadata and updates tracking variables
+                if accelerator.is_main_process:
+                    best_val_loss = avg_val_loss  # Update AFTER checkpoint saved
                     patience_ctr = 0
-                    
-                    ckpt_dir = os.path.join(args.output_dir, "best_checkpoint")
-                    accelerator.save_state(ckpt_dir)
                     
                     with open(os.path.join(ckpt_dir, "training_meta.pkl"), "wb") as f:
                         pickle.dump({
@@ -684,16 +710,26 @@ def main():
                         unwrapped.state_dict(),
                         os.path.join(args.output_dir, "best_model_weights.pth")
                     )
+                    
+                    # Copy scaler to checkpoint for portability
+                    scaler_src = os.path.join(args.output_dir, "scaler.pkl")
+                    scaler_dst = os.path.join(ckpt_dir, "scaler.pkl")
+                    if os.path.exists(scaler_src) and not os.path.exists(scaler_dst):
+                        shutil.copy2(scaler_src, scaler_dst)
+                    
                     logger.info(f"   💾 Best model saved (val_loss: {best_val_loss:.6f})")
-                else:
+            else:
+                if accelerator.is_main_process:
                     patience_ctr += 1
                 
-                # Periodic checkpoint
-                if args.save_every > 0 and (epoch + 1) % args.save_every == 0:
-                    ckpt_name = f"epoch_{epoch+1}_checkpoint"
-                    ckpt_dir = os.path.join(args.output_dir, ckpt_name)
-                    accelerator.save_state(ckpt_dir)
-                    
+            # Periodic checkpoint (all ranks participate in save_state)
+            periodic_checkpoint_needed = args.save_every > 0 and (epoch + 1) % args.save_every == 0
+            if periodic_checkpoint_needed:
+                ckpt_name = f"epoch_{epoch+1}_checkpoint"
+                ckpt_dir = os.path.join(args.output_dir, ckpt_name)
+                accelerator.save_state(ckpt_dir)  # All ranks participate
+                
+                if accelerator.is_main_process:
                     with open(os.path.join(ckpt_dir, "training_meta.pkl"), "wb") as f:
                         pickle.dump({
                             "epoch": epoch + 1,

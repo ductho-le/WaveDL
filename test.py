@@ -31,7 +31,13 @@ Author: Ductho Le (ductho.le@outlook.com)
 Version: 1.0.0 (WaveDL Testing Suite + ONNX Export)
 """
 
+# ==============================================================================
+# ENVIRONMENT CONFIGURATION (must be before matplotlib import)
+# ==============================================================================
 import os
+os.environ.setdefault('MPLCONFIGDIR', os.getenv('TMPDIR', '/tmp') + '/matplotlib')
+os.environ.setdefault('FONTCONFIG_PATH', '/etc/fonts')
+
 import sys
 import argparse
 import logging
@@ -122,6 +128,8 @@ def parse_args() -> argparse.Namespace:
                         help="Output path for exported model (default: {model_name}.onnx)")
     parser.add_argument('--export_opset', type=int, default=17,
                         help="ONNX opset version (11-17, higher = newer ops)")
+    parser.add_argument('--out_size', type=int, default=None,
+                        help="Override output size (inferred from scaler.pkl if targets missing)")
     
     return parser.parse_args()
 
@@ -178,17 +186,22 @@ def load_npz_data(
         y = data[out_key]
     else:
         logging.warning(f"No target data found in NPZ. Proceeding with predictions only.")
-        y = np.zeros((len(X), 1))
+        y = None  # None signals no targets available
     
     # Handle sparse matrices (requires scipy)
     if HAS_SCIPY:
         if issparse(X):
             X = X.toarray()
-        if issparse(y):
+        if y is not None and issparse(y):
             y = y.toarray()
     
     X = torch.tensor(X, dtype=torch.float32)
-    y = torch.tensor(y, dtype=torch.float32)
+    
+    if y is not None:
+        y = torch.tensor(y, dtype=torch.float32)
+        # Normalize target shape: (N,) -> (N, 1)
+        if y.ndim == 1:
+            y = y.unsqueeze(1)
     
     # Add channel dimension if needed (dimension-agnostic)
     # X.ndim == 2: 1D data (N, L) → (N, 1, L)
@@ -608,10 +621,18 @@ def run_inference(
     model: nn.Module,
     X: torch.Tensor,
     batch_size: int = 128,
-    device: torch.device = None
+    device: torch.device = None,
+    num_workers: int = 0
 ) -> np.ndarray:
     """
     Run batch inference on test data.
+    
+    Args:
+        model: Trained model in eval mode
+        X: Input tensor (N, C, *spatial_dims)
+        batch_size: Batch size for inference
+        device: Target device (auto-detect if None)
+        num_workers: DataLoader workers (0 for single-threaded)
     
     Returns:
         predictions: Numpy array (N, out_size) - still in normalized space
@@ -623,12 +644,18 @@ def run_inference(
     model.eval()
     
     dataset = TensorDataset(X)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=device.type == 'cuda'
+    )
     
     predictions = []
     
     for (batch_x,) in tqdm(loader, desc="Inference", leave=False):
-        batch_x = batch_x.to(device)
+        batch_x = batch_x.to(device, non_blocking=True)
         preds = model(batch_x).cpu().numpy()
         predictions.append(preds)
     
@@ -1013,7 +1040,31 @@ def main():
         output_key=args.output_key
     )
     in_shape = tuple(X_test.shape[2:])
-    out_size = y_test.shape[1]
+    
+    # Determine if we have ground truth targets
+    has_targets = y_test is not None
+    
+    # Determine output size: from targets, from --out_size, or from scaler
+    if args.out_size is not None:
+        out_size = args.out_size
+        logger.info(f"   Using explicit --out_size={out_size}")
+    elif has_targets:
+        out_size = y_test.shape[1]
+    else:
+        # Infer from scaler.pkl
+        scaler_path = Path(args.checkpoint) / "scaler.pkl"
+        if not scaler_path.exists():
+            scaler_path = Path(args.checkpoint).parent / "scaler.pkl"
+        if scaler_path.exists():
+            with open(scaler_path, 'rb') as f:
+                temp_scaler = pickle.load(f)
+            out_size = len(temp_scaler.scale_)
+            logger.info(f"   Inferred out_size={out_size} from scaler.pkl")
+        else:
+            raise ValueError(
+                "Cannot determine output size. Provide targets, --out_size, "
+                "or ensure scaler.pkl exists in checkpoint directory."
+            )
     
     # Load model and scaler
     logger.info(f"Loading checkpoint from: {args.checkpoint}")
@@ -1055,29 +1106,66 @@ def main():
             logger.info("Export-only mode. Use --save_predictions or --plot for inference.")
             return
     
+    # Ensure output directory exists before any file operations
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
     # Run inference
     logger.info(f"Running inference on {len(X_test)} samples...")
-    y_pred_scaled = run_inference(model, X_test, args.batch_size, device)
+    y_pred_scaled = run_inference(
+        model, X_test, args.batch_size, device, num_workers=args.workers
+    )
     
     # Inverse transform predictions
     y_pred = scaler.inverse_transform(y_pred_scaled)
-    y_true = y_test.numpy()
     
-    # Compute metrics
-    metrics = compute_metrics(y_true, y_pred)
-    
-    # Print results
-    print_results(y_true, y_pred, metrics, args.param_names, args.verbose)
-    
-    # Save predictions
-    if args.save_predictions:
-        output_path = Path(args.output_dir) / "predictions.csv"
-        save_predictions(y_true, y_pred, str(output_path), args.param_names)
-    
-    # Generate plots
-    if args.plot:
-        logger.info("Generating plots...")
-        plot_results(y_true, y_pred, args.output_dir, args.param_names)
+    if has_targets:
+        # === MODE: With ground truth ===
+        y_true = y_test.numpy()
+        
+        # Compute metrics
+        metrics = compute_metrics(y_true, y_pred)
+        
+        # Print results
+        print_results(y_true, y_pred, metrics, args.param_names, args.verbose)
+        
+        # Save predictions (with targets)
+        if args.save_predictions:
+            output_path = output_dir / "predictions.csv"
+            save_predictions(y_true, y_pred, str(output_path), args.param_names)
+        
+        # Generate plots
+        if args.plot:
+            logger.info("Generating plots...")
+            plot_results(y_true, y_pred, str(output_dir), args.param_names)
+    else:
+        # === MODE: Predictions only (no ground truth) ===
+        logger.info("No ground truth targets - skipping metrics and scatter plots")
+        
+        # Print prediction summary
+        n_params = y_pred.shape[1]
+        param_names = args.param_names or [f"P{i}" for i in range(n_params)]
+        
+        print("\n" + "="*80)
+        print("PREDICTION SUMMARY (No Ground Truth)")
+        print("="*80)
+        print(f"Samples:          {len(y_pred)}")
+        print(f"Output params:    {n_params}")
+        print("-"*80)
+        for i, name in enumerate(param_names):
+            print(f"  {name:12s}: mean={y_pred[:, i].mean():.6f}, std={y_pred[:, i].std():.6f}")
+        print("="*80)
+        
+        # Save predictions (without targets)
+        if args.save_predictions:
+            output_path = output_dir / "predictions.csv"
+            columns = [f"Pred_{name}" for name in param_names]
+            df = pd.DataFrame(y_pred, columns=columns)
+            df.to_csv(output_path, index=False)
+            logger.info(f"   ✔ Predictions saved to: {output_path}")
+        
+        if args.plot:
+            logger.warning("Cannot generate scatter plots without ground truth targets")
     
     logger.info("✅ Testing completed successfully!")
 
