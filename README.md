@@ -651,11 +651,11 @@ print(f"✓ Output: {data['output_train'].shape} {data['output_train'].dtype}")
 
 The `examples/` folder contains a **complete, ready-to-run example** for **material characterization of isotropic plates**. The pre-trained CNN predicts three physical parameters from Lamb wave dispersion curves:
 
-| Parameter | Symbol | Unit | Description |
-|-----------|--------|------|-------------|
-| Thickness | *h* | mm | Plate thickness |
-| Bulk wave velocity | √(*E*/ρ) | km/s | Square root of Young's modulus over density |
-| Poisson's ratio | *μ* | — | Ratio of lateral to axial strain |
+| Parameter | Unit | Description |
+|-----------|------|-------------|
+| *h* | mm | Plate thickness |
+| √(*E*/ρ) | km/s | Square root of Young's modulus over density |
+| *μ* | — | Poisson's ratio |
 
 > [!NOTE]
 > This example is based on our paper at **SPIE Smart Structures + NDE 2026**: [*"Deep learning-based ultrasonic assessment of plate thickness and elasticity"*](https://spie.org/spie-smart-structures-and-materials-nondestructive-evaluation/presentation/Deep-learningbased-ultrasonic-assessment-of-plate-thickness-and-elasticity/13951-4) (Paper 13951-4, to appear).
