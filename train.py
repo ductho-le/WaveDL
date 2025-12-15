@@ -186,7 +186,7 @@ def parse_args() -> argparse.Namespace:
     
     # Checkpointing & Resume
     parser.add_argument('--resume', type=str, default=None, help="Checkpoint directory to resume from")
-    parser.add_argument('--save_every', type=int, default=10, help="Save checkpoint every N epochs (0=disable)")
+    parser.add_argument('--save_every', type=int, default=50, help="Save checkpoint every N epochs (0=disable)")
     parser.add_argument('--output_dir', type=str, default='.', help="Output directory for checkpoints")
     parser.add_argument('--fresh', action='store_true', help="Force fresh training, ignore existing checkpoints")
     
@@ -804,6 +804,11 @@ def main():
     finally:
         if args.wandb and WANDB_AVAILABLE:
             accelerator.end_training()
+        
+        # Clean up distributed process group to prevent resource leak warning
+        if torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
+        
         logger.info("Training completed.")
 
 

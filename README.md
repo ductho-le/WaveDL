@@ -13,7 +13,7 @@
 
 [Getting Started](#-getting-started) •
 [Documentation](#-documentation) •
-[Examples](#-examples) *(coming soon)* •
+[Examples](#-examples) •
 [Citation](#-citation)
 
 ---
@@ -41,11 +41,6 @@ The framework handles the engineering challenges of large-scale deep learning �
 - 🚀 Seamless multi-GPU training on HPC clusters
 - 💾 Memory-efficient handling of large-scale datasets
 - 🔧 Easy integration of custom model architectures
-
-> [!NOTE]  
-> The **example architecture** (CNN) is based on our upcoming paper at **SPIE Smart Structures + Nondestructive Evaluation 2026**: [*"Deep learning-based ultrasonic assessment of plate thickness and elasticity"*](https://spie.org/spie-smart-structures-and-materials-nondestructive-evaluation/presentation/Deep-learningbased-ultrasonic-assessment-of-plate-thickness-and-elasticity/13951-4) (Paper 13951-4, to appear).
->
-> See [Broader NDE/SHM Applications](#-broader-ndeshm-applications) for other possible applications.
 
 ---
 
@@ -151,13 +146,13 @@ Deploy models anywhere:
 ### Installation
 
 ```bash
-# Install dependencies
-pip install torch accelerate numpy scipy scikit-learn pandas matplotlib tqdm wandb
-# OR
 pip install -r requirements.txt
 ```
 
 ### Quick Start
+
+> [!TIP]
+> In all examples below, replace `<...>` placeholders with your values. See [Configuration](#️-configuration) for defaults and options.
 
 #### Option 1: Using the Helper Script (Recommended for HPC)
 
@@ -168,39 +163,32 @@ The `run_training.sh` wrapper automatically configures the environment for HPC s
 chmod +x run_training.sh
 
 # Basic training (auto-detects available GPUs)
-./run_training.sh --model cnn --batch_size 128 --output_dir ./experiments
+./run_training.sh --model <model_name> --data_path <train_data> --batch_size <number> --output_dir <output_folder>
 
-# Full configuration
-./run_training.sh --model cnn --data_path train_data.npz --batch_size 128 \
-  --lr 1e-3 --epochs 1000 --patience 20 --compile --output_dir ./results
-
-# Override GPU count (useful for testing or limiting resource usage)
-NUM_GPUS=2 MIXED_PRECISION=fp16 ./run_training.sh --model cnn --batch_size 256
+# Detailed configuration
+./run_training.sh --model <model_name> --data_path <train_data> --batch_size <number> \
+  --lr <number> --epochs <number> --patience <number> --compile --output_dir <output_folder>
 ```
 
 #### Option 2: Direct Accelerate Launch
 
 ```bash
 # Local - auto-detects GPUs
-accelerate launch train.py --model <model_name> --batch_size <N> --wandb
-
-# Multi-GPU explicit
-accelerate launch --num_processes=4 --mixed_precision=bf16 \
-  train.py --model <model_name> --batch_size <N> --wandb
+accelerate launch train.py --model <model_name> --data_path <train_data> --batch_size <number> --output_dir <output_folder>
 
 # Resume training (automatic - just re-run with same output_dir)
 # Manual resume from specific checkpoint:
-accelerate launch train.py --model <model_name> --resume epoch_50_checkpoint
+accelerate launch train.py --model <model_name> --data_path <train_data> --resume <checkpoint_folder> --output_dir <output_folder>
 
 # Force fresh start (ignores existing checkpoints)
-accelerate launch train.py --model <model_name> --output_dir ./exp --fresh
+accelerate launch train.py --model <model_name> --data_path <train_data> --output_dir <output_folder> --fresh
 
 # List available models
 python train.py --list_models
 ```
 
 > [!TIP]
-> **Auto-Resume**: If training crashes or is interrupted, simply re-run `run_training.sh` with the same `--output_dir`. The framework automatically detects incomplete training and resumes from the last checkpoint. Use `--fresh` to force a fresh start.
+> **Auto-Resume**: If training crashes or is interrupted, simply re-run with the same `--output_dir`. The framework automatically detects incomplete training and resumes from the last checkpoint. Use `--fresh` to force a fresh start.
 >
 > **GPU Auto-Detection**: By default, `run_training.sh` automatically detects available GPUs using `nvidia-smi`. Set `NUM_GPUS` to override this behavior.
 
@@ -209,32 +197,20 @@ python train.py --list_models
 After training, use `test.py` to evaluate your model on test data:
 
 ```bash
-# Basic inference (NPZ format - recommended)
-python test.py --checkpoint ./cnn_test/best_checkpoint --data_path test_data.npz
+# Basic inference
+python test.py --checkpoint <checkpoint_folder> --data_path <test_data>
 
 # With visualization and CSV export
-python test.py --checkpoint ./cnn_test/best_checkpoint --data_path test_data.npz \
-  --plot --save_predictions --output_dir ./test_results
-
-# Explicit model specification (if auto-detection fails)
-python test.py --checkpoint ./experiment/best_checkpoint --data_path test_data.npz \
-  --model cnn --plot
-
-# Legacy MATLAB format support
-python test.py --checkpoint ./cnn_run/best_checkpoint --data_path test_data.mat \
-  --format mat --plot --save_predictions
+python test.py --checkpoint <checkpoint_folder> --data_path <test_data> \
+  --plot --save_predictions --output_dir <output_folder>
 
 # With custom parameter names for readable output
-python test.py --checkpoint ./cnn_test/best_checkpoint --data_path test_data.npz \
-  --param_names "Thickness" "Velocity_1" "Velocity_2" --verbose
+python test.py --checkpoint <checkpoint_folder> --data_path <test_data> \
+  --param_names "Param1" "Param2" "Param3" --verbose
 
 # Export model to ONNX for deployment (LabVIEW, MATLAB, C++, etc.)
-python test.py --checkpoint ./cnn_test/best_checkpoint --data_path test_data.npz \
-  --export onnx --export_path model.onnx
-
-# Export with specific opset version (for compatibility)
-python test.py --checkpoint ./cnn_test/best_checkpoint --data_path test_data.npz \
-  --export onnx --export_opset 14
+python test.py --checkpoint <checkpoint_folder> --data_path <test_data> \
+  --export onnx --export_path <output_file.onnx>
 ```
 
 **Output:**
@@ -243,7 +219,7 @@ python test.py --checkpoint ./cnn_test/best_checkpoint --data_path test_data.npz
 - **Plots** (with `--plot`): Publication-quality scatter plots (overall + per-parameter)
 
 > [!NOTE]
-> `test.py` automatically detects the model architecture from the checkpoint directory name (e.g., `cnn_test` → `cnn`). Use `--model` to override if needed.
+> `test.py` auto-detects the model architecture from checkpoint metadata. If unavailable, it falls back to folder name parsing. Use `--model` to override if needed.
 
 ---
 
@@ -282,6 +258,13 @@ WaveDL/
 │   ├── default.yaml      # Standard training setup
 │   ├── huber_robust.yaml # Robust training for noisy data
 │   └── fast_convergence.yaml # OneCycleLR fast training
+│
+├── examples/             # Ready-to-run example with pre-trained model
+│   ├── trained_cnn/      # Pre-trained CNN checkpoint
+│   ├── Test_data_100.mat # Sample test data (100 samples)
+│   ├── model.onnx        # Exported ONNX model
+│   ├── test_results/     # Example inference output
+│   └── WaveDL_ONNX_Inference.m  # MATLAB inference script
 │
 └── unit_tests/           # Unit test suite (pytest)
     ├── conftest.py       # Pytest fixtures
@@ -370,7 +353,7 @@ accelerate launch train.py --model my_transformer --wandb
 | `--seed` | `2025` | Random seed |
 | `--output_dir` | `.` | Output directory for checkpoints |
 | `--resume` | `None` | Checkpoint to resume (auto-detected if not set) |
-| `--save_every` | `10` | Checkpoint frequency |
+| `--save_every` | `50` | Checkpoint frequency |
 | `--fresh` | `False` | Force fresh training, ignore existing checkpoints |
 
 </details>
@@ -664,9 +647,57 @@ print(f"✓ Output: {data['output_train'].shape} {data['output_train'].dtype}")
 
 ---
 
+## 📦 Examples
+
+The `examples/` folder contains a **complete, ready-to-run example** for **material characterization of isotropic plates**. The pre-trained CNN predicts three physical parameters from Lamb wave dispersion curves:
+
+| Parameter | Symbol | Unit | Description |
+|-----------|--------|------|-------------|
+| Thickness | *h* | mm | Plate thickness |
+| Bulk wave velocity | √(*E*/ρ) | km/s | Square root of Young's modulus over density |
+| Poisson's ratio | *μ* | — | Ratio of lateral to axial strain |
+
+> [!NOTE]
+> This example is based on our paper at **SPIE Smart Structures + NDE 2026**: [*"Deep learning-based ultrasonic assessment of plate thickness and elasticity"*](https://spie.org/spie-smart-structures-and-materials-nondestructive-evaluation/presentation/Deep-learningbased-ultrasonic-assessment-of-plate-thickness-and-elasticity/13951-4) (Paper 13951-4, to appear).
+
+**Try it yourself:**
+
+```bash
+# Run inference on the example data
+python test.py --checkpoint ./examples/trained_cnn/best_checkpoint \
+  --data_path ./examples/Test_data_100.mat --plot --save_predictions \
+  --output_dir ./examples/test_results
+
+# Export to ONNX (already included as model.onnx)
+python test.py --checkpoint ./examples/trained_cnn/best_checkpoint \
+  --data_path ./examples/Test_data_100.mat --export onnx \
+  --export_path ./examples/model.onnx
+```
+
+**What's Included:**
+
+| File | Description |
+|------|-------------|
+| `trained_cnn/` | Pre-trained CNN checkpoint (R² = 0.99 on test data) |
+| `Test_data_100.mat` | 100 sample test set (500×500 dispersion curves → *h*, √(*E*/ρ), *μ*) |
+| `model.onnx` | ONNX export with embedded de-normalization |
+| `test_results/` | Example predictions and scatter plots |
+| `WaveDL_ONNX_Inference.m` | MATLAB script for ONNX inference |
+
+**Example Results:**
+
+<p align="center">
+  <img src="examples/test_results/test_scatter_all.png" alt="Example scatter plot showing R²=0.99" width="700">
+</p>
+
+> [!TIP]
+> Use this example to verify your installation works correctly before training your own models.
+
+---
+
 ## 🔬 Broader NDE/SHM Applications
 
-The WaveDL framework is ready to implement a wide range of NDE/SHM regression problems. The **example architectures provided focus on material characterization** (predicting thickness, velocity, and elastic moduli from dispersion curves), but the training pipeline, data handling, and distributed training infrastructure can be adapted for other applications:
+Beyond the material characterization example above, the WaveDL pipeline can be adapted for a wide range of NDE/SHM regression problems:
 
 | Application | Input | Output |
 |-------------|-------|--------|
@@ -680,14 +711,12 @@ The WaveDL framework is ready to implement a wide range of NDE/SHM regression pr
 > [!NOTE]
 > Adapting WaveDL to these applications requires preparing your own dataset and choosing a suitable model architecture to match your input dimensionality.
 
-
 ---
 
 ## 📚 Documentation
 
 | Resource | Description |
 |----------|-------------|
-| Code Explained | Beginner-friendly walkthrough *(coming soon)* |
 | Technical Paper | In-depth framework description *(coming soon)* |
 | [`_template.py`](models/_template.py) | Template for new architectures |
 

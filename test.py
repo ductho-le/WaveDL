@@ -128,6 +128,8 @@ def parse_args() -> argparse.Namespace:
                         help="Output path for exported model (default: {model_name}.onnx)")
     parser.add_argument('--export_opset', type=int, default=17,
                         help="ONNX opset version (11-17, higher = newer ops)")
+    parser.add_argument('--no_denorm', action='store_true',
+                        help="Disable de-normalization in ONNX (output normalized values instead)")
     parser.add_argument('--out_size', type=int, default=None,
                         help="Override output size (inferred from scaler.pkl if targets missing)")
     
@@ -380,7 +382,14 @@ def load_mat_data(
     
     # Convert to tensors
     X = torch.tensor(X_np.astype(np.float32))
-    y = torch.tensor(y_np.astype(np.float32))
+    
+    if y_np is not None:
+        y = torch.tensor(y_np.astype(np.float32))
+        # Normalize target shape: (N,) -> (N, 1)
+        if y.ndim == 1:
+            y = y.unsqueeze(1)
+    else:
+        y = None
     
     # Add channel dimension based on input dimensionality
     if X.ndim == 2:
@@ -397,6 +406,7 @@ def load_mat_data(
             X = X.unsqueeze(1)
     
     return X, y
+
 
 
 def load_hdf5_data(
@@ -448,10 +458,15 @@ def load_hdf5_data(
             y = f[out_key][:]
         else:
             logging.warning(f"No target data found in HDF5. Proceeding with predictions only.")
-            y = np.zeros((len(X), 1))
+            y = None  # Return None for consistent no-targets handling
     
     X = torch.tensor(X, dtype=torch.float32)
-    y = torch.tensor(y, dtype=torch.float32)
+    
+    if y is not None:
+        y = torch.tensor(y, dtype=torch.float32)
+        # Normalize target shape: (N,) -> (N, 1)
+        if y.ndim == 1:
+            y = y.unsqueeze(1)
     
     # Add channel dimension if needed (same logic as load_npz_data)
     if X.ndim == 2:
@@ -602,8 +617,11 @@ def load_checkpoint(
     else:
         state_dict = torch.load(weight_path, map_location='cpu', weights_only=True)
     
-    # Remove 'module.' prefix from DDP checkpoints
-    state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+    # Remove 'module.' prefix from DDP checkpoints (leading only, not all occurrences)
+    state_dict = {
+        (k[7:] if k.startswith('module.') else k): v 
+        for k, v in state_dict.items()
+    }
     
     model.load_state_dict(state_dict)
     model.eval()
@@ -682,13 +700,44 @@ def run_inference(
 # ==============================================================================
 # ONNX EXPORT
 # ==============================================================================
+class ModelWithDenormalization(nn.Module):
+    """
+    Wrapper that combines a trained model with scaler inverse transform.
+    
+    This embeds the StandardScaler's mean_ and scale_ as model buffers,
+    allowing the ONNX export to include de-normalization directly.
+    Users get original-scale predictions without manual post-processing.
+    
+    Args:
+        model: Trained PyTorch model
+        scaler_mean: Mean values from StandardScaler (shape: [out_size])
+        scaler_scale: Scale (std) values from StandardScaler (shape: [out_size])
+    """
+    
+    def __init__(self, model: nn.Module, scaler_mean: np.ndarray, scaler_scale: np.ndarray):
+        super().__init__()
+        self.model = model
+        # Register as buffers (not trainable parameters, but saved with model)
+        self.register_buffer('scaler_mean', torch.tensor(scaler_mean, dtype=torch.float32))
+        self.register_buffer('scaler_scale', torch.tensor(scaler_scale, dtype=torch.float32))
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass with integrated de-normalization."""
+        # Get normalized predictions from base model
+        normalized_preds = self.model(x)
+        # Apply inverse transform: original = normalized * scale + mean
+        return normalized_preds * self.scaler_scale + self.scaler_mean
+
+
 def export_to_onnx(
     model: nn.Module,
     sample_input: torch.Tensor,
     output_path: str,
     opset_version: int = 17,
     validate: bool = True,
-    model_name: str = "WaveDL_Model"
+    model_name: str = "WaveDL_Model",
+    scaler: Optional[object] = None,
+    include_denorm: bool = False
 ) -> bool:
     """
     Export PyTorch model to ONNX format for production deployment.
@@ -720,6 +769,17 @@ def export_to_onnx(
         with the appropriate ONNX runtime for your target platform.
     """
     import warnings
+    
+    # Wrap model with de-normalization if requested
+    if include_denorm:
+        if scaler is None:
+            raise ValueError("scaler must be provided when include_denorm=True")
+        logging.info("   Wrapping model with de-normalization layer (scaler embedded)")
+        model = ModelWithDenormalization(
+            model=model,
+            scaler_mean=scaler.mean_,
+            scaler_scale=scaler.scale_
+        )
     
     # Ensure model is in eval mode on CPU for consistent export
     model = model.cpu()
@@ -997,7 +1057,7 @@ def plot_results(
         fig, ax = plt.subplots(1, 1, figsize=(5, 5))
         
         # Scatter plot
-        ax.scatter(y_true[:, i], y_pred[:, i], alpha=0.5, s=10, 
+        ax.scatter(y_true[:, i], y_pred[:, i], alpha=0.6, s=30, 
                    edgecolors='none', c='royalblue')
         
         # Ideal line
@@ -1103,7 +1163,9 @@ def main():
             sample_input=sample_input,
             output_path=export_path,
             opset_version=args.export_opset,
-            validate=True
+            validate=True,
+            scaler=scaler,
+            include_denorm=not args.no_denorm  # De-normalization ON by default
         )
         
         if success:

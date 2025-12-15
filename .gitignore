@@ -104,8 +104,5 @@ Thumbs.db
 *.log
 logs/
 
-# Examples (large demo files)
-examples/
-
 # Documentation
 docs/

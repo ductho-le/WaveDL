@@ -154,8 +154,8 @@ def plot_scientific_scatter(
     max_samples: int = 2000,
     figsize_per_plot: Tuple[float, float] = (3.5, 3.5),
     dpi: int = 120,
-    scatter_alpha: float = 0.3,
-    scatter_size: int = 10,
+    scatter_alpha: float = 0.6,
+    scatter_size: int = 30,
     scatter_color: str = 'royalblue'
 ) -> plt.Figure:
     """
