@@ -87,9 +87,6 @@ venv.bak/
 # Training outputs
 *.pth
 *.pt
-*_checkpoint/
-best_checkpoint/
-training_history.csv
 wandb/
 
 # Cache
