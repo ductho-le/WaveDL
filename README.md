@@ -260,11 +260,12 @@ WaveDL/
 │   └── fast_convergence.yaml       # OneCycleLR fast training
 │
 ├── examples/                       # Ready-to-run example with pre-trained model
-│   ├── trained_cnn/                # Pre-trained CNN checkpoint
-│   ├── Test_data_100.mat           # Sample test data (100 samples)
-│   ├── model.onnx                  # Exported ONNX model
-│   ├── test_results/               # Example inference output
-│   └── WaveDL_ONNX_Inference.m     # MATLAB inference script
+│   └── plate_characterization/     # Complete example: plate thickness & elasticity
+│       ├── best_checkpoint/        # Pre-trained CNN checkpoint
+│       ├── Test_data_100.mat       # Sample test data (100 samples)
+│       ├── model.onnx              # Exported ONNX model
+│       ├── test_results/           # Example inference output
+│       └── WaveDL_ONNX_Inference.m # MATLAB inference script
 │
 └── unit_tests/                     # Unit test suite (pytest)
     ├── conftest.py                 # Pytest fixtures
@@ -664,21 +665,21 @@ The `examples/` folder contains a **complete, ready-to-run example** for **mater
 
 ```bash
 # Run inference on the example data
-python test.py --checkpoint ./examples/trained_cnn/best_checkpoint \
-  --data_path ./examples/Test_data_100.mat --plot --save_predictions \
-  --output_dir ./examples/test_results
+python test.py --checkpoint ./examples/plate_characterization/best_checkpoint \
+  --data_path ./examples/plate_characterization/Test_data_100.mat \
+  --plot --save_predictions --output_dir ./examples/plate_characterization/test_results
 
 # Export to ONNX (already included as model.onnx)
-python test.py --checkpoint ./examples/trained_cnn/best_checkpoint \
-  --data_path ./examples/Test_data_100.mat --export onnx \
-  --export_path ./examples/model.onnx
+python test.py --checkpoint ./examples/plate_characterization/best_checkpoint \
+  --data_path ./examples/plate_characterization/Test_data_100.mat \
+  --export onnx --export_path ./examples/plate_characterization/model.onnx
 ```
 
 **What's Included:**
 
 | File | Description |
 |------|-------------|
-| `trained_cnn/` | Pre-trained CNN checkpoint |
+| `best_checkpoint/` | Pre-trained CNN checkpoint |
 | `Test_data_100.mat` | 100 sample test set (500×500 dispersion curves → *h*, √(*E*/ρ), *μ*) |
 | `model.onnx` | ONNX export with embedded de-normalization |
 | `test_results/` | Example predictions and scatter plots |
@@ -687,7 +688,7 @@ python test.py --checkpoint ./examples/trained_cnn/best_checkpoint \
 **Example Results:**
 
 <p align="center">
-  <img src="examples/test_results/test_scatter_all.png" alt="Example scatter plot showing R²=0.99" width="900">
+  <img src="examples/plate_characterization/test_results/test_scatter_all.png" alt="Example scatter plot showing R²=0.99" width="900">
 </p>
 
 ---
