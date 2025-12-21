@@ -5,30 +5,26 @@ Target Environment: NVIDIA HPC GPUs (Single/Multi-GPU) | PyTorch 2.x | Python 3.
 
 Production-grade inference script for evaluating trained WaveDL models:
   1. Model-Agnostic: Works with any registered architecture
-  2. Flexible Data Loading: Supports NPZ (preferred) and legacy MAT formats
+  2. Flexible Data Loading: Supports NPZ/HDF5/MAT formats with auto-detection
   3. Comprehensive Metrics: R², Pearson, per-parameter MAE with physical units
-  4. Publication Plots: High-quality scatter plots with confidence intervals
+  4. Publication Plots: 10 diagnostic plots with LaTeX styling and multi-format export
   5. Batch Inference: Efficient GPU utilization for large test sets
   6. Model Export: ONNX format for deployment in production systems
 
 Usage:
-    # Basic inference (NPZ format - recommended)
-    python test.py --checkpoint ./cnn_test/best_checkpoint --data_path test_data.npz
+    # Basic inference
+    python test.py --checkpoint ./best_checkpoint --data_path test_data.npz
     
     # With visualization and detailed output
-    python test.py --checkpoint ./cnn_test/best_checkpoint --data_path test_data.npz \
-        --plot --output_dir ./test_results --save_predictions
+    python test.py --checkpoint ./best_checkpoint --data_path test_data.npz \\
+        --plot --plot_format png pdf --output_dir ./test_results --save_predictions
     
     # Export model to ONNX for deployment
-    python test.py --checkpoint ./cnn_test/best_checkpoint --data_path test_data.npz \
+    python test.py --checkpoint ./best_checkpoint --data_path test_data.npz \\
         --export onnx --export_path model.onnx
-    
-    # Legacy MAT file support
-    python test.py --checkpoint ./cnn_run/best_checkpoint --data_path CS01.mat \
-        --format mat --plot
 
 Author: Ductho Le (ductho.le@outlook.com)
-Version: 1.0.0 (WaveDL Testing Suite + ONNX Export)
+Version: 1.0.0
 """
 
 # ==============================================================================
@@ -1223,11 +1219,19 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Run inference
+    # Run inference with timing
     logger.info(f"Running inference on {len(X_test)} samples...")
+    import time
+    inference_start = time.time()
     y_pred_scaled = run_inference(
         model, X_test, args.batch_size, device, num_workers=args.workers
     )
+    inference_time = time.time() - inference_start
+    
+    # Calculate timing metrics
+    samples_per_sec = len(X_test) / inference_time
+    ms_per_sample = (inference_time / len(X_test)) * 1000
+    logger.info(f"   Inference time: {inference_time:.2f}s ({ms_per_sample:.2f} ms/sample, {samples_per_sec:.1f} samples/s)")
     
     # Validate scaler dimensions match predictions
     if hasattr(scaler, 'scale_') and len(scaler.scale_) != y_pred_scaled.shape[1]:

@@ -1,14 +1,14 @@
 """
-WaveDL - Deep Learning for Guided Wave Inversion
-==================================================
+WaveDL - Deep Learning for Wave-based Inverse Problems
+=======================================================
 Target Environment: NVIDIA HPC GPUs (Multi-GPU DDP) | PyTorch 2.x | Python 3.11+
 
-A domain-specific training framework for Ultrasonic Guided Wave Inversion:
+A modular training framework for wave-based inverse problems and regression:
   1. HPC-Grade DDP Training: BF16/FP16 mixed precision with torch.compile support
   2. Dynamic Model Selection: Use --model flag to select any registered architecture
   3. Zero-Copy Data Engine: Memmap-backed datasets for large-scale training
   4. Physics-Aware Metrics: Real-time physical MAE with proper unscaling
-  5. Robust Checkpointing: Resume training and periodic saves
+  5. Robust Checkpointing: Resume training, periodic saves, and training curves
   6. Deep Observability: WandB integration with scatter analysis
 
 Usage:
@@ -34,7 +34,7 @@ Note:
     --precision flag (default: bf16).
 
 Author: Ductho Le (ductho.le@outlook.com)
-Version: 1.0.0 (WaveDL - Guided Wave Inversion Framework)
+Version: 1.0.0
 """
 
 # ==============================================================================
@@ -50,6 +50,7 @@ import argparse
 import logging
 import pickle
 import shutil
+import time
 import warnings
 from typing import Dict, Any, Optional, List
 
@@ -535,7 +536,12 @@ def main():
         logger.info("=" * len(header))
     
     try:
+        training_start_time = time.time()
+        total_training_time = 0.0
+        
         for epoch in range(start_epoch, args.epochs):
+            epoch_start_time = time.time()
+            
             # ==================== TRAINING PHASE ====================
             model.train()
             train_loss_sum = 0.0
@@ -650,6 +656,10 @@ def main():
                 current_lr = get_lr(optimizer)
                 
                 # Update history
+                epoch_end_time = time.time()
+                epoch_time = epoch_end_time - epoch_start_time
+                total_training_time += epoch_time
+                
                 epoch_stats = {
                     "epoch": epoch + 1,
                     "train_loss": avg_train_loss,
@@ -658,7 +668,9 @@ def main():
                     "val_pearson": pcc,
                     "val_mae_avg": avg_mae,
                     "grad_norm": grad_norm_tracker.avg,
-                    "lr": current_lr
+                    "lr": current_lr,
+                    "epoch_time": round(epoch_time, 2),
+                    "total_time": round(total_training_time, 2)
                 }
                 for i, mae in enumerate(avg_mae_per_param):
                     epoch_stats[f"MAE_Phys_P{i}"] = mae
