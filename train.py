@@ -71,6 +71,7 @@ from utils import (
     MetricTracker,
     calc_pearson,
     plot_scientific_scatter,
+    create_training_curves,
     get_lr,
     prepare_data,
     broadcast_early_stop,
@@ -82,6 +83,7 @@ from utils import (
     get_scheduler,
     list_schedulers,
     is_epoch_based,
+    FIGURE_DPI,
 )
 
 # Optional WandB import
@@ -802,6 +804,19 @@ def main():
                 logger.info(f"✅ Training completed after {args.epochs} epochs")
     
     finally:
+        # Generate training curves plot
+        if accelerator.is_main_process and len(history) > 0:
+            try:
+                fig = create_training_curves(history, show_lr=True)
+                fig.savefig(
+                    os.path.join(args.output_dir, "training_curves.png"),
+                    dpi=FIGURE_DPI, bbox_inches='tight'
+                )
+                plt.close(fig)
+                logger.info(f"✔ Saved: training_curves.png")
+            except Exception as e:
+                logger.warning(f"Could not generate training curves: {e}")
+        
         if args.wandb and WANDB_AVAILABLE:
             accelerator.end_training()
         

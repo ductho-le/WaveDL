@@ -58,7 +58,10 @@ from sklearn.metrics import r2_score, mean_absolute_error
 
 # Local imports
 from models import get_model, list_models, build_model
-from utils import calc_pearson, plot_scientific_scatter
+from utils import (calc_pearson, plot_scientific_scatter, plot_error_histogram, 
+                   plot_residuals, plot_bland_altman, plot_qq, plot_correlation_heatmap,
+                   plot_relative_error, plot_error_cdf, plot_prediction_vs_index,
+                   plot_error_boxplot, FIGURE_DPI, COLORS, FIGURE_WIDTH_INCH)
 
 # Optional dependencies
 try:
@@ -117,7 +120,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--save_predictions', action='store_true',
                         help="Save predictions to CSV")
     parser.add_argument('--plot', action='store_true',
-                        help="Generate scatter plots")
+                        help="Generate diagnostic plots")
+    parser.add_argument('--plot_format', type=str, nargs='+', default=['png'],
+                        help="Output format(s) for plots: png, pdf, svg, eps, tiff (default: png)")
     parser.add_argument('--verbose', action='store_true',
                         help="Print per-sample predictions")
     
@@ -1035,9 +1040,30 @@ def plot_results(
     y_true: np.ndarray,
     y_pred: np.ndarray,
     output_dir: str,
-    param_names: Optional[list] = None
+    param_names: Optional[list] = None,
+    formats: list = ['png']
 ):
-    """Generate and save publication-quality plots."""
+    """Generate and save publication-quality plots with consistent LaTeX styling.
+    
+    Generates 10 plot types:
+    1. Scatter plot (predictions vs ground truth)
+    2. Error histogram (error distribution)
+    3. Residual plot (residual vs predicted)
+    4. Bland-Altman plot (method comparison)
+    5. Q-Q plot (normality of errors)
+    6. Correlation heatmap (error correlations between parameters)
+    7. Relative error plot (% error vs true value)
+    8. Cumulative error distribution (CDF)
+    9. Prediction vs sample index
+    10. Error box plot
+    
+    Args:
+        y_true: Ground truth values
+        y_pred: Predicted values
+        output_dir: Directory to save plots
+        param_names: Optional parameter names for labels
+        formats: List of output formats (png, pdf, svg, eps, tiff)
+    """
     n_params = y_true.shape[1]
     
     if param_names is None or len(param_names) != n_params:
@@ -1046,49 +1072,57 @@ def plot_results(
     output_dir = Path(output_dir)
     output_dir.mkdir(exist_ok=True, parents=True)
     
-    # 1. Overall scatter plot (all parameters in grid)
-    fig = plot_scientific_scatter(y_true, y_pred, param_names=param_names)
-    fig.savefig(output_dir / "test_scatter_all.png", dpi=300, bbox_inches='tight')
-    plt.close(fig)
-    logging.info(f"   ✔ Saved: test_scatter_all.png")
-    
-    # 2. Individual parameter plots (separate file for each)
-    for i in range(n_params):
-        fig, ax = plt.subplots(1, 1, figsize=(5, 5))
-        
-        # Scatter plot
-        ax.scatter(y_true[:, i], y_pred[:, i], alpha=0.6, s=30, 
-                   edgecolors='none', c='royalblue')
-        
-        # Ideal line
-        lims = [
-            min(y_true[:, i].min(), y_pred[:, i].min()),
-            max(y_true[:, i].max(), y_pred[:, i].max())
-        ]
-        margin = (lims[1] - lims[0]) * 0.05
-        lims = [lims[0] - margin, lims[1] + margin]
-        ax.plot(lims, lims, 'r--', alpha=0.75, zorder=0, linewidth=1.5)
-        ax.set_xlim(lims)
-        ax.set_ylim(lims)
-        
-        # Labels and metrics
-        r2 = r2_score(y_true[:, i], y_pred[:, i])
-        mae = mean_absolute_error(y_true[:, i], y_pred[:, i])
-        
-        ax.set_xlabel(f'True {param_names[i]}', fontsize=11)
-        ax.set_ylabel(f'Predicted {param_names[i]}', fontsize=11)
-        ax.set_title(f'{param_names[i]}\nR²={r2:.4f}, MAE={mae:.4f}', fontsize=12)
-        ax.grid(True, alpha=0.3, linestyle=':')
-        ax.set_aspect('equal', adjustable='box')
-        
-        plt.tight_layout()
-        
-        # Safe filename (replace spaces and special chars)
-        safe_name = param_names[i].replace(' ', '_').replace('/', '_')
-        filename = f"test_scatter_{safe_name}.png"
-        fig.savefig(output_dir / filename, dpi=300, bbox_inches='tight')
+    def save_figure(fig, basename):
+        """Save figure in all requested formats."""
+        saved_formats = []
+        for fmt in formats:
+            fmt = fmt.lower().strip('.')
+            filepath = output_dir / f"{basename}.{fmt}"
+            fig.savefig(filepath, dpi=FIGURE_DPI, bbox_inches='tight', format=fmt)
+            saved_formats.append(fmt)
         plt.close(fig)
-        logging.info(f"   ✔ Saved: {filename}")
+        logging.info(f"   ✔ Saved: {basename} ({', '.join(saved_formats)})")
+    
+    # 1. Scatter plot - predictions vs ground truth
+    fig = plot_scientific_scatter(y_true, y_pred, param_names=param_names)
+    save_figure(fig, "scatter_all")
+    
+    # 2. Error histogram - error distribution per parameter
+    fig = plot_error_histogram(y_true, y_pred, param_names=param_names)
+    save_figure(fig, "error_histogram")
+    
+    # 3. Residual plot - residual vs predicted value
+    fig = plot_residuals(y_true, y_pred, param_names=param_names)
+    save_figure(fig, "residuals")
+    
+    # 4. Bland-Altman plot - method agreement analysis
+    fig = plot_bland_altman(y_true, y_pred, param_names=param_names)
+    save_figure(fig, "bland_altman")
+    
+    # 5. Q-Q plot - check error normality
+    fig = plot_qq(y_true, y_pred, param_names=param_names)
+    save_figure(fig, "qq_plot")
+    
+    # 6. Correlation heatmap - error correlations (if multi-output)
+    if n_params >= 2:
+        fig = plot_correlation_heatmap(y_true, y_pred, param_names=param_names)
+        save_figure(fig, "error_correlation")
+    
+    # 7. Relative error plot - % error vs true value
+    fig = plot_relative_error(y_true, y_pred, param_names=param_names)
+    save_figure(fig, "relative_error")
+    
+    # 8. Cumulative error distribution (CDF)
+    fig = plot_error_cdf(y_true, y_pred, param_names=param_names)
+    save_figure(fig, "error_cdf")
+    
+    # 9. Prediction vs sample index
+    fig = plot_prediction_vs_index(y_true, y_pred, param_names=param_names)
+    save_figure(fig, "prediction_vs_index")
+    
+    # 10. Error box plot
+    fig = plot_error_boxplot(y_true, y_pred, param_names=param_names)
+    save_figure(fig, "error_boxplot")
 
 
 # ==============================================================================
@@ -1232,8 +1266,9 @@ def main():
         
         # Generate plots
         if args.plot:
-            logger.info("Generating plots...")
-            plot_results(y_true, y_pred, str(output_dir), args.param_names)
+            logger.info(f"Generating plots (formats: {', '.join(args.plot_format)})...")
+            plot_results(y_true, y_pred, str(output_dir), args.param_names, 
+                        formats=args.plot_format)
     else:
         # === MODE: Predictions only (no ground truth) ===
         logger.info("No ground truth targets - skipping metrics and scatter plots")

@@ -200,13 +200,13 @@ After training, use `test.py` to evaluate your model on test data:
 # Basic inference
 python test.py --checkpoint <checkpoint_folder> --data_path <test_data>
 
-# With visualization and CSV export
+# With visualization, CSV export, and multiple file formats
 python test.py --checkpoint <checkpoint_folder> --data_path <test_data> \
-  --plot --save_predictions --output_dir <output_folder>
+  --plot --plot_format png pdf --save_predictions --output_dir <output_folder>
 
-# With custom parameter names for readable output
+# With custom parameter names
 python test.py --checkpoint <checkpoint_folder> --data_path <test_data> \
-  --param_names "Param1" "Param2" "Param3" --verbose
+  --param_names '$p_1$' '$p_2$' '$p_3$' --plot
 
 # Export model to ONNX for deployment (LabVIEW, MATLAB, C++, etc.)
 python test.py --checkpoint <checkpoint_folder> --data_path <test_data> \
@@ -216,7 +216,8 @@ python test.py --checkpoint <checkpoint_folder> --data_path <test_data> \
 **Output:**
 - **Console**: R², Pearson correlation, MAE per parameter
 - **CSV** (with `--save_predictions`): True, predicted, error, and absolute error for all parameters
-- **Plots** (with `--plot`): Publication-quality scatter plots (overall + per-parameter)
+- **Plots** (with `--plot`): 10 publication-quality plots (scatter, histogram, residuals, Bland-Altman, Q-Q, correlation, relative error, CDF, index plot, box plot)
+- **Format** (with `--plot_format`): Supported formats: `png` (default), `pdf` (vector), `svg` (vector), `eps` (LaTeX), `tiff`, `jpg`, `ps`
 
 > [!NOTE]
 > `test.py` auto-detects the model architecture from checkpoint metadata. If unavailable, it falls back to folder name parsing. Use `--model` to override if needed.
@@ -292,8 +293,8 @@ WaveDL/
 | `resnet18_pretrained` | **Transfer learning** ⭐ | 11.4M | 2D only |
 | `resnet50_pretrained` | **Transfer learning** ⭐ | 24.6M | 2D only |
 | `efficientnet_b0` | Efficient, **pretrained** ⭐ | 4.7M | 2D only |
-| `efficientnet_b1` | Slightly larger, pretrained | 7.2M | 2D only |
-| `efficientnet_b2` | Best efficiency/accuracy | 8.4M | 2D only |
+| `efficientnet_b1` | Efficient, **pretrained** ⭐ | 7.2M | 2D only |
+| `efficientnet_b2` | Efficient, **pretrained** ⭐ | 8.4M | 2D only |
 | `vit_tiny` | Transformer, small datasets | 5.4M | 1D/2D |
 | `vit_small` | Transformer, balanced | 21.5M | 1D/2D |
 | `vit_base` | Transformer, high capacity | 85.5M | 1D/2D |
@@ -663,15 +664,70 @@ python test.py --checkpoint ./examples/elastic_cnn_example/best_checkpoint \
 | File | Description |
 |------|-------------|
 | `best_checkpoint/` | Pre-trained CNN checkpoint |
-| `Test_data_100.mat` | 100 sample test set (500×500 dispersion curves → *h*, √(*E*/ρ), *μ*) |
+| `Test_data_100.mat` | 100 sample test set (500×500 dispersion curves → *h*, √(*E*/ρ), *ν*) |
 | `model.onnx` | ONNX export with embedded de-normalization |
-| `test_results/` | Example predictions and scatter plots |
+| `training_history.csv` | Epoch-by-epoch training metrics (loss, R², LR, etc.) |
+| `training_curves.png` | Training/validation loss and learning rate plot |
+| `test_results/` | Example predictions and diagnostic plots |
 | `WaveDL_ONNX_Inference.m` | MATLAB script for ONNX inference |
 
-**Example Results:**
+**Training Progress:**
 
 <p align="center">
-  <img src="examples/elastic_cnn_example/test_results/test_scatter_all.png" alt="Example scatter plot showing R²=0.99" width="900">
+  <img src="examples/elastic_cnn_example/training_curves.png" alt="Training curves" width="600"><br>
+  <em>Training and validation loss over 162 epochs with learning rate schedule</em>
+</p>
+
+**Inference Results:**
+
+<p align="center">
+  <img src="examples/elastic_cnn_example/test_results/scatter_all.png" alt="Scatter plot" width="700"><br>
+  <em>Figure 1: Predictions vs ground truth for all three elastic parameters</em>
+</p>
+
+<p align="center">
+  <img src="examples/elastic_cnn_example/test_results/error_histogram.png" alt="Error histogram" width="700"><br>
+  <em>Figure 2: Distribution of prediction errors showing near-zero mean bias</em>
+</p>
+
+<p align="center">
+  <img src="examples/elastic_cnn_example/test_results/residuals.png" alt="Residual plot" width="700"><br>
+  <em>Figure 3: Residuals vs predicted values (no heteroscedasticity detected)</em>
+</p>
+
+<p align="center">
+  <img src="examples/elastic_cnn_example/test_results/bland_altman.png" alt="Bland-Altman plot" width="700"><br>
+  <em>Figure 4: Bland-Altman analysis with ±1.96 SD limits of agreement</em>
+</p>
+
+<p align="center">
+  <img src="examples/elastic_cnn_example/test_results/qq_plot.png" alt="Q-Q plot" width="700"><br>
+  <em>Figure 5: Q-Q plots confirming normally distributed prediction errors</em>
+</p>
+
+<p align="center">
+  <img src="examples/elastic_cnn_example/test_results/error_correlation.png" alt="Error correlation" width="300"><br>
+  <em>Figure 6: Error correlation matrix between parameters</em>
+</p>
+
+<p align="center">
+  <img src="examples/elastic_cnn_example/test_results/relative_error.png" alt="Relative error" width="700"><br>
+  <em>Figure 7: Relative error (%) vs true value for each parameter</em>
+</p>
+
+<p align="center">
+  <img src="examples/elastic_cnn_example/test_results/error_cdf.png" alt="Error CDF" width="500"><br>
+  <em>Figure 8: Cumulative error distribution — 95% of predictions within indicated bounds</em>
+</p>
+
+<p align="center">
+  <img src="examples/elastic_cnn_example/test_results/prediction_vs_index.png" alt="Prediction vs index" width="700"><br>
+  <em>Figure 9: True vs predicted values by sample index</em>
+</p>
+
+<p align="center">
+  <img src="examples/elastic_cnn_example/test_results/error_boxplot.png" alt="Error box plot" width="400"><br>
+  <em>Figure 10: Error distribution summary (median, quartiles, outliers)</em>
 </p>
 
 ---
