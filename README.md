@@ -285,27 +285,27 @@ WaveDL/
 
 | Model | Best For | Params (2D) | Dimensionality |
 |-------|----------|-------------|----------------|
-| `cnn` | Baseline, lightweight | ~1M | 1D/2D/3D |
-| `resnet18` | Fast training, smaller datasets | ~11M | 1D/2D/3D |
-| `resnet34` | Balanced performance | ~21M | 1D/2D/3D |
-| `resnet50` | High capacity, complex patterns | ~25M | 1D/2D/3D |
-| `resnet18_pretrained` | **Transfer learning** ⭐ | ~11M | 2D only |
-| `resnet50_pretrained` | **Transfer learning** ⭐ | ~25M | 2D only |
-| `efficientnet_b0` | Efficient, **pretrained** ⭐ | ~5M | 2D only |
-| `efficientnet_b1` | Slightly larger, pretrained | ~8M | 2D only |
-| `efficientnet_b2` | Best efficiency/accuracy | ~9M | 2D only |
-| `vit_tiny` | Transformer, small datasets | ~6M | 1D/2D |
-| `vit_small` | Transformer, balanced | ~22M | 1D/2D |
-| `vit_base` | Transformer, high capacity | ~86M | 1D/2D |
-| `convnext_tiny` | Modern CNN, transformer-inspired | ~28M | 1D/2D/3D |
-| `convnext_tiny_pretrained` | **Transfer learning** ⭐ | ~28M | 2D only |
-| `convnext_small` | Modern CNN, balanced | ~50M | 1D/2D/3D |
-| `convnext_base` | Modern CNN, high capacity | ~89M | 1D/2D/3D |
-| `densenet121` | Feature reuse, small data | ~8M | 1D/2D/3D |
-| `densenet121_pretrained` | **Transfer learning** ⭐ | ~8M | 2D only |
-| `densenet169` | Deeper DenseNet | ~14M | 1D/2D/3D |
-| `unet` | Spatial output (velocity fields) | ~31M | 1D/2D/3D |
-| `unet_regression` | Multi-scale features for regression | ~31M | 1D/2D/3D |
+| `cnn` | Baseline, lightweight | 1.7M | 1D/2D/3D |
+| `resnet18` | Fast training, smaller datasets | 11.4M | 1D/2D/3D |
+| `resnet34` | Balanced performance | 21.5M | 1D/2D/3D |
+| `resnet50` | High capacity, complex patterns | 24.6M | 1D/2D/3D |
+| `resnet18_pretrained` | **Transfer learning** ⭐ | 11.4M | 2D only |
+| `resnet50_pretrained` | **Transfer learning** ⭐ | 24.6M | 2D only |
+| `efficientnet_b0` | Efficient, **pretrained** ⭐ | 4.7M | 2D only |
+| `efficientnet_b1` | Slightly larger, pretrained | 7.2M | 2D only |
+| `efficientnet_b2` | Best efficiency/accuracy | 8.4M | 2D only |
+| `vit_tiny` | Transformer, small datasets | 5.4M | 1D/2D |
+| `vit_small` | Transformer, balanced | 21.5M | 1D/2D |
+| `vit_base` | Transformer, high capacity | 85.5M | 1D/2D |
+| `convnext_tiny` | Modern CNN, transformer-inspired | 28.2M | 1D/2D/3D |
+| `convnext_tiny_pretrained` | **Transfer learning** ⭐ | 28.2M | 2D only |
+| `convnext_small` | Modern CNN, balanced | 49.8M | 1D/2D/3D |
+| `convnext_base` | Modern CNN, high capacity | 88.1M | 1D/2D/3D |
+| `densenet121` | Feature reuse, small data | 7.5M | 1D/2D/3D |
+| `densenet121_pretrained` | **Transfer learning** ⭐ | 7.5M | 2D only |
+| `densenet169` | Deeper DenseNet | 13.3M | 1D/2D/3D |
+| `unet` | Spatial output (velocity fields) | 31.0M | 1D/2D/3D |
+| `unet_regression` | Multi-scale features for regression | 31.1M | 1D/2D/3D |
 
 > ⭐ **Pretrained models** use ImageNet weights for transfer learning.
 
