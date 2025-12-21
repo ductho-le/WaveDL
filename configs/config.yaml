@@ -1,0 +1,88 @@
+# WaveDL Configuration Template
+# ==============================
+# This template includes ALL available options with their defaults.
+# Copy and modify for your experiments. CLI arguments override any values.
+#
+# Usage:
+#   accelerate launch train.py --config configs/config.yaml
+#   accelerate launch train.py --config configs/config.yaml --lr 5e-4
+
+# =============================================================================
+# MODEL
+# =============================================================================
+model: cnn                    # Options: cnn, resnet18, resnet34, resnet50,
+                              #          resnet18_pretrained, resnet50_pretrained,
+                              #          efficientnet_b0, efficientnet_b1, efficientnet_b2,
+                              #          vit_tiny, vit_small, vit_base,
+                              #          convnext_tiny, convnext_small, convnext_base,
+                              #          convnext_tiny_pretrained,
+                              #          densenet121, densenet169, densenet121_pretrained,
+                              #          unet, unet_regression
+
+# =============================================================================
+# TRAINING HYPERPARAMETERS
+# =============================================================================
+batch_size: 128               # Per-GPU batch size
+lr: 0.001                     # Learning rate (higher for OneCycleLR, e.g., 0.01)
+epochs: 1000                  # Maximum training epochs
+patience: 20                  # Early stopping patience (epochs without improvement)
+weight_decay: 0.0001          # L2 regularization (AdamW)
+grad_clip: 1.0                # Gradient clipping max norm
+
+# =============================================================================
+# LOSS FUNCTION
+# =============================================================================
+loss: mse                     # Options: mse, mae, huber, smooth_l1, log_cosh, weighted_mse
+# huber_delta: 1.0            # Delta for Huber loss (only if loss: huber)
+# loss_weights: "1.0,2.0,1.0" # Comma-separated weights for weighted_mse
+
+# =============================================================================
+# OPTIMIZER
+# =============================================================================
+optimizer: adamw              # Options: adamw, adam, sgd, nadam, radam, rmsprop
+# momentum: 0.9               # Momentum for SGD/RMSprop
+# nesterov: false             # Use Nesterov momentum (SGD only)
+# betas: "0.9,0.999"          # Betas for Adam variants (comma-separated)
+
+# =============================================================================
+# LEARNING RATE SCHEDULER
+# =============================================================================
+scheduler: plateau            # Options: plateau, cosine, cosine_restarts, onecycle, 
+                              #          step, multistep, exponential, linear_warmup
+# scheduler_factor: 0.5       # LR reduction factor (for plateau/step)
+# scheduler_patience: 10      # Epochs to wait before reducing (for plateau)
+# min_lr: 0.000001            # Minimum learning rate
+# warmup_epochs: 5            # Warmup epochs (for linear_warmup)
+# step_size: 30               # Step size for StepLR
+# milestones: "30,60,90"      # Comma-separated epochs for MultiStepLR
+
+# =============================================================================
+# CROSS-VALIDATION (Optional)
+# =============================================================================
+cv: 0                         # Number of folds (0 = disabled, e.g., 5 for 5-fold CV)
+cv_stratify: false            # Stratified splits based on output values
+cv_bins: 10                   # Number of bins for stratification
+
+# =============================================================================
+# DATA & OUTPUT
+# =============================================================================
+# data_path: train_data.npz   # Required - path to training data
+# output_dir: ./experiments   # Output directory for checkpoints/logs
+# resume: null                # Path to checkpoint to resume from
+# save_every: 50               # Save checkpoint every N epochs (0 = disabled)
+# fresh: false                # Start fresh, ignore existing checkpoints
+workers: 0                    # DataLoader workers (0 = auto)
+seed: 2025                    # Random seed for reproducibility
+
+# =============================================================================
+# PERFORMANCE OPTIMIZATION
+# =============================================================================
+precision: bf16               # Options: bf16, fp16, no (for fp32)
+compile: false                # torch.compile() for faster training (PyTorch 2.0+)
+
+# =============================================================================
+# LOGGING & MONITORING
+# =============================================================================
+# wandb: false                # Enable Weights & Biases logging
+# project_name: DL-Training   # W&B project name
+# run_name: null              # W&B run name (auto-generated if null)

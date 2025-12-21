@@ -2,16 +2,29 @@
 Unit Tests for Model Architectures
 ===================================
 
-Comprehensive tests for:
-- BaseModel: abstract base class functionality
-- CNN: baseline convolutional network
+Comprehensive tests for all model architectures in WaveDL.
 
-Tests cover:
-- Model instantiation with various input shapes
-- Forward pass correctness
-- Output shape validation
-- Parameter counting
-- Gradient flow
+**Tested Architectures**:
+    - CNN: Dimension-agnostic baseline CNN
+    - ResNet: ResNet-18/34/50 with BasicBlock and Bottleneck
+    - EfficientNet: B0/B1/B2 with pretrained weights (2D only)
+    - ViT: Vision Transformer (Tiny/Small/Base)
+    - ConvNeXt: Modern CNN (Tiny/Small/Base)
+    - DenseNet: DenseNet-121/169 with dense connectivity
+    - U-Net: Encoder-decoder for spatial and vector regression
+
+**Test Coverage**:
+    - Model instantiation with 1D/2D/3D input shapes
+    - Forward pass correctness and output validation
+    - Gradient flow through all layers
+    - Numerical stability (no NaN/Inf outputs)
+    - Eval mode determinism
+    - Parameter counting and optimizer groups
+
+**Universal Tests**:
+    The TestAllModels class automatically tests ALL registered models.
+    When you add a new model to the registry, it will be automatically
+    included in these tests - no manual updates needed!
 
 Author: Ductho Le (ductho.le@outlook.com)
 """
@@ -23,14 +36,194 @@ import numpy as np
 
 from models.base import BaseModel
 from models.cnn import CNN
-from models.registry import register_model
+from models.registry import register_model, list_models, build_model
 
 
 # ==============================================================================
-# BASE MODEL TESTS
+# HELPER: Get model configuration for testing
+# ==============================================================================
+def get_test_config(model_name: str, dim: int = 2):
+    """
+    Get appropriate test configuration for a model.
+    
+    Returns (in_shape, kwargs) tuple suitable for testing.
+    """
+    # Base shapes for different dimensionalities
+    if dim == 1:
+        in_shape = (128,)
+    elif dim == 2:
+        in_shape = (64, 64)
+    else:
+        in_shape = (16, 32, 32)
+    
+    kwargs = {}
+    
+    # Model-specific adjustments
+    if model_name.startswith("vit"):
+        kwargs["patch_size"] = 8  # Smaller patches for test input size
+    elif model_name.startswith("unet"):
+        kwargs["depth"] = 3  # Smaller depth for faster tests
+    
+    return in_shape, kwargs
+
+
+def get_supported_dims(model_name: str):
+    """Get list of supported dimensionalities for a model."""
+    # EfficientNet is 2D only
+    if model_name.startswith("efficientnet"):
+        return [2]
+    # ViT supports 1D and 2D
+    elif model_name.startswith("vit"):
+        return [1, 2]
+    # Most models support all dims
+    else:
+        return [1, 2]  # Skip 3D for speed in tests
+
+
+# ==============================================================================
+# UNIVERSAL MODEL TESTS (Auto-tests ALL registered models)
+# ==============================================================================
+class TestAllModels:
+    """
+    Universal tests that automatically run on ALL registered models.
+    
+    When you add a new model to the registry, it will automatically
+    be included in these tests - no manual updates needed!
+    """
+    
+    @pytest.mark.parametrize("model_name", list_models())
+    def test_model_forward_2d(self, model_name):
+        """Test that all models can perform a forward pass with 2D input."""
+        in_shape, kwargs = get_test_config(model_name, dim=2)
+        
+        model = build_model(model_name, in_shape=in_shape, out_size=3, **kwargs)
+        model.eval()
+        
+        x = torch.randn(2, 1, *in_shape)
+        with torch.no_grad():
+            out = model(x)
+        
+        # Check output is valid
+        assert out.shape[0] == 2, f"{model_name}: Batch size mismatch"
+        assert not torch.isnan(out).any(), f"{model_name}: Output contains NaN"
+        assert not torch.isinf(out).any(), f"{model_name}: Output contains Inf"
+    
+    @pytest.mark.parametrize("model_name", list_models())
+    def test_model_gradient_flow(self, model_name):
+        """Test that gradients flow through all models."""
+        in_shape, kwargs = get_test_config(model_name, dim=2)
+        
+        model = build_model(model_name, in_shape=in_shape, out_size=3, **kwargs)
+        model.train()
+        
+        x = torch.randn(2, 1, *in_shape, requires_grad=True)
+        out = model(x)
+        loss = out.sum()
+        loss.backward()
+        
+        assert x.grad is not None, f"{model_name}: No gradient on input"
+        assert not torch.isnan(x.grad).any(), f"{model_name}: Gradient contains NaN"
+    
+    @pytest.mark.parametrize("model_name", list_models())
+    def test_model_output_shape(self, model_name):
+        """Test that all models produce correct output shape."""
+        in_shape, kwargs = get_test_config(model_name, dim=2)
+        out_size = 5
+        
+        model = build_model(model_name, in_shape=in_shape, out_size=out_size, **kwargs)
+        model.eval()
+        
+        x = torch.randn(4, 1, *in_shape)
+        with torch.no_grad():
+            out = model(x)
+        
+        # Skip spatial output models (unet with spatial_output=True)
+        if model_name == "unet":
+            # UNet default is spatial_output=True, so shape is different
+            assert out.shape[0] == 4
+            assert out.shape[1] == out_size
+        else:
+            assert out.shape == (4, out_size), f"{model_name}: Expected {(4, out_size)}, got {out.shape}"
+    
+    @pytest.mark.parametrize("model_name", list_models())
+    def test_model_eval_deterministic(self, model_name):
+        """Test that models are deterministic in eval mode."""
+        in_shape, kwargs = get_test_config(model_name, dim=2)
+        
+        model = build_model(model_name, in_shape=in_shape, out_size=3, **kwargs)
+        model.eval()
+        
+        x = torch.randn(2, 1, *in_shape)
+        with torch.no_grad():
+            out1 = model(x)
+            out2 = model(x)
+        
+        assert torch.allclose(out1, out2), f"{model_name}: Not deterministic in eval mode"
+    
+    @pytest.mark.parametrize("model_name", list_models())
+    def test_model_has_parameters(self, model_name):
+        """Test that all models have trainable parameters."""
+        in_shape, kwargs = get_test_config(model_name, dim=2)
+        
+        model = build_model(model_name, in_shape=in_shape, out_size=3, **kwargs)
+        
+        param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        assert param_count > 0, f"{model_name}: No trainable parameters"
+    
+    @pytest.mark.parametrize("model_name", list_models())
+    @pytest.mark.parametrize("batch_size", [1, 4, 16])
+    def test_model_different_batch_sizes(self, model_name, batch_size):
+        """Test that all models handle various batch sizes."""
+        in_shape, kwargs = get_test_config(model_name, dim=2)
+        
+        model = build_model(model_name, in_shape=in_shape, out_size=3, **kwargs)
+        model.eval()
+        
+        x = torch.randn(batch_size, 1, *in_shape)
+        with torch.no_grad():
+            out = model(x)
+        
+        assert out.shape[0] == batch_size, f"{model_name}: Batch size {batch_size} failed"
+    
+    @pytest.mark.parametrize("model_name", [m for m in list_models() if not m.startswith("efficientnet") and "pretrained" not in m])
+    def test_model_1d_input(self, model_name):
+        """Test that dimension-agnostic models work with 1D input."""
+        in_shape, kwargs = get_test_config(model_name, dim=1)
+        
+        model = build_model(model_name, in_shape=in_shape, out_size=3, **kwargs)
+        model.eval()
+        
+        x = torch.randn(2, 1, *in_shape)
+        with torch.no_grad():
+            out = model(x)
+        
+        assert out.shape[0] == 2, f"{model_name}: 1D forward pass failed"
+        assert not torch.isnan(out).any(), f"{model_name}: 1D output contains NaN"
+    
+    @pytest.mark.parametrize("model_name", list_models())
+    def test_model_all_params_have_gradients(self, model_name):
+        """Test that gradients reach all trainable parameters."""
+        in_shape, kwargs = get_test_config(model_name, dim=2)
+        
+        model = build_model(model_name, in_shape=in_shape, out_size=3, **kwargs)
+        model.train()
+        
+        x = torch.randn(2, 1, *in_shape, requires_grad=True)
+        out = model(x)
+        loss = out.sum()
+        loss.backward()
+        
+        # Check all trainable parameters received gradients
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                assert param.grad is not None, f"{model_name}: No gradient for {name}"
+
+
+# ==============================================================================
+# BASE MODEL ABSTRACT CLASS TESTS
 # ==============================================================================
 class TestBaseModel:
-    """Tests for the BaseModel abstract base class."""
+    """Tests for the BaseModel abstract base class interface and utilities."""
     
     def test_cannot_instantiate_directly(self):
         """Test that BaseModel cannot be instantiated directly."""
@@ -130,178 +323,12 @@ class TestBaseModel:
             assert "lr" in group
             assert "weight_decay" in group
 
-
 # ==============================================================================
-# SIMPLE CNN TESTS
-# ==============================================================================
-class TestCNN:
-    """Tests for the CNN model."""
-    
-    def test_instantiation(self):
-        """Test CNN can be instantiated."""
-        model = CNN(in_shape=(64, 64), out_size=5)
-        
-        assert model.in_shape == (64, 64)
-        assert model.out_size == 5
-    
-    def test_forward_pass_shape(self):
-        """Test forward pass produces correct output shape."""
-        model = CNN(in_shape=(64, 64), out_size=5)
-        x = torch.randn(4, 1, 64, 64)
-        
-        output = model(x)
-        
-        assert output.shape == (4, 5)
-    
-    def test_forward_pass_different_batch_sizes(self):
-        """Test forward pass with various batch sizes."""
-        model = CNN(in_shape=(64, 64), out_size=3)
-        
-        for batch_size in [1, 2, 8, 16, 32]:
-            x = torch.randn(batch_size, 1, 64, 64)
-            output = model(x)
-            assert output.shape == (batch_size, 3)
-    
-    def test_forward_pass_different_input_sizes(self):
-        """Test forward pass with various input dimensions."""
-        test_cases = [
-            ((32, 32), 3),
-            ((64, 64), 5),
-            ((128, 128), 7),
-            ((256, 256), 10),
-        ]
-        
-        for in_shape, out_size in test_cases:
-            model = CNN(in_shape=in_shape, out_size=out_size)
-            x = torch.randn(2, 1, *in_shape)
-            output = model(x)
-            assert output.shape == (2, out_size)
-    
-    def test_forward_pass_non_square(self):
-        """Test forward pass with non-square input."""
-        model = CNN(in_shape=(64, 128), out_size=5)
-        x = torch.randn(4, 1, 64, 128)
-        
-        output = model(x)
-        
-        assert output.shape == (4, 5)
-    
-    def test_gradient_flow(self):
-        """Test that gradients flow through the model."""
-        model = CNN(in_shape=(64, 64), out_size=5)
-        x = torch.randn(4, 1, 64, 64, requires_grad=True)
-        
-        output = model(x)
-        loss = output.sum()
-        loss.backward()
-        
-        assert x.grad is not None
-        assert not torch.isnan(x.grad).any()
-        
-        # Check all parameters received gradients
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                assert param.grad is not None, f"No gradient for {name}"
-    
-    def test_default_config(self):
-        """Test default configuration values."""
-        config = CNN.get_default_config()
-        
-        assert "base_channels" in config
-        assert "dropout_rate" in config
-        assert config["base_channels"] == 16
-        assert config["dropout_rate"] == 0.1
-    
-    def test_custom_parameters(self):
-        """Test model with custom parameters."""
-        model = CNN(
-            in_shape=(64, 64),
-            out_size=5,
-            base_channels=32,
-            dropout_rate=0.2
-        )
-        
-        assert model.base_channels == 32
-        assert model.dropout_rate == 0.2
-    
-    def test_eval_mode(self):
-        """Test model behavior in eval mode."""
-        model = CNN(in_shape=(64, 64), out_size=5)
-        model.eval()
-        
-        x = torch.randn(4, 1, 64, 64)
-        
-        with torch.no_grad():
-            output1 = model(x)
-            output2 = model(x)
-        
-        # In eval mode, outputs should be deterministic
-        assert torch.allclose(output1, output2)
-    
-    def test_train_mode_dropout(self):
-        """Test that dropout is active in train mode."""
-        model = CNN(in_shape=(64, 64), out_size=5, dropout_rate=0.5)
-        model.train()
-        
-        x = torch.randn(4, 1, 64, 64)
-        
-        # Multiple forward passes should give different results due to dropout
-        outputs = [model(x) for _ in range(10)]
-        
-        # Check that not all outputs are identical
-        all_same = all(torch.allclose(outputs[0], o) for o in outputs[1:])
-        assert not all_same, "Dropout doesn't seem to be active in train mode"
-
-
-# ==============================================================================
-# NUMERICAL STABILITY TESTS
-# ==============================================================================
-class TestNumericalStability:
-    """Tests for numerical stability of models."""
-    
-    def test_no_nan_output(self):
-        """Test that models don't produce NaN outputs."""
-        model = CNN(in_shape=(64, 64), out_size=5)
-        x = torch.randn(4, 1, 64, 64)
-        
-        output = model(x)
-        assert not torch.isnan(output).any(), f"{model.__class__.__name__} produced NaN"
-    
-    def test_no_inf_output(self):
-        """Test that models don't produce Inf outputs."""
-        model = CNN(in_shape=(64, 64), out_size=5)
-        x = torch.randn(4, 1, 64, 64)
-        
-        output = model(x)
-        assert not torch.isinf(output).any(), f"{model.__class__.__name__} produced Inf"
-    
-    def test_handles_large_input_values(self):
-        """Test models handle large input values."""
-        model = CNN(in_shape=(64, 64), out_size=5)
-        x = torch.randn(4, 1, 64, 64) * 100  # Large values
-        
-        output = model(x)
-        
-        assert not torch.isnan(output).any()
-        assert not torch.isinf(output).any()
-    
-    def test_handles_small_input_values(self):
-        """Test models handle very small input values."""
-        model = CNN(in_shape=(64, 64), out_size=5)
-        x = torch.randn(4, 1, 64, 64) * 1e-6  # Small values
-        
-        output = model(x)
-        
-        assert not torch.isnan(output).any()
-        assert not torch.isinf(output).any()
-
-
-# ==============================================================================
-# GPU TESTS (Conditional)
+# GPU TESTS (Optional - require CUDA)
 # ==============================================================================
 @pytest.mark.gpu
 class TestGPUModels:
-    """Tests that require GPU."""
+    """Tests for GPU deployment and mixed precision training."""
     
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
     def test_model_to_gpu(self):

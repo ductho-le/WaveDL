@@ -65,8 +65,9 @@ class CNN(BaseModel):
     
     Architecture:
         - 5 Encoder blocks: Conv → GroupNorm → LeakyReLU → MaxPool [→ Dropout]
-        - Adaptive pooling to fixed size (handles variable spatial dimensions)
-        - 3-layer MLP regression head with LayerNorm and dropout
+          Channel progression: 32 → 64 → 128 → 256 → 512 (with base_channels=32)
+        - Global adaptive pooling to 1×1 (handles variable spatial dimensions)
+        - 3-layer MLP regression head: 512 → 256 → 128 → 64 → out_size
     
     Args:
         in_shape: Spatial dimensions as tuple:
@@ -74,7 +75,7 @@ class CNN(BaseModel):
             - 2D: (H, W) for images
             - 3D: (D, H, W) for volumes
         out_size: Number of regression output targets
-        base_channels: Base channel count, multiplied through encoder (default: 16)
+        base_channels: Base channel count, multiplied through encoder (default: 32)
         dropout_rate: Dropout rate for regularization (default: 0.1)
     
     Input Shape:
@@ -84,8 +85,8 @@ class CNN(BaseModel):
         (B, out_size)
     
     Example:
-        >>> model = CNN(in_shape=(128, 128), out_size=3)  # 2D image input
-        >>> x = torch.randn(4, 1, 128, 128)
+        >>> model = CNN(in_shape=(500, 500), out_size=3)  # 2D dispersion curve
+        >>> x = torch.randn(4, 1, 500, 500)
         >>> out = model(x)  # Shape: (4, 3)
         
         >>> model = CNN(in_shape=(512,), out_size=5)  # 1D waveform input
@@ -97,7 +98,7 @@ class CNN(BaseModel):
         self, 
         in_shape: SpatialShape, 
         out_size: int,
-        base_channels: int = 16,
+        base_channels: int = 32,
         dropout_rate: float = 0.1,
         **kwargs
     ):
@@ -117,7 +118,7 @@ class CNN(BaseModel):
             nn.AdaptiveAvgPool3d
         )
         
-        # Channel progression: 16 → 32 → 64 → 128 → 256
+        # Channel progression: 32 → 64 → 128 → 256 → 512 (5 blocks for deeper features)
         c1, c2, c3, c4, c5 = (
             base_channels,
             base_channels * 2,
@@ -126,7 +127,7 @@ class CNN(BaseModel):
             base_channels * 16
         )
         
-        # Encoder blocks with progressive dropout
+        # Encoder blocks with progressive dropout (5 blocks)
         self.block1 = self._make_conv_block(1, c1)
         self.block2 = self._make_conv_block(c1, c2)
         self.block3 = self._make_conv_block(c2, c3, dropout=0.05)
@@ -138,17 +139,12 @@ class CNN(BaseModel):
         self.adaptive_pool = self._AdaptivePool(1)
         
         # Compute flattened feature size (1 element per channel after global pooling)
-        flat_size = c5  # 256 channels × 1 spatial element
+        flat_size = c5  # 512 channels × 1 spatial element
         
-        # Regression head
+        # Regression head: 512 → 256 → 128 → 64 → out_size
         self.head = nn.Sequential(
             nn.Dropout(dropout_rate),
-            nn.Linear(flat_size, 512),
-            nn.LayerNorm(512),
-            nn.LeakyReLU(0.01, inplace=True),
-            
-            nn.Dropout(dropout_rate),
-            nn.Linear(512, 256),
+            nn.Linear(flat_size, 256),
             nn.LayerNorm(256),
             nn.LeakyReLU(0.01, inplace=True),
             
@@ -157,7 +153,13 @@ class CNN(BaseModel):
             nn.LayerNorm(128),
             nn.LeakyReLU(0.01, inplace=True),
             
-            nn.Linear(128, out_size)
+            nn.Dropout(dropout_rate),
+            nn.Linear(128, 64),
+            nn.LayerNorm(64),
+            nn.LeakyReLU(0.01, inplace=True),
+            
+            nn.Dropout(dropout_rate),
+            nn.Linear(64, out_size)
         )
     
     @staticmethod
@@ -222,7 +224,7 @@ class CNN(BaseModel):
         Returns:
             Output tensor of shape (B, out_size)
         """
-        # Encoder
+        # Encoder (5 blocks)
         x = self.block1(x)
         x = self.block2(x)
         x = self.block3(x)
@@ -240,7 +242,7 @@ class CNN(BaseModel):
     def get_default_config(cls) -> Dict[str, Any]:
         """Return default configuration for CNN."""
         return {
-            "base_channels": 16,
+            "base_channels": 32,
             "dropout_rate": 0.1
         }
     

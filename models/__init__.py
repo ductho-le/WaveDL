@@ -48,14 +48,29 @@ from models.base import BaseModel
 
 # Import model implementations (triggers registration via decorators)
 from models.cnn import CNN
+from models.resnet import ResNet18, ResNet34, ResNet50
+from models.efficientnet import EfficientNetB0, EfficientNetB1, EfficientNetB2
+from models.vit import ViTTiny, ViTSmall, ViTBase_
+from models.convnext import ConvNeXtTiny, ConvNeXtSmall, ConvNeXtBase_
+from models.densenet import DenseNet121, DenseNet169
+from models.unet import UNet, UNetRegression
 
 # Export public API
 __all__ = [
+    # Registry
     "MODEL_REGISTRY",
     "register_model", 
     "get_model",
     "list_models",
     "build_model",
+    # Base class
     "BaseModel",
+    # Models
     "CNN",
+    "ResNet18", "ResNet34", "ResNet50",
+    "EfficientNetB0", "EfficientNetB1", "EfficientNetB2",
+    "ViTTiny", "ViTSmall", "ViTBase_",
+    "ConvNeXtTiny", "ConvNeXtSmall", "ConvNeXtBase_",
+    "DenseNet121", "DenseNet169",
+    "UNet", "UNetRegression",
 ]

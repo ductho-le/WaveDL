@@ -2,10 +2,10 @@
 
 <img src="logos/wavedl_logo.png" alt="WaveDL Logo" width="500">
 
-### A Scalable Deep Learning Framework for Regression Problems in Ultrasonic Non-Destructive Evaluation
+### A Scalable Deep Learning Framework for Wave-Based Inverse Problems
 
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg?style=plastic&logo=python&logoColor=white)](https://www.python.org/downloads/)
-[![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-ee4c2c.svg?style=plastic&logo=pytorch&logoColor=white)](https://pytorch.org/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg?style=plastic&logo=python&logoColor=yellow)](https://www.python.org/downloads/)
+[![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-ee4c2c.svg?style=plastic&logo=pytorch)](https://pytorch.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=plastic)](LICENSE)
 [![Accelerate](https://img.shields.io/badge/🤗_Accelerate-Enabled-yellow.svg?style=plastic)](https://huggingface.co/docs/accelerate/)
 
@@ -26,7 +26,7 @@
 
 ## 💡 What is WaveDL?
 
-WaveDL is a **deep learning framework** built for **regression problems in Ultrasonic Non-Destructive Evaluation (NDE) and Structural Health Monitoring (SHM)**. It provides a robust, scalable training pipeline for mapping multi-dimensional data (1D/2D/3D) to physical quantities.
+WaveDL is a **deep learning framework** built for **wave-based inverse problems** — from ultrasonic NDE and geophysics to biomedical tissue characterization. It provides a robust, scalable training pipeline for mapping multi-dimensional data (1D/2D/3D) to physical quantities.
 
 ```
 Input: Waveforms, spectrograms, B-scans, dispersion curves, ...
@@ -227,92 +227,43 @@ python test.py --checkpoint <checkpoint_folder> --data_path <test_data> \
 
 ```
 WaveDL/
-├── train.py                        # Training entry point
-├── test.py                         # Testing & inference script
-├── run_training.sh                 # HPC helper script (recommended)
-├── requirements.txt                # Python dependencies
-├── pytest.ini                      # Pytest (unit test) configuration
-├── CONTRIBUTING.md                 # Contribution guidelines
-├── CODE_OF_CONDUCT.md              # Community standards
-├── CITATION.cff                    # Citation metadata
+├── train.py                   # Training entry point
+├── test.py                    # Testing & inference script
+├── run_training.sh            # HPC helper script (recommended)
+├── requirements.txt           # Python dependencies
+├── pytest.ini                 # Pytest (unit test) configuration
+├── CONTRIBUTING.md            # Contribution guidelines
+├── CODE_OF_CONDUCT.md         # Community standards
+├── CITATION.cff               # Citation metadata
 │
 ├── models/
-│   ├── __init__.py                 # Model exports
-│   ├── registry.py                 # Model factory (@register_model)
-│   ├── base.py                     # Abstract base class
-│   ├── cnn.py                      # Baseline CNN architecture
-│   └── _template.py                # Template for new models
+│   ├── __init__.py            # Model exports
+│   ├── registry.py            # Model factory (@register_model)
+│   ├── base.py                # Abstract base class
+│   ├── cnn.py                 # Baseline CNN architecture
+│   ├── resnet.py              # ResNet-18/34/50 (1D/2D/3D)
+│   ├── efficientnet.py        # EfficientNet-B0/B1/B2 (2D, pretrained)
+│   ├── vit.py                 # Vision Transformer (1D/2D)
+│   ├── convnext.py            # ConvNeXt (1D/2D/3D)
+│   ├── densenet.py            # DenseNet-121/169 (1D/2D/3D)
+│   ├── unet.py                # U-Net / U-Net Regression (1D/2D/3D)
+│   └── _template.py           # Template for new models
 │
 ├── utils/
-│   ├── __init__.py                 # Utility exports
-│   ├── data.py                     # Memory-mapped data pipeline
-│   ├── metrics.py                  # R², Pearson, visualization
-│   ├── distributed.py              # DDP synchronization utils
-│   ├── losses.py                   # Loss function factory
-│   ├── optimizers.py               # Optimizer factory
-│   ├── schedulers.py               # LR scheduler factory
-│   ├── cross_validation.py         # K-fold cross-validation
-│   └── config.py                   # YAML configuration support
+│   ├── __init__.py            # Utility exports
+│   ├── data.py                # Memory-mapped data pipeline
+│   ├── metrics.py             # R², Pearson, visualization
+│   ├── distributed.py         # DDP synchronization utils
+│   ├── losses.py              # Loss function factory
+│   ├── optimizers.py          # Optimizer factory
+│   ├── schedulers.py          # LR scheduler factory
+│   ├── cross_validation.py    # K-fold cross-validation
+│   └── config.py              # YAML configuration support
 │
-├── configs/                        # Example configuration files
-│   ├── default.yaml                # Standard training setup
-│   ├── huber_robust.yaml           # Robust training for noisy data
-│   └── fast_convergence.yaml       # OneCycleLR fast training
-│
-├── examples/                       # Ready-to-run example with pre-trained model
-│   └── plate_characterization/     # Complete example: plate thickness & elasticity
-│       ├── best_checkpoint/        # Pre-trained CNN checkpoint
-│       ├── Test_data_100.mat       # Sample test data (100 samples)
-│       ├── model.onnx              # Exported ONNX model
-│       ├── test_results/           # Example inference output
-│       └── WaveDL_ONNX_Inference.m # MATLAB inference script
-│
-└── unit_tests/                     # Unit test suite (pytest)
-    ├── conftest.py                 # Pytest fixtures
-    ├── test_architecture.py        # Model architecture tests
-    ├── test_data.py                # Data pipeline tests
-    ├── test_metrics.py             # Metrics calculation tests
-    ├── test_registry.py            # Model registry tests
-    ├── test_distributed.py         # DDP utilities tests
-    ├── test_integration.py         # End-to-end tests
-    ├── test_losses.py              # Loss function tests
-    ├── test_optimizers.py          # Optimizer tests
-    └── test_schedulers.py          # Scheduler tests
+├── configs/                   # YAML config template (all options documented)
+├── examples/                  # Ready-to-run example with pre-trained model
+└── unit_tests/                # Pytest test suite (420 tests)
 ```
-
----
-
-## 🧠 Adding Custom Models
-
-**Step 1:** Create your model
-
-```python
-from models.base import BaseModel
-from models.registry import register_model
-
-@register_model("my_transformer")
-class MyTransformer(BaseModel):
-    def __init__(self, in_shape, out_size, **kwargs):
-        super().__init__(in_shape, out_size)
-        # Your architecture here
-    
-    def forward(self, x):
-        # x: (B, 1, H, W) → output: (B, out_size)
-        return output
-```
-
-**Step 2:** Import in `models/__init__.py`
-
-```python
-from models.my_transformer import MyTransformer
-```
-
-**Step 3:** Train
-
-```bash
-accelerate launch train.py --model my_transformer --wandb
-```
-
 ---
 
 ## ⚙️ Configuration
@@ -328,6 +279,37 @@ accelerate launch train.py --model my_transformer --wandb
 > # Using accelerate launch directly
 > accelerate launch train.py --model cnn --batch_size 256 --lr 5e-4 --compile
 > ```
+
+<details>
+<summary><b>Available Models</b> — 21 pre-built architectures</summary>
+
+| Model | Best For | Params (2D) | Dimensionality |
+|-------|----------|-------------|----------------|
+| `cnn` | Baseline, lightweight | ~1M | 1D/2D/3D |
+| `resnet18` | Fast training, smaller datasets | ~11M | 1D/2D/3D |
+| `resnet34` | Balanced performance | ~21M | 1D/2D/3D |
+| `resnet50` | High capacity, complex patterns | ~25M | 1D/2D/3D |
+| `resnet18_pretrained` | **Transfer learning** ⭐ | ~11M | 2D only |
+| `resnet50_pretrained` | **Transfer learning** ⭐ | ~25M | 2D only |
+| `efficientnet_b0` | Efficient, **pretrained** ⭐ | ~5M | 2D only |
+| `efficientnet_b1` | Slightly larger, pretrained | ~8M | 2D only |
+| `efficientnet_b2` | Best efficiency/accuracy | ~9M | 2D only |
+| `vit_tiny` | Transformer, small datasets | ~6M | 1D/2D |
+| `vit_small` | Transformer, balanced | ~22M | 1D/2D |
+| `vit_base` | Transformer, high capacity | ~86M | 1D/2D |
+| `convnext_tiny` | Modern CNN, transformer-inspired | ~28M | 1D/2D/3D |
+| `convnext_tiny_pretrained` | **Transfer learning** ⭐ | ~28M | 2D only |
+| `convnext_small` | Modern CNN, balanced | ~50M | 1D/2D/3D |
+| `convnext_base` | Modern CNN, high capacity | ~89M | 1D/2D/3D |
+| `densenet121` | Feature reuse, small data | ~8M | 1D/2D/3D |
+| `densenet121_pretrained` | **Transfer learning** ⭐ | ~8M | 2D only |
+| `densenet169` | Deeper DenseNet | ~14M | 1D/2D/3D |
+| `unet` | Spatial output (velocity fields) | ~31M | 1D/2D/3D |
+| `unet_regression` | Multi-scale features for regression | ~31M | 1D/2D/3D |
+
+> ⭐ **Pretrained models** use ImageNet weights for transfer learning.
+
+</details>
 
 <details>
 <summary><b>Training Parameters</b></summary>
@@ -365,9 +347,10 @@ accelerate launch train.py --model my_transformer --wandb
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `--compile` | `False` | Enable `torch.compile` |
-| `--precision` | `bf16` | Mixed precision mode |
+| `--precision` | `bf16` | Mixed precision mode (`bf16`, `fp16`, `no`) |
 | `--wandb` | `False` | Enable W&B logging |
 | `--project_name` | `DL-Training` | W&B project name |
+| `--run_name` | `None` | W&B run name (auto-generated if not set) |
 
 </details>
 
@@ -656,7 +639,7 @@ The `examples/` folder contains a **complete, ready-to-run example** for **mater
 |-----------|------|-------------|
 | *h* | mm | Plate thickness |
 | √(*E*/ρ) | km/s | Square root of Young's modulus over density |
-| *μ* | — | Poisson's ratio |
+| *ν* | — | Poisson's ratio |
 
 > [!NOTE]
 > This example is based on our paper at **SPIE Smart Structures + NDE 2026**: [*"Deep learning-based ultrasonic assessment of plate thickness and elasticity"*](https://spie.org/spie-smart-structures-and-materials-nondestructive-evaluation/presentation/Deep-learningbased-ultrasonic-assessment-of-plate-thickness-and-elasticity/13951-4) (Paper 13951-4, to appear).
@@ -665,14 +648,14 @@ The `examples/` folder contains a **complete, ready-to-run example** for **mater
 
 ```bash
 # Run inference on the example data
-python test.py --checkpoint ./examples/plate_characterization/best_checkpoint \
-  --data_path ./examples/plate_characterization/Test_data_100.mat \
-  --plot --save_predictions --output_dir ./examples/plate_characterization/test_results
+python test.py --checkpoint ./examples/elastic_cnn_example/best_checkpoint \
+  --data_path ./examples/elastic_cnn_example/Test_data_100.mat \
+  --plot --save_predictions --output_dir ./examples/elastic_cnn_example/test_results
 
 # Export to ONNX (already included as model.onnx)
-python test.py --checkpoint ./examples/plate_characterization/best_checkpoint \
-  --data_path ./examples/plate_characterization/Test_data_100.mat \
-  --export onnx --export_path ./examples/plate_characterization/model.onnx
+python test.py --checkpoint ./examples/elastic_cnn_example/best_checkpoint \
+  --data_path ./examples/elastic_cnn_example/Test_data_100.mat \
+  --export onnx --export_path ./examples/elastic_cnn_example/model.onnx
 ```
 
 **What's Included:**
@@ -688,14 +671,16 @@ python test.py --checkpoint ./examples/plate_characterization/best_checkpoint \
 **Example Results:**
 
 <p align="center">
-  <img src="examples/plate_characterization/test_results/test_scatter_all.png" alt="Example scatter plot showing R²=0.99" width="900">
+  <img src="examples/elastic_cnn_example/test_results/test_scatter_all.png" alt="Example scatter plot showing R²=0.99" width="900">
 </p>
 
 ---
 
-## 🔬 Broader NDE/SHM Applications
+## 🔬 Broader Applications
 
-Beyond the material characterization example above, the WaveDL pipeline can be adapted for a wide range of NDE/SHM regression problems:
+Beyond the material characterization example above, the WaveDL pipeline can be adapted for a wide range of **wave-based inverse problems** across multiple domains:
+
+### 🏗️ Non-Destructive Evaluation & Structural Health Monitoring
 
 | Application | Input | Output |
 |-------------|-------|--------|
@@ -704,7 +689,24 @@ Beyond the material characterization example above, the WaveDL pipeline can be a
 | Weld Quality Assessment | Phased array images, TOFD, ... | Porosity %, penetration depth, ... |
 | RUL Prediction | Acoustic emission (AE), vibration spectra, ... | Cycles to failure, ... |
 | Damage Localization | Wavefield images, DAS/DVS data, ... | Damage coordinates (x, y, z) |
-| *...and more* | | |
+
+### 🌍 Geophysics & Seismology
+
+| Application | Input | Output |
+|-------------|-------|--------|
+| Seismic Inversion | Shot gathers, seismograms, ... | Velocity models, density profiles, ... |
+| Subsurface Characterization | Surface wave dispersion, receiver functions, ... | Layer thickness, shear modulus, ... |
+| Earthquake Source Parameters | Waveforms, spectrograms, ... | Magnitude, depth, focal mechanism, ... |
+| Reservoir Characterization | Reflection seismic, AVO attributes, ... | Porosity, fluid saturation, ... |
+
+### 🩺 Biomedical Ultrasound & Elastography
+
+| Application | Input | Output |
+|-------------|-------|--------|
+| Tissue Elastography | Shear wave data, strain images, ... | Shear modulus, Young's modulus, ... |
+| Liver Fibrosis Staging | Elastography images, US RF data, ... | Stiffness (kPa), fibrosis score, ... |
+| Tumor Characterization | B-mode + elastography, ARFI data, ... | Lesion stiffness, size, ... |
+| Bone QUS | Axial-transmission signals, ... | Porosity, cortical thickness, elastic modulus ... |
 
 > [!NOTE]
 > Adapting WaveDL to these applications requires preparing your own dataset and choosing a suitable model architecture to match your input dimensionality.
@@ -727,7 +729,7 @@ If you use WaveDL in your research, please cite:
 ```bibtex
 @software{le2025wavedl,
   author = {Le, Ductho},
-  title = {{WaveDL}: A Scalable Deep Learning Framework for Regression Problems in Ultrasonic Non-Destructive Evaluation},
+  title = {{WaveDL}: A Scalable Deep Learning Framework for Wave-Based Inverse Problems},
   year = {2025},
   url = {https://github.com/ductho-le/WaveDL},
   version = {1.0.0}

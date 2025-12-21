@@ -720,12 +720,30 @@ def prepare_data(
     # ==========================================================================
     # PHASE 1: DATA GENERATION (Rank 0 Only)
     # ==========================================================================
-    # Check cache existence on all ranks first (fast, no synchronization needed)
+    # Check cache existence and validity (data path must match)
     cache_exists = (
         os.path.exists(CACHE_FILE) and 
         os.path.exists(SCALER_FILE) and 
         os.path.exists(META_FILE)
     )
+    
+    # Validate cache matches current data_path (prevents stale cache corruption)
+    if cache_exists:
+        try:
+            with open(META_FILE, 'rb') as f:
+                meta = pickle.load(f)
+            cached_data_path = meta.get('data_path', None)
+            if cached_data_path != os.path.abspath(args.data_path):
+                if accelerator.is_main_process:
+                    logger.warning(
+                        f"⚠️  Cache was created from different data file!\n"
+                        f"   Cached: {cached_data_path}\n"
+                        f"   Current: {os.path.abspath(args.data_path)}\n"
+                        f"   Invalidating cache and regenerating..."
+                    )
+                cache_exists = False
+        except Exception:
+            cache_exists = False
     
     if not cache_exists:
         if accelerator.is_main_process:
@@ -780,9 +798,13 @@ def prepare_data(
             dim_type = dim_names.get(len(spatial_shape), f"{len(spatial_shape)}D")
             logger.info(f"   Shape Detected: {full_shape} [{dim_type}] | Output Dim: {out_dim}")
             
-            # Save metadata
+            # Save metadata (including data path for cache validation)
             with open(META_FILE, 'wb') as f:
-                pickle.dump({'shape': full_shape, 'out_dim': out_dim}, f)
+                pickle.dump({
+                    'shape': full_shape, 
+                    'out_dim': out_dim,
+                    'data_path': os.path.abspath(args.data_path)
+                }, f)
             
             # Create memmap cache
             if not os.path.exists(CACHE_FILE):
@@ -893,6 +915,11 @@ def prepare_data(
     # Load targets only (memory-efficient - avoids loading large input arrays)
     # This is critical for HPC environments with memory constraints during DDP
     outp = load_outputs_only(args.data_path)
+    
+    # Ensure 2D for StandardScaler: (N,) -> (N, 1)
+    if outp.ndim == 1:
+        outp = outp.reshape(-1, 1)
+    
     y_scaled = scaler.transform(outp).astype(np.float32)
     y_tensor = torch.tensor(y_scaled)
     

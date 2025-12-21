@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 type: software
-title: "WaveDL: A Scalable Deep Learning Framework for Regression Problems in Ultrasonic Non-Destructive Evaluation"
+title: "WaveDL: A Scalable Deep Learning Framework for Wave-Based Inverse Problems"
 version: 1.0.0
 date-released: 2025-12-07
 url: "https://github.com/ductho-le/WaveDL"
@@ -14,16 +14,19 @@ authors:
     affiliation: "University of Alberta"
 keywords:
   - deep learning
+  - inverse problems
+  - wave propagation
   - non-destructive evaluation
   - ultrasonic testing
-  - guided waves
+  - geophysics
+  - biomedical imaging
   - material characterization
   - regression
   - PyTorch
   - distributed training
 abstract: >-
-  WaveDL is a deep learning framework built for regression problems in 
-  Non-Destructive Evaluation (NDE) and Structural Health Monitoring (SHM). 
-  It provides a robust, scalable training pipeline for mapping multi-dimensional 
-  data to physical quantities, with support for memory-mapped datasets, 
-  multi-GPU distributed training, and HPC deployment.
+  WaveDL is a deep learning framework built for wave-based inverse problems —
+  from ultrasonic NDE and geophysics to biomedical 
+  tissue characterization. It provides a robust, scalable training pipeline for 
+  mapping multi-dimensional data to physical quantities, with support for 
+  memory-mapped datasets, multi-GPU distributed training, and HPC deployment.
