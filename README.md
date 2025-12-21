@@ -87,9 +87,9 @@ Multi-GPU training without the pain:
 **📊 Publish-Ready Output**
 
 Results go straight to your paper:
-- MAE in physical units
-- Per-parameter breakdown
-- Auto-generated scatter plots
+- 11 diagnostic plots with LaTeX styling
+- Multi-format export (PNG, PDF, SVG, ...)
+- MAE in physical units per parameter
 
 </td>
 </tr>

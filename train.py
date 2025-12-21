@@ -816,16 +816,17 @@ def main():
                 logger.info(f"✅ Training completed after {args.epochs} epochs")
     
     finally:
-        # Generate training curves plot
+        # Generate training curves plot (PNG + SVG)
         if accelerator.is_main_process and len(history) > 0:
             try:
                 fig = create_training_curves(history, show_lr=True)
-                fig.savefig(
-                    os.path.join(args.output_dir, "training_curves.png"),
-                    dpi=FIGURE_DPI, bbox_inches='tight'
-                )
+                for fmt in ['png', 'svg']:
+                    fig.savefig(
+                        os.path.join(args.output_dir, f"training_curves.{fmt}"),
+                        dpi=FIGURE_DPI, bbox_inches='tight'
+                    )
                 plt.close(fig)
-                logger.info(f"✔ Saved: training_curves.png")
+                logger.info(f"✔ Saved: training_curves.png, training_curves.svg")
             except Exception as e:
                 logger.warning(f"Could not generate training curves: {e}")
         
