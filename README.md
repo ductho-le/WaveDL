@@ -8,7 +8,7 @@
 [![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-ee4c2c.svg?style=plastic&logo=pytorch)](https://pytorch.org/)
 [![Accelerate](https://img.shields.io/badge/🤗_Accelerate-Enabled-yellow.svg?style=plastic)](https://huggingface.co/docs/accelerate/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=plastic)](LICENSE)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18012338.svg)](https://doi.org/10.5281/zenodo.18012338)
+[![DOI](https://img.shields.io/badge/DOI-10.5281/zenodo.18012338-blue.svg?style=plastic)](https://doi.org/10.5281/zenodo.18012338)
 
 **Production-ready • Multi-GPU DDP • Memory-Efficient • Plug-and-Play**
 
