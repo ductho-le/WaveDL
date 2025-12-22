@@ -6,8 +6,9 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg?style=plastic&logo=python&logoColor=yellow)](https://www.python.org/downloads/)
 [![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-ee4c2c.svg?style=plastic&logo=pytorch)](https://pytorch.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=plastic)](LICENSE)
 [![Accelerate](https://img.shields.io/badge/🤗_Accelerate-Enabled-yellow.svg?style=plastic)](https://huggingface.co/docs/accelerate/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=plastic)](LICENSE)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18012338.svg)](https://doi.org/10.5281/zenodo.18012338)
 
 **Production-ready • Multi-GPU DDP • Memory-Efficient • Plug-and-Play**
 
@@ -787,10 +788,14 @@ If you use WaveDL in your research, please cite:
   author = {Le, Ductho},
   title = {{WaveDL}: A Scalable Deep Learning Framework for Wave-Based Inverse Problems},
   year = {2025},
-  url = {https://github.com/ductho-le/WaveDL},
-  version = {1.0.0}
+  publisher = {Zenodo},
+  doi = {10.5281/zenodo.18012338},
+  url = {https://doi.org/10.5281/zenodo.18012338}
 }
 ```
+
+Or in APA format:
+> Le, D. (2025). *WaveDL: A Scalable Deep Learning Framework for Wave-Based Inverse Problems*. Zenodo. https://doi.org/10.5281/zenodo.18012338
 
 ---
 

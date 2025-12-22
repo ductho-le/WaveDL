@@ -3,8 +3,9 @@ message: "If you use this software, please cite it as below."
 type: software
 title: "WaveDL: A Scalable Deep Learning Framework for Wave-Based Inverse Problems"
 version: 1.0.0
-date-released: 2025-12-07
-url: "https://github.com/ductho-le/WaveDL"
+date-released: 2025-12-22
+doi: 10.5281/zenodo.18012338
+url: "https://doi.org/10.5281/zenodo.18012338"
 repository-code: "https://github.com/ductho-le/WaveDL"
 license: MIT
 authors:
