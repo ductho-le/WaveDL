@@ -4,12 +4,12 @@
 
 ### A Scalable Deep Learning Framework for Wave-Based Inverse Problems
 
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg?style=plastic&logo=python&logoColor=yellow)](https://www.python.org/downloads/)
-[![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-ee4c2c.svg?style=plastic&logo=pytorch)](https://pytorch.org/)
-[![Accelerate](https://img.shields.io/badge/🤗_Accelerate-Enabled-yellow.svg?style=plastic)](https://huggingface.co/docs/accelerate/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg?style=plastic&logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-ee4c2c.svg?style=plastic&logo=pytorch&logoColor=white)](https://pytorch.org/)
+[![Accelerate](https://img.shields.io/badge/Accelerate-Enabled-yellow.svg?style=plastic&logo=huggingface&logoColor=white)](https://huggingface.co/docs/accelerate/)
 [![Tests](https://img.shields.io/github/actions/workflow/status/ductho-le/WaveDL/test.yml?style=plastic&logo=githubactions&logoColor=white&label=Tests)](https://github.com/ductho-le/WaveDL/actions/workflows/test.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=plastic)](LICENSE)
-[![DOI](https://img.shields.io/badge/DOI-10.5281/zenodo.18012338-blue.svg?style=plastic)](https://doi.org/10.5281/zenodo.18012338)
+[![License: MIT](https://img.shields.io/badge/License-MIT-orange.svg?style=plastic)](LICENSE)
+[![DOI](https://img.shields.io/badge/DOI-10.5281/zenodo.18012338-008080.svg?style=plastic)](https://doi.org/10.5281/zenodo.18012338)
 
 **Production-ready • Multi-GPU DDP • Memory-Efficient • Plug-and-Play**
 
