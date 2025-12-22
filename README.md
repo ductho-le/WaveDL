@@ -483,28 +483,37 @@ Use YAML files for reproducible experiments. CLI arguments can override any conf
 
 ```bash
 # Use a config file
-accelerate launch train.py --config configs/default.yaml --data_path train.npz
+accelerate launch train.py --config configs/config.yaml --data_path train.npz
 
 # Override specific values from config
-accelerate launch train.py --config configs/default.yaml --lr 5e-4 --epochs 500
+accelerate launch train.py --config configs/config.yaml --lr 5e-4 --epochs 500
 ```
 
-**Example config (`configs/default.yaml`):**
+**Example config (`configs/config.yaml`):**
 ```yaml
+# Model & Training
 model: cnn
 batch_size: 128
 lr: 0.001
 epochs: 1000
+patience: 20
+
+# Loss, Optimizer, Scheduler
 loss: mse
 optimizer: adamw
 scheduler: plateau
+
+# Cross-Validation (0 = disabled)
+cv: 0
+
+# Performance
 precision: bf16
+compile: false
+seed: 2025
 ```
 
-**Included configs:**
-- `configs/default.yaml` - Standard training setup
-- `configs/huber_robust.yaml` - Robust training for noisy data
-- `configs/fast_convergence.yaml` - OneCycleLR for quick training
+> [!TIP]
+> See [`configs/config.yaml`](configs/config.yaml) for the complete template with all available options documented.
 
 </details>
 
