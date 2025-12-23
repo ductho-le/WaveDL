@@ -16,6 +16,7 @@
 [Getting Started](#-getting-started) •
 [Documentation](#-documentation) •
 [Examples](#-examples) •
+[Discussions](https://github.com/ductho-le/WaveDL/discussions) •
 [Citation](#-citation)
 
 ---
