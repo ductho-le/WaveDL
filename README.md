@@ -10,6 +10,7 @@
 [![Tests](https://img.shields.io/github/actions/workflow/status/ductho-le/WaveDL/test.yml?branch=main&style=plastic&logo=githubactions&logoColor=white&label=Tests)](https://github.com/ductho-le/WaveDL/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-orange.svg?style=plastic)](LICENSE)
 [![DOI](https://img.shields.io/badge/DOI-10.5281/zenodo.18012338-008080.svg?style=plastic)](https://doi.org/10.5281/zenodo.18012338)
+[![Try it on Colab](https://img.shields.io/badge/Try_it_on_Colab-8E44AD?style=plastic&logo=googlecolab&logoColor=white)](https://colab.research.google.com/github/ductho-le/WaveDL/blob/main/notebooks/demo.ipynb)
 
 **Production-ready • Multi-GPU DDP • Memory-Efficient • Plug-and-Play**
 
@@ -266,6 +267,7 @@ WaveDL/
 │
 ├── configs/                   # YAML config template (all options documented)
 ├── examples/                  # Ready-to-run example with pre-trained model
+├── notebooks/                 # Jupyter notebooks (Colab demo)
 └── unit_tests/                # Pytest test suite (420 tests)
 ```
 ---
@@ -740,6 +742,12 @@ python test.py --checkpoint ./examples/elastic_cnn_example/best_checkpoint \
 <p align="center">
   <img src="examples/elastic_cnn_example/test_results/error_boxplot.png" alt="Error box plot" width="400"><br>
   <em>Figure 10: Error distribution summary (median, quartiles, outliers)</em>
+</p>
+
+<p align="center">
+  <a href="https://colab.research.google.com/github/ductho-le/WaveDL/blob/main/notebooks/demo.ipynb">
+    <img src="https://img.shields.io/badge/Try_it_on_Colab-F9AB00?style=for-the-badge&logo=googlecolab&logoColor=white" alt="Open In Colab">
+  </a>
 </p>
 
 ---
