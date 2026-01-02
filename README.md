@@ -10,16 +10,20 @@
 <br>
 [![Tests](https://img.shields.io/github/actions/workflow/status/ductho-le/WaveDL/test.yml?branch=main&style=plastic&logo=githubactions&logoColor=white&label=Tests)](https://github.com/ductho-le/WaveDL/actions/workflows/test.yml)
 [![Lint](https://img.shields.io/github/actions/workflow/status/ductho-le/WaveDL/lint.yml?branch=main&style=plastic&logo=ruff&logoColor=white&label=Lint)](https://github.com/ductho-le/WaveDL/actions/workflows/lint.yml)
+[![CodeQL](https://img.shields.io/github/actions/workflow/status/ductho-le/WaveDL/codeql.yml?branch=main&style=plastic&logo=github&logoColor=white&label=Security)](https://github.com/ductho-le/WaveDL/actions/workflows/codeql.yml)
 [![Try it on Colab](https://img.shields.io/badge/Try_it_on_Colab-8E44AD?style=plastic&logo=googlecolab&logoColor=white)](https://colab.research.google.com/github/ductho-le/WaveDL/blob/main/notebooks/demo.ipynb)
 <br>
 [![License: MIT](https://img.shields.io/badge/License-MIT-orange.svg?style=plastic)](LICENSE)
 [![DOI](https://img.shields.io/badge/DOI-10.5281/zenodo.18012338-008080.svg?style=plastic)](https://doi.org/10.5281/zenodo.18012338)
+[![Issues](https://img.shields.io/github/issues/ductho-le/WaveDL?style=plastic&logo=github)](https://github.com/ductho-le/WaveDL/issues)
+[![Pull Requests](https://img.shields.io/github/issues-pr/ductho-le/WaveDL?style=plastic&logo=github)](https://github.com/ductho-le/WaveDL/pulls)
 
 **Production-ready • Multi-GPU DDP • Memory-Efficient • Plug-and-Play**
 
 [Getting Started](#-getting-started) •
 [Documentation](#-documentation) •
 [Examples](#-examples) •
+[Troubleshooting](TROUBLESHOOTING.md) •
 [Discussions](https://github.com/ductho-le/WaveDL/discussions) •
 [Citation](#-citation)
 
@@ -874,8 +878,37 @@ Beyond the material characterization example above, the WaveDL pipeline can be a
 
 | Resource | Description |
 |----------|-------------|
+| [README](README.md) | Complete framework documentation |
+| [Troubleshooting Guide](TROUBLESHOOTING.md) | Solutions to common issues |
+| [Contributing Guidelines](.github/CONTRIBUTING.md) | How to contribute to WaveDL |
+| [Code of Conduct](.github/CODE_OF_CONDUCT.md) | Community guidelines |
+| [Security Policy](SECURITY.md) | Vulnerability reporting process |
 | Technical Paper | In-depth framework description *(coming soon)* |
 | [`_template.py`](models/_template.py) | Template for new architectures |
+
+---
+
+## 🤝 Contributing
+
+We welcome contributions! Whether it's:
+- 🐛 Bug fixes
+- ✨ New features or models
+- 📝 Documentation improvements
+- 🧪 Test coverage
+- 💡 Ideas and suggestions
+
+Please read our [Contributing Guidelines](.github/CONTRIBUTING.md) to get started.
+
+**Quick Start for Contributors:**
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Install dev dependencies (`pip install -e ".[dev]"`)
+4. Set up pre-commit hooks (`pre-commit install`)
+5. Make your changes and commit (`git commit -m 'Add amazing feature'`)
+6. Push to your branch (`git push origin feature/amazing-feature`)
+7. Open a Pull Request
+
+**Found a security vulnerability?** Please report it privately via [SECURITY.md](SECURITY.md).
 
 ---
 

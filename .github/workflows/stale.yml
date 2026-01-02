@@ -1,0 +1,93 @@
+# Stale Issue and PR Management
+# ==============================
+# Automatically manages stale issues and pull requests.
+#
+# Features:
+#   - Marks issues/PRs as stale after 90 days of inactivity
+#   - Closes stale items after 14 additional days
+#   - Can be disabled by adding "never-stale" label
+#   - Only runs on issues/PRs without recent activity
+#
+# This helps keep the issue tracker clean and focused.
+
+name: Stale Issue Management
+
+on:
+  schedule:
+    # Run daily at 00:30 UTC
+    - cron: '30 0 * * *'
+  workflow_dispatch:  # Allow manual runs
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark/Close Stale Issues and PRs
+        uses: actions/stale@v9
+        with:
+          # General settings
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          
+          # Stale issue settings
+          stale-issue-message: |
+            This issue has been automatically marked as stale because it has not had recent activity. 
+            It will be closed in 14 days if no further activity occurs.
+            
+            If this issue is still relevant, please:
+            - Add a comment to keep it open
+            - Add the `never-stale` label to prevent automatic closure
+            
+            Thank you for your contributions to WaveDL!
+          
+          close-issue-message: |
+            This issue has been automatically closed due to inactivity.
+            
+            If you believe this issue is still relevant, please reopen it or create a new issue 
+            with updated information.
+            
+            Thank you for your contributions to WaveDL!
+          
+          # Stale PR settings  
+          stale-pr-message: |
+            This pull request has been automatically marked as stale because it has not had recent activity.
+            It will be closed in 14 days if no further activity occurs.
+            
+            If you're still working on this PR, please:
+            - Add a comment to keep it open
+            - Push new commits
+            - Add the `never-stale` label to prevent automatic closure
+            
+            Thank you for your contributions to WaveDL!
+          
+          close-pr-message: |
+            This pull request has been automatically closed due to inactivity.
+            
+            If you'd like to continue this work, please reopen the PR or create a new one.
+            
+            Thank you for your contributions to WaveDL!
+          
+          # Timing settings (in days)
+          days-before-stale: 90  # Mark as stale after 90 days
+          days-before-close: 14  # Close 14 days after marked stale
+          
+          # Labels
+          stale-issue-label: 'stale'
+          stale-pr-label: 'stale'
+          exempt-issue-labels: 'never-stale,pinned,security,roadmap'
+          exempt-pr-labels: 'never-stale,work-in-progress'
+          
+          # Only process items without recent comments
+          exempt-milestones: true
+          
+          # Rate limiting
+          operations-per-run: 100
+          
+          # Don't mark issues/PRs as stale if they have these labels
+          exempt-all-milestones: true
+          
+          # Enable debug logging (set to true for troubleshooting)
+          debug-only: false

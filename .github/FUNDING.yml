@@ -1,0 +1,23 @@
+# Funding Configuration
+# ======================
+# Displays sponsor button in the repository with links to funding platforms.
+#
+# Uncomment and configure the platforms you want to use:
+
+# GitHub Sponsors
+# github: [ductho-le]
+
+# Open Collective
+# open_collective: wavedl
+
+# Patreon
+# patreon: username
+
+# Ko-fi
+# ko_fi: username
+
+# Custom URLs
+# custom: ['https://example.com/donate']
+
+# Note: This file is currently configured as a template.
+# Repository maintainers can uncomment and configure relevant funding options.
