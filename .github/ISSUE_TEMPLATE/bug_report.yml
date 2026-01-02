@@ -1,0 +1,137 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in WaveDL
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out this form as completely as possible.
+        
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight Checklist
+      description: Please ensure you've completed these steps before submitting
+      options:
+        - label: I have searched existing issues to ensure this bug hasn't been reported before
+          required: true
+        - label: I am using the latest version of WaveDL from the main branch
+          required: true
+        - label: I have read the [documentation](https://github.com/ductho-le/WaveDL#readme)
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is
+      placeholder: Tell us what happened
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Detailed steps to reproduce the behavior
+      placeholder: |
+        1. Install WaveDL with '...'
+        2. Run command '....'
+        3. Use data file '....'
+        4. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+      placeholder: I expected...
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened? Include error messages, stack traces, or unexpected output
+      placeholder: |
+        Error message:
+        ```
+        Paste error here
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Please provide details about your environment
+      value: |
+        - WaveDL Version: 
+        - Python Version: 
+        - PyTorch Version: 
+        - OS: 
+        - CUDA Version (if using GPU): 
+        - GPU Model (if applicable): 
+        - Installation Method: [pip install -e . / pip install -e .[all] / other]
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: If relevant, paste your training command or config file
+      placeholder: |
+        ```bash
+        accelerate launch train.py --model cnn --data_path data.npz --batch_size 128
+        ```
+        or
+        ```yaml
+        # config.yaml content
+        ```
+      render: shell
+
+  - type: textarea
+    id: data
+    attributes:
+      label: Data Information
+      description: Information about your dataset (if relevant)
+      placeholder: |
+        - Data format: [NPZ / HDF5 / MAT]
+        - Input shape: 
+        - Output shape: 
+        - Dataset size: 
+        - Any preprocessing: 
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs
+      description: Please paste any relevant log output
+      placeholder: |
+        ```
+        Paste logs here
+        ```
+      render: shell
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Add any other context, screenshots, or information about the problem
+      placeholder: Any additional information that might help...
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      description: Would you like to help fix this bug?
+      options:
+        - label: I would be willing to submit a PR to fix this bug
+          required: false

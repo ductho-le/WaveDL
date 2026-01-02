@@ -1,0 +1,130 @@
+name: Question / Help
+description: Ask a question or request help with using WaveDL
+title: "[Question]: "
+labels: ["question", "help wanted"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for your interest in WaveDL! Please fill out this form to get help.
+        
+        **Before asking**: Please check the [documentation](https://github.com/ductho-le/WaveDL#readme) and [discussions](https://github.com/ductho-le/WaveDL/discussions) first.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight Checklist
+      description: Please ensure you've completed these steps
+      options:
+        - label: I have read the [documentation](https://github.com/ductho-le/WaveDL#readme)
+          required: true
+        - label: I have searched [existing issues](https://github.com/ductho-le/WaveDL/issues) and [discussions](https://github.com/ductho-le/WaveDL/discussions)
+          required: true
+        - label: I have tried the [example notebook](https://colab.research.google.com/github/ductho-le/WaveDL/blob/main/notebooks/demo.ipynb)
+          required: false
+
+  - type: dropdown
+    id: topic
+    attributes:
+      label: Topic
+      description: What is your question about?
+      options:
+        - Installation/Setup
+        - Data Preparation
+        - Model Selection
+        - Training Configuration
+        - Multi-GPU/Distributed Training
+        - Inference/Testing
+        - ONNX Export
+        - Hyperparameter Tuning
+        - Results Interpretation
+        - Performance Optimization
+        - Custom Model Implementation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your Question
+      description: What do you need help with?
+      placeholder: I'm trying to... but I'm not sure how to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Provide context about what you're trying to achieve
+      placeholder: |
+        I'm working on [problem/application]...
+        I want to [goal]...
+        I have [data/setup]...
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What Have You Tried?
+      description: Describe what you've already attempted
+      placeholder: |
+        I tried:
+        1. ...
+        2. ...
+        
+        Results: ...
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment (if relevant)
+      description: Your setup information
+      value: |
+        - WaveDL Version: 
+        - Python Version: 
+        - PyTorch Version: 
+        - OS: 
+        - Hardware: 
+      render: markdown
+
+  - type: textarea
+    id: code
+    attributes:
+      label: Code/Command (if applicable)
+      description: Share relevant code or commands
+      placeholder: |
+        ```python
+        # Your code here
+        ```
+        or
+        ```bash
+        # Your command here
+        ```
+      render: shell
+
+  - type: textarea
+    id: data_info
+    attributes:
+      label: Data Information (if relevant)
+      description: Information about your dataset
+      placeholder: |
+        - Data format: 
+        - Input shape: 
+        - Output shape: 
+        - Dataset size: 
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Information
+      description: Any other relevant information, screenshots, or error messages
+      placeholder: |
+        Error message (if any):
+        ```
+        Paste error here
+        ```
+        
+        Additional context: ...

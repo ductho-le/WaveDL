@@ -1,0 +1,68 @@
+# Dependabot Configuration
+# =========================
+# Automatically checks for dependency updates and creates pull requests.
+#
+# Features:
+#   - Daily checks for Python (pip) dependencies
+#   - Weekly checks for GitHub Actions updates
+#   - Semantic versioning constraints
+#   - Grouped updates for patch/minor versions
+#
+# Docs: https://docs.github.com/en/code-security/dependabot
+
+version: 2
+updates:
+  # Python dependencies from pyproject.toml
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "03:00"
+      timezone: "UTC"
+    # Group patch and minor updates together
+    groups:
+      production-dependencies:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    # Limit number of open PRs
+    open-pull-requests-limit: 10
+    # Add reviewers (optional - uncomment and add GitHub usernames)
+    # reviewers:
+    #   - "ductho-le"
+    # Add labels to PRs
+    labels:
+      - "dependencies"
+      - "python"
+    # Ignore specific packages (if needed)
+    # ignore:
+    #   - dependency-name: "package-name"
+    #     versions: ["x.x.x"]
+    # Commit message prefix
+    commit-message:
+      prefix: "deps"
+      prefix-development: "deps-dev"
+      include: "scope"
+
+  # GitHub Actions updates
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "03:00"
+      timezone: "UTC"
+    # Group all GitHub Actions updates
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci"
+      include: "scope"

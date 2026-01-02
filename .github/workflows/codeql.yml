@@ -1,0 +1,82 @@
+# CodeQL Security Analysis
+# ========================
+# Analyzes code for security vulnerabilities using GitHub's CodeQL engine.
+#
+# Features:
+#   - Automatic scanning on push and pull requests
+#   - Weekly scheduled scans
+#   - Python security analysis
+#   - SARIF upload for GitHub Security tab
+#
+# Results are visible in the Security tab of the repository.
+
+name: CodeQL Security Analysis
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run at 00:00 UTC every Monday
+    - cron: '0 0 * * 1'
+  workflow_dispatch:  # Allow manual runs
+
+# Cancel in-progress runs when a new commit is pushed
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze Python Code
+    runs-on: ubuntu-latest
+    permissions:
+      # Required for all workflows
+      security-events: write
+      # Required for private repos
+      contents: read
+      actions: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ['python']
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Install dependencies for better analysis
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      # Initialize CodeQL tools for scanning
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          # Use default queries plus security-and-quality queries
+          queries: +security-and-quality
+          # Optional: Specify additional packs
+          # packs: githubsecuritylab/codeql-${{ matrix.language }}-queries
+
+      # Autobuild attempts to build any compiled languages (not needed for Python)
+      # For Python, CodeQL will analyze without building
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      # Perform CodeQL Analysis
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
+          # Upload results to GitHub Security tab
+          upload: true

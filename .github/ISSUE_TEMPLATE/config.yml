@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 GitHub Discussions
+    url: https://github.com/ductho-le/WaveDL/discussions
+    about: Ask questions and discuss ideas with the community
+  - name: 📚 Documentation
+    url: https://github.com/ductho-le/WaveDL#readme
+    about: Read the comprehensive documentation and examples
+  - name: 🚀 Try on Google Colab
+    url: https://colab.research.google.com/github/ductho-le/WaveDL/blob/main/notebooks/demo.ipynb
+    about: Try WaveDL in your browser with our interactive demo
