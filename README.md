@@ -1236,7 +1236,6 @@ If you use WaveDL in your research, please cite our published paper:
   author = {Le, Ductho and Phan, Haidang and Sacchi, Mauricio D. and Le, Lawrence H.},
   title = {{WaveDL}: A Scalable Deep Learning Framework for Wave-Based Inverse Problems},
   journal = {Computer Physics Communications},
-  pages = {110400},
   year = {2026},
   doi = {10.1016/j.cpc.2026.110400},
   url = {https://doi.org/10.1016/j.cpc.2026.110400}
@@ -1244,7 +1243,9 @@ If you use WaveDL in your research, please cite our published paper:
 ```
 
 Or in APA format:
-> Le, D., Phan, H., Sacchi, M. D., & Le, L. H. (2026). WaveDL: A scalable deep learning framework for wave-based inverse problems. *Computer Physics Communications*, Article 110400. https://doi.org/10.1016/j.cpc.2026.110400
+> Le, D., Phan, H., Sacchi, M. D., & Le, L. H. (2026). WaveDL: A scalable deep learning framework for wave-based inverse problems. *Computer Physics Communications*. https://doi.org/10.1016/j.cpc.2026.110400
+
+Additional bibliographic details will be updated when assigned by the journal.
 
 Please also consider to cite other related papers:
 
