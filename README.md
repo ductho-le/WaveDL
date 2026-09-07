@@ -14,7 +14,7 @@
 <br>
 [![Downloads](https://img.shields.io/badge/dynamic/json?url=https://pypistats.org/api/packages/wavedl/recent?period=month%26mirrors=false&query=data.last_month&style=plastic&logo=pypi&logoColor=white&color=9ACD32&label=Downloads&suffix=/month)](https://pypistats.org/packages/wavedl)
 [![License: MIT](https://img.shields.io/badge/License-MIT-orange.svg?style=plastic)](LICENSE)
-[![DOI](https://img.shields.io/badge/DOI-10.5281/zenodo.18012338-008080.svg?style=plastic)](https://doi.org/10.5281/zenodo.18012338)
+[![DOI](https://img.shields.io/badge/DOI-10.1016/j.cpc.2026.110400-008080.svg?style=plastic)](https://doi.org/10.1016/j.cpc.2026.110400)
 
 **Production-ready • Multi-GPU DDP • Memory-Efficient • Plug-and-Play**
 
@@ -1229,20 +1229,22 @@ Beyond the material characterization example above, the WaveDL pipeline can be a
 
 ## 📜 Citation
 
-If you use WaveDL in your research, please cite:
+If you use WaveDL in your research, please cite our published paper:
 
 ```bibtex
-@software{le2026wavedl,
-  author = {Le, Ductho},
+@article{le2026wavedl,
+  author = {Le, Ductho and Phan, Haidang and Sacchi, Mauricio D. and Le, Lawrence H.},
   title = {{WaveDL}: A Scalable Deep Learning Framework for Wave-Based Inverse Problems},
+  journal = {Computer Physics Communications},
+  pages = {110400},
   year = {2026},
-  doi = {10.5281/zenodo.18012338},
-  url = {https://doi.org/10.5281/zenodo.18012338}
+  doi = {10.1016/j.cpc.2026.110400},
+  url = {https://doi.org/10.1016/j.cpc.2026.110400}
 }
 ```
 
 Or in APA format:
-> Le, D. (2026). *WaveDL: A Scalable Deep Learning Framework for Wave-Based Inverse Problems*. https://doi.org/10.5281/zenodo.18012338
+> Le, D., Phan, H., Sacchi, M. D., & Le, L. H. (2026). WaveDL: A scalable deep learning framework for wave-based inverse problems. *Computer Physics Communications*, Article 110400. https://doi.org/10.1016/j.cpc.2026.110400
 
 Please also consider to cite other related papers:
 

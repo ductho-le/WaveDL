@@ -1,11 +1,10 @@
 cff-version: 1.2.0
-message: "If you use this software, please cite it as below."
+message: "If you use this software, please cite the published paper in preferred-citation."
 type: software
 title: "WaveDL: A Scalable Deep Learning Framework for Wave-Based Inverse Problems"
 version: 1.8.1
 date-released: 2026-06-18
-doi: 10.5281/zenodo.18012338
-url: "https://doi.org/10.5281/zenodo.18012338"
+url: "https://github.com/ductho-le/WaveDL"
 repository-code: "https://github.com/ductho-le/WaveDL"
 license: MIT
 authors:
@@ -13,6 +12,28 @@ authors:
     given-names: "Ductho"
     orcid: "https://orcid.org/0000-0002-3073-1416"
     affiliation: "University of Alberta"
+preferred-citation:
+  type: article
+  title: "WaveDL: A Scalable Deep Learning Framework for Wave-Based Inverse Problems"
+  authors:
+    - family-names: "Le"
+      given-names: "Ductho"
+      orcid: "https://orcid.org/0000-0002-3073-1416"
+    - family-names: "Phan"
+      given-names: "Haidang"
+      orcid: "https://orcid.org/0000-0002-7404-268X"
+    - family-names: "Sacchi"
+      given-names: "Mauricio D."
+      orcid: "https://orcid.org/0000-0001-6654-6661"
+    - family-names: "Le"
+      given-names: "Lawrence H."
+      orcid: "https://orcid.org/0000-0003-1907-1258"
+  journal: "Computer Physics Communications"
+  year: 2026
+  month: 9
+  article-number: "110400"
+  doi: 10.1016/j.cpc.2026.110400
+  url: "https://doi.org/10.1016/j.cpc.2026.110400"
 keywords:
   - deep learning
   - inverse problems
