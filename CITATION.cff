@@ -21,7 +21,9 @@ preferred-citation:
       given-names: "Lawrence H."
       orcid: "https://orcid.org/0000-0003-1907-1258"
   journal: "Computer Physics Communications"
+  volume: 329
+  start: 110400
   year: 2026
-  month: 9
+  month: 12
   doi: 10.1016/j.cpc.2026.110400
   url: "https://doi.org/10.1016/j.cpc.2026.110400"
