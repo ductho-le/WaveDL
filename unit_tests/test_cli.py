@@ -236,6 +236,19 @@ class TestTrainParseArgs:
             args, _ = parse_args()
             assert args.list_models is True
 
+    def test_launcher_list_models_shows_output_contract(self, capsys):
+        """The installed CLI should identify the field-only architecture."""
+        from wavedl.launcher import handle_fast_path_args
+
+        with patch.object(sys, "argv", ["wavedl-train", "--list_models"]):
+            assert handle_fast_path_args() == 0
+
+        output = capsys.readouterr().out
+        assert "unet_field" in output
+        assert "dense 2D field" in output
+        assert "cnn" in output
+        assert "vector" in output
+
     def test_output_and_seed_arguments(self):
         """Test output directory and seed argument parsing."""
         from wavedl.train import parse_args
@@ -396,6 +409,7 @@ class TestHPOConstants:
             DEFAULT_MODELS,
             DEFAULT_OPTIMIZERS,
             DEFAULT_SCHEDULERS,
+            DENSE_MODELS,
             MEDIUM_LOSSES,
             MEDIUM_MODELS,
             MEDIUM_OPTIMIZERS,
@@ -407,6 +421,7 @@ class TestHPOConstants:
         )
 
         self.DEFAULT_MODELS = DEFAULT_MODELS
+        self.DENSE_MODELS = DENSE_MODELS
         self.DEFAULT_OPTIMIZERS = DEFAULT_OPTIMIZERS
         self.DEFAULT_SCHEDULERS = DEFAULT_SCHEDULERS
         self.DEFAULT_LOSSES = DEFAULT_LOSSES
@@ -422,6 +437,7 @@ class TestHPOConstants:
     def test_default_lists_not_empty(self):
         """Test that all default lists are populated."""
         assert len(self.DEFAULT_MODELS) > 0
+        assert self.DENSE_MODELS == ["unet_field"]
         assert len(self.DEFAULT_OPTIMIZERS) > 0
         assert len(self.DEFAULT_SCHEDULERS) > 0
         assert len(self.DEFAULT_LOSSES) > 0
@@ -524,6 +540,91 @@ class TestHPOObjective:
         objective = create_objective(args)
         assert callable(objective)
 
+    def test_dense_targets_select_field_models(self):
+        """Dense HPO defaults must not launch trials with vector-only models."""
+        from wavedl.hpo import _resolve_models_for_target
+
+        assert _resolve_models_for_target((2, 32, 48)) == ["unet_field"]
+
+    def test_dense_targets_use_smaller_default_batches(self):
+        """Field sweeps should avoid the vector-oriented batch-size defaults."""
+        from wavedl.hpo import _resolve_batch_sizes
+
+        assert _resolve_batch_sizes((2, 32, 48)) == [1, 2, 4, 8]
+        assert _resolve_batch_sizes((2, 32, 48), [2, 6]) == [2, 6]
+
+    def test_hpo_detects_scalar_field_shape(self, tmp_path):
+        """HPO canonicalizes scalar maps before selecting its model space."""
+        from wavedl.hpo import _detect_target_shape
+
+        data_path = tmp_path / "field.npz"
+        np.savez(
+            data_path,
+            input_train=np.zeros((3, 8, 8), dtype=np.float32),
+            output_train=np.zeros((3, 5, 6), dtype=np.float32),
+        )
+
+        assert _detect_target_shape(str(data_path)) == (1, 5, 6)
+
+    def test_dense_targets_reject_explicit_vector_model(self):
+        """An explicit incompatible search space should fail before trials start."""
+        from wavedl.hpo import _resolve_models_for_target
+
+        with pytest.raises(ValueError, match="incompatible with dense 2D field"):
+            _resolve_models_for_target((1, 32, 48), ["cnn", "unet_field"])
+
+    def test_vector_targets_reject_field_only_model(self):
+        """Field-only architectures should not enter a vector HPO sweep."""
+        from wavedl.hpo import _resolve_models_for_target
+
+        with pytest.raises(ValueError, match="incompatible with vector"):
+            _resolve_models_for_target((3,), ["unet_field"])
+
+    def test_direct_dense_objective_uses_field_search_space(self):
+        """create_objective remains target-aware outside the CLI main path."""
+        from wavedl.hpo import create_objective
+
+        args = MagicMock()
+        args.data_path = "/fake/field.npz"
+        args.target_shape = (2, 8, 9)
+        args.max_epochs = 1
+        args.quick = False
+        args.medium = False
+        args.inprocess = True
+        args.seed = 2025
+        args.timeout = 30
+        args.models = None
+        args.optimizers = ["adamw"]
+        args.schedulers = ["plateau"]
+        args.losses = ["mse"]
+        args.batch_sizes = None
+        args.n_jobs = 1
+
+        choices_seen = {}
+        trial = MagicMock()
+        trial.number = 0
+
+        def choose(name, choices):
+            choices_seen[name] = list(choices)
+            return choices[0]
+
+        trial.suggest_categorical.side_effect = choose
+        trial.suggest_float.side_effect = lambda _name, low, _high, **_kw: low
+        trial.suggest_int.side_effect = lambda _name, low, _high, **_kw: low
+
+        with patch(
+            "wavedl.train.train_single_trial",
+            return_value={
+                "pruned": False,
+                "best_val_loss": 0.5,
+                "epochs_trained": 1,
+            },
+        ):
+            assert create_objective(args)(trial) == 0.5
+
+        assert choices_seen["model"] == ["unet_field"]
+        assert choices_seen["batch_size"] == [1, 2, 4, 8]
+
     def test_inprocess_forces_single_job(self):
         """Test that --inprocess mode overrides n_jobs to 1.
 
@@ -560,6 +661,7 @@ class TestHPOObjective:
                 ],
             ),
             patch("pathlib.Path.exists", return_value=True),
+            patch("wavedl.hpo._detect_target_shape", return_value=(3,)),
             patch("optuna.create_study") as mock_study,
             patch("builtins.open", MagicMock()),  # suppress file output
         ):
@@ -1076,26 +1178,19 @@ class TestONNXExport:
         assert os.path.exists(output_path)
 
     def test_export_creates_output_dir(self, temp_dir):
-        """Test ONNX export behaviour with missing parent directories.
-
-        Regression test: verifies that export_to_onnx (which delegates to
-        torch.onnx.export) fails gracefully when parent dirs are missing,
-        and succeeds when callers create them beforehand.
-        """
+        """Nested output directories are created automatically for export."""
         from wavedl.models.cnn import CNN
         from wavedl.test import export_to_onnx
 
         model = CNN(in_shape=(32, 32), out_size=3)
         sample_input = torch.randn(1, 1, 32, 32)
 
-        # Part 1: export_to_onnx should return False (not crash) when
-        # parent directories don't exist
+        # Missing parent directories should be created by the export helper.
         nested_dir = os.path.join(temp_dir, "nonexistent", "subdir")
         output_path = os.path.join(nested_dir, "model.onnx")
         result = export_to_onnx(model, sample_input, output_path, validate=False)
-        assert not result, (
-            "export_to_onnx should return False when parent dirs are missing"
-        )
+        assert result
+        assert os.path.isfile(output_path)
 
         # Part 2: succeeds when callers create parent dirs (production pattern)
         os.makedirs(os.path.dirname(output_path), exist_ok=True)

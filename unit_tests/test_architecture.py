@@ -8,7 +8,7 @@ Fast, comprehensive tests using combined assertions and efficient design.
     - Combined tests: 5+ separate tests → 1 comprehensive test
     - Smaller batch sizes (1 instead of 2)
     - Fewer parametrized variations (2 batch sizes vs 3)
-    - Skip 3D tests by default (use --run-slow)
+    - Skip 3D tests by default (use -m slow)
     - Model building is the bottleneck - test more per build
 
 **Test Coverage**:
@@ -24,19 +24,21 @@ Run fast tests:
     pytest unit_tests/test_architecture.py -v
 
 Run all tests including 3D:
-    pytest unit_tests/test_architecture.py -v --run-slow
+    pytest unit_tests/test_architecture.py -v -m slow
 
 Author: Ductho Le (ductho.le@outlook.com)
 """
+
+from typing import Any
 
 import pytest
 import torch
 
 from wavedl.models.cnn import CNN
-from wavedl.models.registry import build_model, list_models
+from wavedl.models.registry import build_model, get_model, list_models
 
 
-# Mark all tests in this module as slow (run with --run-slow)
+# Mark all tests in this module as slow (run with -m slow)
 pytestmark = pytest.mark.slow
 
 
@@ -109,6 +111,7 @@ def get_test_config(model_name: str, dim: int | None = None) -> tuple:
     large_input_models = ["maxvit", "fastvit", "caformer", "poolformer", "efficientvit"]
     needs_large_input = any(model_lower.startswith(p) for p in large_input_models)
 
+    in_shape: tuple[int, ...]
     if dim == 1:
         in_shape = (256,)
     elif dim == 2:
@@ -119,10 +122,10 @@ def get_test_config(model_name: str, dim: int | None = None) -> tuple:
     else:
         in_shape = (16, 64, 64)
 
-    kwargs = {}
-
-    if model_lower.endswith("_pretrained"):
-        kwargs["pretrained"] = False
+    # Several families default to pretrained=True without a _pretrained suffix.
+    # Architecture checks must run offline and test construction/gradients
+    # independently of downloaded weights.
+    kwargs: dict[str, Any] = {"pretrained": False}
 
     if model_lower.startswith("vit"):
         kwargs["patch_size"] = 8 if dim == 2 else 16
@@ -152,7 +155,9 @@ class TestAllModels:
         Tests 5+ aspects in one model build - much faster than separate tests.
         """
         in_shape, kwargs = get_test_config(model_name)
-        model = build_model(model_name, in_shape=in_shape, out_size=3, **kwargs)
+        config = get_model(model_name).get_default_config()
+        config.update(kwargs)
+        model = build_model(model_name, in_shape=in_shape, out_size=3, **config)
 
         # 1. Has parameters
         param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -164,7 +169,10 @@ class TestAllModels:
         with torch.no_grad():
             out = model(x)
 
-        assert out.shape[0] == 1, f"{model_name}: Batch size mismatch"
+        expected_shape = (
+            (1, *model.out_shape) if model.requires_spatial_output else (1, 3)
+        )
+        assert out.shape == expected_shape, f"{model_name}: Output shape mismatch"
         assert not torch.isnan(out).any(), f"{model_name}: Output contains NaN"
         assert not torch.isinf(out).any(), f"{model_name}: Output contains Inf"
 
@@ -181,7 +189,17 @@ class TestAllModels:
         loss.backward()
 
         assert x_grad.grad is not None, f"{model_name}: No gradient on input"
-        assert not torch.isnan(x_grad.grad).any(), f"{model_name}: Gradient NaN"
+        assert torch.isfinite(x_grad.grad).all(), (
+            f"{model_name}: Non-finite input gradient"
+        )
+        for name, parameter in model.named_parameters():
+            if parameter.requires_grad:
+                assert parameter.grad is not None, (
+                    f"{model_name}: Unused trainable parameter {name}"
+                )
+                assert torch.isfinite(parameter.grad).all(), (
+                    f"{model_name}: Non-finite gradient {name}"
+                )
 
     @pytest.mark.parametrize("model_name", list_models())
     def test_model_output_shape(self, model_name):
@@ -271,7 +289,7 @@ class TestMultiDimensionality:
         [m for m in list_models() if 3 in get_supported_dims(m)],
     )
     def test_3d_input(self, model_name):
-        """Test models that support 3D input (slow - run with --run-slow)."""
+        """Test models that support 3D input (slow - run with -m slow)."""
         in_shape, kwargs = get_test_config(model_name, dim=3)
         model = build_model(model_name, in_shape=in_shape, out_size=3, **kwargs)
         model.eval()

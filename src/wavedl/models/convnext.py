@@ -27,7 +27,12 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from wavedl.models._pretrained_utils import DropPath, LayerNormNd, get_conv_layer
+from wavedl.models._pretrained_utils import (
+    DropPath,
+    LayerNormNd,
+    get_conv_layer,
+    get_pool_layer,
+)
 from wavedl.models.base import BaseModel, SpatialShape
 from wavedl.models.registry import register_model
 
@@ -211,12 +216,7 @@ class ConvNeXtBase(BaseModel):
                 self.downsamples.append(downsample)
 
         # Global average pooling
-        if self.dim == 1:
-            self.global_pool = nn.AdaptiveAvgPool1d(1)
-        elif self.dim == 2:
-            self.global_pool = nn.AdaptiveAvgPool2d(1)
-        else:
-            self.global_pool = nn.AdaptiveAvgPool3d(1)
+        self.global_pool = get_pool_layer(self.dim)(1)
 
         # Final norm and regression head (eps=1e-6 matches the in-block norms and
         # the ConvNeXtV2/UniRepLKNet siblings; the default 1e-5 was inconsistent)
@@ -438,9 +438,8 @@ class ConvNeXtTinyPretrained(BaseModel):
             self._freeze_backbone()
 
     def _freeze_backbone(self):
-        for name, param in self.backbone.named_parameters():
-            if "classifier" not in name:
-                param.requires_grad = False
+        """Freeze feature extraction while retaining the regression head."""
+        self._freeze_backbone_modules(("classifier",))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.backbone(x)

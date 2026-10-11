@@ -12,6 +12,10 @@ enabling dynamic model selection via command-line arguments.
                    CAFormer, PoolFormer, Vision Mamba, EfficientViT
     - 3D (volumes): ResNet3D, CNN, ResNet, ConvNeXt, ConvNeXt V2, DenseNet
 
+**Output Coverage**:
+    - Vector regression: every registered architecture except ``unet_field``
+    - Dense 2D regression: ``unet_field``
+
 Usage:
     from wavedl.models import get_model, list_models, MODEL_REGISTRY
 
@@ -65,6 +69,7 @@ from .registry import (
     MODEL_REGISTRY,
     build_model,
     get_model,
+    import_model_modules,
     list_models,
     register_model,
 )
@@ -74,7 +79,7 @@ from .resnet3d import MC3_18, ResNet3D18
 from .s4d import S4D, S4DLarge, S4DSmall
 from .swin import SwinBase, SwinSmall, SwinTiny
 from .tcn import TCN, TCNLarge, TCNSmall
-from .unet import UNetRegression
+from .unet import UNetField, UNetRegression
 from .vit import ViTBase_, ViTSmall, ViTTiny
 from .wavenet import WaveNet, WaveNetLarge, WaveNetSmall
 
@@ -147,6 +152,7 @@ __all__ = [
     "SwinTiny",
     "TCNLarge",
     "TCNSmall",
+    "UNetField",
     "UNetRegression",
     "ViTBase_",
     "ViTSmall",
@@ -160,6 +166,7 @@ __all__ = [
     # Functions (lowercase, alphabetically)
     "build_model",
     "get_model",
+    "import_model_modules",
     "list_models",
     "register_model",
 ]

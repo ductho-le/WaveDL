@@ -1,0 +1,6 @@
+include LICENSE README.md CHANGELOG.md pyproject.toml
+recursive-include .github *.md
+recursive-include src/wavedl *.py
+recursive-include unit_tests *.py
+recursive-include configs *.yaml
+recursive-include tools *.py

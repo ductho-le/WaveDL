@@ -33,8 +33,9 @@ References:
 Author: Ductho Le (ductho.le@outlook.com)
 """
 
+import copy
 import math
-from typing import Any
+from typing import Any, ClassVar
 
 import torch
 import torch.nn as nn
@@ -358,6 +359,7 @@ class S4DBase(BaseModel):
             "d_state": 64,
             "expand": 2,
             "dropout_rate": 0.1,
+            **copy.deepcopy(getattr(cls, "_variant_defaults", {})),
         }
 
 
@@ -388,14 +390,17 @@ class S4DSmall(S4DBase):
         >>> out = model(x)  # (4, 3)
     """
 
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "d_model": 64,
+        "n_layers": 4,
+        "d_state": 32,
+    }
+
     def __init__(self, in_shape: tuple[int], out_size: int, **kwargs):
         super().__init__(
             in_shape=in_shape,
             out_size=out_size,
-            d_model=64,
-            n_layers=4,
-            d_state=32,
-            **kwargs,
+            **{**copy.deepcopy(self._variant_defaults), **kwargs},
         )
 
     def __repr__(self) -> str:
@@ -428,14 +433,17 @@ class S4D(S4DBase):
         >>> out = model(x)  # (4, 3)
     """
 
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "d_model": 128,
+        "n_layers": 6,
+        "d_state": 64,
+    }
+
     def __init__(self, in_shape: tuple[int], out_size: int, **kwargs):
         super().__init__(
             in_shape=in_shape,
             out_size=out_size,
-            d_model=128,
-            n_layers=6,
-            d_state=64,
-            **kwargs,
+            **{**copy.deepcopy(self._variant_defaults), **kwargs},
         )
 
     def __repr__(self) -> str:
@@ -467,14 +475,17 @@ class S4DLarge(S4DBase):
         >>> out = model(x)  # (4, 3)
     """
 
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "d_model": 256,
+        "n_layers": 8,
+        "d_state": 64,
+    }
+
     def __init__(self, in_shape: tuple[int], out_size: int, **kwargs):
         super().__init__(
             in_shape=in_shape,
             out_size=out_size,
-            d_model=256,
-            n_layers=8,
-            d_state=64,
-            **kwargs,
+            **{**copy.deepcopy(self._variant_defaults), **kwargs},
         )
 
     def __repr__(self) -> str:

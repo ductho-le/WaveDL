@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import math
 import sys
 from typing import TYPE_CHECKING
 
@@ -60,7 +61,7 @@ INPUT_AGGREGATES: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
     "x_sum": lambda x: x.sum(dim=tuple(range(1, x.ndim))),
     "x_max": lambda x: x.amax(dim=tuple(range(1, x.ndim))),
     "x_min": lambda x: x.amin(dim=tuple(range(1, x.ndim))),
-    "x_std": lambda x: x.std(dim=tuple(range(1, x.ndim))),
+    "x_std": lambda x: x.std(dim=tuple(range(1, x.ndim)), correction=0),
     "x_energy": lambda x: (x**2).sum(dim=tuple(range(1, x.ndim))),
 }
 
@@ -91,20 +92,36 @@ class ExpressionConstraint(nn.Module):
             reduction: How to reduce violations - 'mse' or 'mae'
         """
         super().__init__()
+        if reduction not in {"mse", "mae"}:
+            raise ValueError("Constraint reduction must be 'mse' or 'mae'.")
         self.expression = expression
         self.reduction = reduction
         self._tree = ast.parse(expression, mode="eval")
         self._validate(self._tree)
 
     def _validate(self, tree: ast.Expression) -> None:
-        """Validate that expression only uses safe functions."""
         for node in ast.walk(tree):
+            if isinstance(node, ast.Constant):
+                if not isinstance(node.value, (int, float)) or not math.isfinite(
+                    node.value
+                ):
+                    raise ValueError(
+                        "Constraint constants must be finite real numbers."
+                    )
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
                 if node.func.id not in SAFE_FUNCTIONS:
                     raise ValueError(
                         f"Unsafe function '{node.func.id}' in constraint. "
                         f"Allowed: {list(SAFE_FUNCTIONS.keys())}"
                     )
+                allowed_keywords = {"min", "max"} if node.func.id == "clamp" else set()
+                for keyword in node.keywords:
+                    if keyword.arg not in allowed_keywords:
+                        raise ValueError(
+                            f"Unsupported keyword '{keyword.arg}' for {node.func.id}."
+                        )
+            elif isinstance(node, ast.Call):
+                raise ValueError("Only direct function calls supported (e.g., sin(x))")
 
     def _eval(
         self, node: ast.AST, pred: torch.Tensor, inputs: torch.Tensor | None
@@ -129,7 +146,10 @@ class ExpressionConstraint(nn.Module):
                     raise ValueError(
                         f"Constraint uses '{name}' but inputs not provided."
                     )
-                return INPUT_AGGREGATES[name](inputs)
+                value = INPUT_AGGREGATES[name](inputs)
+                if pred.ndim > 2:
+                    value = value.reshape(value.shape[0], *([1] * (pred.ndim - 2)))
+                return value
             else:
                 raise ValueError(
                     f"Unknown variable '{name}'. "
@@ -146,9 +166,10 @@ class ExpressionConstraint(nn.Module):
                 ast.Pow: torch.pow,
                 ast.Mod: torch.remainder,
             }
-            if type(node.op) not in ops:
+            op_fn = ops.get(type(node.op))
+            if op_fn is None:
                 raise ValueError(f"Unsupported operator: {type(node.op).__name__}")
-            return ops[type(node.op)](left, right)
+            return op_fn(left, right)
         elif isinstance(node, ast.UnaryOp):
             operand = self._eval(node.operand, pred, inputs)
             if isinstance(node.op, ast.USub):
@@ -166,7 +187,12 @@ class ExpressionConstraint(nn.Module):
             if func_name not in SAFE_FUNCTIONS:
                 raise ValueError(f"Unsafe function: {func_name}")
             args = [self._eval(arg, pred, inputs) for arg in node.args]
-            return SAFE_FUNCTIONS[func_name](*args)
+            kwargs = {
+                keyword.arg: self._eval(keyword.value, pred, inputs)
+                for keyword in node.keywords
+                if keyword.arg is not None
+            }
+            return SAFE_FUNCTIONS[func_name](*args, **kwargs)
         elif isinstance(node, ast.Compare):
             # Comparison operators: y0 > 0, y0 < 1, y0 >= 0, y0 <= 1
             # Returns penalty (violation amount) when constraint is not satisfied
@@ -227,13 +253,17 @@ class ExpressionConstraint(nn.Module):
 
             # Extract the value at the specified indices (for entire batch)
             if len(indices) == 1:
-                return inputs_for_indexing[:, indices[0]]
+                value = inputs_for_indexing[:, indices[0]]
             elif len(indices) == 2:
-                return inputs_for_indexing[:, indices[0], indices[1]]
+                value = inputs_for_indexing[:, indices[0], indices[1]]
             elif len(indices) == 3:
-                return inputs_for_indexing[:, indices[0], indices[1], indices[2]]
+                value = inputs_for_indexing[:, indices[0], indices[1], indices[2]]
             else:
                 raise ValueError("Only 1D, 2D, or 3D input indexing supported.")
+
+            if pred.ndim > 2:
+                value = value.reshape(value.shape[0], *([1] * (pred.ndim - 2)))
+            return value
         elif isinstance(node, ast.Expression):
             return self._eval(node.body, pred, inputs)
         else:
@@ -241,20 +271,24 @@ class ExpressionConstraint(nn.Module):
 
     def _parse_subscript_indices(self, slice_node: ast.AST) -> list[int]:
         """Parse subscript indices from AST slice node."""
-        if isinstance(slice_node, ast.Constant):
+
+        def parse_index(node: ast.AST) -> int:
+            sign = 1
+            if isinstance(node, ast.UnaryOp) and isinstance(
+                node.op, (ast.USub, ast.UAdd)
+            ):
+                sign = -1 if isinstance(node.op, ast.USub) else 1
+                node = node.operand
+            if not isinstance(node, ast.Constant) or type(node.value) is not int:
+                raise ValueError("Only constant integer indices supported in x[...].")
+            return sign * node.value
+
+        if isinstance(slice_node, (ast.Constant, ast.UnaryOp)):
             # Single index: x[0]
-            return [int(slice_node.value)]
+            return [parse_index(slice_node)]
         elif isinstance(slice_node, ast.Tuple):
             # Multiple indices: x[0,5] or x[0,5,10]
-            indices = []
-            for elt in slice_node.elts:
-                if not isinstance(elt, ast.Constant):
-                    raise ValueError(
-                        "Only constant indices supported in x[...]. "
-                        "Use x[0,5] not x[i,j]."
-                    )
-                indices.append(int(elt.value))
-            return indices
+            return [parse_index(elt) for elt in slice_node.elts]
         else:
             raise ValueError(
                 f"Unsupported subscript type: {type(slice_node).__name__}. "
@@ -268,7 +302,7 @@ class ExpressionConstraint(nn.Module):
         Compute constraint violation penalty.
 
         Args:
-            pred: Model predictions of shape (N, num_outputs)
+            pred: Model predictions shaped ``(N,T)`` or ``(N,C,H,W)``
             inputs: Model inputs of shape (N, ...) for input-dependent constraints
 
         Returns:
@@ -313,6 +347,8 @@ class FileConstraint(nn.Module):
             reduction: How to reduce violations - 'mse' or 'mae'
         """
         super().__init__()
+        if reduction not in {"mse", "mae"}:
+            raise ValueError("Constraint reduction must be 'mse' or 'mae'.")
         self.file_path = file_path
         self.reduction = reduction
 
@@ -326,7 +362,7 @@ class FileConstraint(nn.Module):
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
 
-        if not hasattr(module, "constraint"):
+        if not callable(getattr(module, "constraint", None)):
             raise ValueError(
                 f"Constraint file must define 'constraint(pred, inputs)' function: {file_path}"
             )
@@ -386,26 +422,42 @@ class PhysicsConstrainedLoss(nn.Module):
             constraints: List of constraint modules
             weights: Weight for each constraint. If shorter than constraints,
                      last weight is repeated.
-            output_mean: Mean of each output (for denormalization). Shape: (num_outputs,)
-            output_std: Std of each output (for denormalization). Shape: (num_outputs,)
+            output_mean: Per-target/channel means. Shape ``(T,)`` or ``(C,1,1)``.
+            output_std: Per-target/channel scales. Shape ``(T,)`` or ``(C,1,1)``.
         """
         super().__init__()
         self.base_loss = base_loss
         self.constraints = nn.ModuleList(constraints or [])
-        self.weights = weights or [0.1]
+        self.weights = [0.1] if weights is None else list(weights)
+        if not self.weights or any(
+            not math.isfinite(weight) or weight < 0 for weight in self.weights
+        ):
+            raise ValueError(
+                "Constraint weights must be finite, non-negative, and non-empty."
+            )
+        if (output_mean is None) != (output_std is None):
+            raise ValueError("Provide both output_mean and output_std together.")
 
         # Store scaler as buffers (moves to correct device automatically)
         if output_mean is not None:
-            if not isinstance(output_mean, torch.Tensor):
-                output_mean = torch.tensor(output_mean, dtype=torch.float32)
-            self.register_buffer("output_mean", output_mean)
+            mean64 = torch.as_tensor(
+                output_mean, dtype=torch.float64, device="cpu"
+            ).detach()
+            mean32 = mean64.float()
+            # Retain the rounding residual before moving to devices (including
+            # MPS) that do not support float64. Add the residual to the small
+            # standardized contribution before adding the large physical mean.
+            self.register_buffer("output_mean", mean32)
+            self.register_buffer("output_mean_residual", (mean64 - mean32).float())
         else:
             self.register_buffer("output_mean", None)
+            self.register_buffer("output_mean_residual", None)
 
         if output_std is not None:
-            if not isinstance(output_std, torch.Tensor):
-                output_std = torch.tensor(output_std, dtype=torch.float32)
-            self.register_buffer("output_std", output_std)
+            self.register_buffer(
+                "output_std",
+                torch.as_tensor(output_std, dtype=torch.float32, device="cpu").detach(),
+            )
         else:
             self.register_buffer("output_std", None)
 
@@ -413,7 +465,23 @@ class PhysicsConstrainedLoss(nn.Module):
         """Convert normalized predictions to physical values."""
         if self.output_mean is None or self.output_std is None:
             return pred
-        return pred * self.output_std + self.output_mean
+        output_mean = self.output_mean
+        output_residual = self.output_mean_residual
+        output_std = self.output_std
+        # Legacy/custom scalers commonly store channel statistics as (C,).
+        # Reshape them for channels-first dense fields; vector behavior is
+        # unchanged. SpatialTargetScaler already stores (C,1,1), which also
+        # broadcasts correctly after the optional batch dimension below.
+        if pred.ndim > 2 and output_mean.ndim == 1:
+            shape = (1, -1, *([1] * (pred.ndim - 2)))
+            output_mean = output_mean.reshape(shape)
+            output_residual = output_residual.reshape(shape)
+            output_std = output_std.reshape(shape)
+        elif output_mean.ndim == pred.ndim - 1:
+            output_mean = output_mean.unsqueeze(0)
+            output_residual = output_residual.unsqueeze(0)
+            output_std = output_std.unsqueeze(0)
+        return (pred * output_std + output_residual) + output_mean
 
     def forward(
         self,
@@ -440,6 +508,8 @@ class PhysicsConstrainedLoss(nn.Module):
 
         for i, constraint in enumerate(self.constraints):
             weight = self.weights[i] if i < len(self.weights) else self.weights[-1]
+            if weight == 0:
+                continue
             penalty = constraint(pred_physical, inputs)
             loss = loss + weight * penalty
 

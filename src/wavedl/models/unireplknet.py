@@ -31,7 +31,8 @@ Reference:
 Author: Ductho Le (ductho.le@outlook.com)
 """
 
-from typing import Any
+import copy
+from typing import Any, ClassVar
 
 import torch
 import torch.nn as nn
@@ -392,6 +393,7 @@ class UniRepLKNetBase(BaseModel):
             "kernel_sizes": [31, 29, 17, 13],
             "drop_path_rate": 0.1,
             "dropout_rate": 0.3,
+            **copy.deepcopy(getattr(cls, "_variant_defaults", {})),
         }
 
 
@@ -415,14 +417,17 @@ class UniRepLKNetTiny(UniRepLKNetBase):
         >>> out = model(x)  # (4, 3)
     """
 
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "depths": [3, 3, 18, 3],
+        "dims": [80, 160, 320, 640],
+        "kernel_sizes": [31, 29, 17, 13],
+    }
+
     def __init__(self, in_shape: SpatialShape, out_size: int, **kwargs):
         super().__init__(
             in_shape=in_shape,
             out_size=out_size,
-            depths=[3, 3, 18, 3],
-            dims=[80, 160, 320, 640],
-            kernel_sizes=[31, 29, 17, 13],
-            **kwargs,
+            **{**copy.deepcopy(self._variant_defaults), **kwargs},
         )
 
     def __repr__(self) -> str:
@@ -442,14 +447,17 @@ class UniRepLKNetSmall(UniRepLKNetBase):
     Supports 1D, 2D, 3D inputs.
     """
 
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "depths": [3, 3, 27, 3],
+        "dims": [96, 192, 384, 768],
+        "kernel_sizes": [31, 29, 17, 13],
+    }
+
     def __init__(self, in_shape: SpatialShape, out_size: int, **kwargs):
         super().__init__(
             in_shape=in_shape,
             out_size=out_size,
-            depths=[3, 3, 27, 3],
-            dims=[96, 192, 384, 768],
-            kernel_sizes=[31, 29, 17, 13],
-            **kwargs,
+            **{**copy.deepcopy(self._variant_defaults), **kwargs},
         )
 
     def __repr__(self) -> str:
@@ -469,14 +477,17 @@ class UniRepLKNetBaseLarge(UniRepLKNetBase):
     Supports 1D, 2D, 3D inputs.
     """
 
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "depths": [3, 3, 27, 3],
+        "dims": [128, 256, 512, 1024],
+        "kernel_sizes": [31, 29, 17, 13],
+    }
+
     def __init__(self, in_shape: SpatialShape, out_size: int, **kwargs):
         super().__init__(
             in_shape=in_shape,
             out_size=out_size,
-            depths=[3, 3, 27, 3],
-            dims=[128, 256, 512, 1024],
-            kernel_sizes=[31, 29, 17, 13],
-            **kwargs,
+            **{**copy.deepcopy(self._variant_defaults), **kwargs},
         )
 
     def __repr__(self) -> str:

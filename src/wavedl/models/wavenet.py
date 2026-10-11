@@ -20,8 +20,8 @@ fields and expressive nonlinearities.
     - wavenet_large: 128 channels, 10 dilation levels (~15M params)
 
 **Receptive Field**:
-    RF = 1 + 2 * (kernel_size - 1) * sum(2^i for i in range(n_layers))
-    wavenet (kernel=3, 8 layers): RF = 1 + 4 * 255 = 1021 samples
+    RF = 1 + (kernel_size - 1) * sum(2^i for i in range(n_layers))
+    wavenet (kernel=3, 8 layers): RF = 1 + 2 * 255 = 511 samples
 
 **Note**: WaveNet is 1D-only. For 2D data use EfficientNet, Swin, or ViT.
 
@@ -32,7 +32,9 @@ References:
 Author: Ductho Le (ductho.le@outlook.com)
 """
 
-from typing import Any
+import copy
+from numbers import Integral
+from typing import Any, ClassVar
 
 import torch
 import torch.nn as nn
@@ -67,7 +69,9 @@ class GatedResidualBlock(nn.Module):
     ):
         super().__init__()
         self.channels = channels
-        padding = dilation * (kernel_size - 1) // 2  # same padding (non-causal)
+        total_padding = dilation * (kernel_size - 1)
+        padding = total_padding // 2
+        self._right_padding = total_padding % 2
 
         # Dilated conv outputs 2*channels for gated split
         self.dilated_conv = nn.Conv1d(
@@ -97,6 +101,8 @@ class GatedResidualBlock(nn.Module):
         residual_in = x
 
         # Gated activation
+        if self._right_padding:
+            x = nn.functional.pad(x, (0, self._right_padding))
         h = self.dilated_conv(x)
         h_tanh, h_sigmoid = h.chunk(2, dim=1)
         h = torch.tanh(h_tanh) * torch.sigmoid(h_sigmoid)  # (B, channels, L)
@@ -125,6 +131,15 @@ class WaveNetBase(BaseModel):
 
     The receptive field grows exponentially with depth.
     """
+
+    n_layers: int
+    kernel_size: int
+    receptive_field: int
+    input_conv: nn.Module
+    blocks: nn.ModuleList
+    post_skip: nn.Module
+    global_pool: nn.Module
+    head: nn.Module
 
     def __init__(
         self,
@@ -155,6 +170,13 @@ class WaveNetBase(BaseModel):
                 "For 2D/3D data, use ResNet, EfficientNet, or Swin."
             )
 
+        if (
+            not isinstance(n_layers, Integral)
+            or isinstance(n_layers, bool)
+            or n_layers <= 0
+        ):
+            raise ValueError("n_layers must be a positive integer.")
+
         self.channels = channels
         self.skip_channels = skip_channels
         self.n_layers = n_layers
@@ -176,6 +198,17 @@ class WaveNetBase(BaseModel):
                 )
                 for i in range(n_layers)
             ]
+        )
+
+        # The final residual output feeds no later block; only its skip output
+        # contributes to regression. Retain its weights for old checkpoints,
+        # but exclude these unused parameters from optimization/DDP reduction.
+        self.blocks[-1].residual_conv.requires_grad_(False)
+        # Keep their original optimizer positions for published checkpoints.
+        # With grad=None optimizers leave these frozen parameters untouched.
+        self._optimizer_checkpoint_parameters = (
+            f"blocks.{n_layers - 1}.residual_conv.weight",
+            f"blocks.{n_layers - 1}.residual_conv.bias",
         )
 
         # Post-skip processing (WaveNet output stack)
@@ -205,9 +238,9 @@ class WaveNetBase(BaseModel):
         self._init_weights()
 
     def _compute_rf(self) -> int:
-        """Receptive field = 1 + 2*(kernel-1)*sum(dilations)."""
+        """Receptive field = 1 + (kernel-1)*sum(dilations)."""
         total_dilation = sum(2**i for i in range(self.n_layers))
-        return 1 + 2 * (self.kernel_size - 1) * total_dilation
+        return 1 + (self.kernel_size - 1) * total_dilation
 
     def _init_weights(self):
         for m in self.modules():
@@ -255,6 +288,7 @@ class WaveNetBase(BaseModel):
             "n_layers": 8,
             "kernel_size": 3,
             "dropout_rate": 0.1,
+            **copy.deepcopy(getattr(cls, "_variant_defaults", {})),
         }
 
 
@@ -269,7 +303,7 @@ class WaveNetSmall(WaveNetBase):
     WaveNet-Small: Lightweight gated dilated conv network for 1D waveforms.
 
     ~1.0M parameters. 6 dilation layers, 32-channel residual, 64-channel skip.
-    Receptive field: 253 samples (kernel=3).
+    Receptive field: 127 samples (kernel=3).
 
     Recommended for:
         - Quick experiments and prototyping
@@ -286,14 +320,17 @@ class WaveNetSmall(WaveNetBase):
         >>> out = model(x)  # (4, 3)
     """
 
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "channels": 32,
+        "skip_channels": 64,
+        "n_layers": 6,
+    }
+
     def __init__(self, in_shape: tuple[int], out_size: int, **kwargs):
         super().__init__(
             in_shape=in_shape,
             out_size=out_size,
-            channels=32,
-            skip_channels=64,
-            n_layers=6,
-            **kwargs,
+            **{**copy.deepcopy(self._variant_defaults), **kwargs},
         )
 
     def __repr__(self) -> str:
@@ -309,7 +346,7 @@ class WaveNet(WaveNetBase):
     WaveNet: Standard gated dilated conv network for 1D waveforms.
 
     ~4.0M parameters. 8 dilation layers, 64-channel residual, 128-channel skip.
-    Receptive field: 1021 samples (kernel=3).
+    Receptive field: 511 samples (kernel=3).
 
     Recommended for:
         - Ultrasonic A-scan and pulse-echo signals
@@ -327,14 +364,17 @@ class WaveNet(WaveNetBase):
         >>> out = model(x)  # (4, 3)
     """
 
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "channels": 64,
+        "skip_channels": 128,
+        "n_layers": 8,
+    }
+
     def __init__(self, in_shape: tuple[int], out_size: int, **kwargs):
         super().__init__(
             in_shape=in_shape,
             out_size=out_size,
-            channels=64,
-            skip_channels=128,
-            n_layers=8,
-            **kwargs,
+            **{**copy.deepcopy(self._variant_defaults), **kwargs},
         )
 
     def __repr__(self) -> str:
@@ -350,7 +390,7 @@ class WaveNetLarge(WaveNetBase):
     WaveNet-Large: High-capacity gated dilated conv network for 1D waveforms.
 
     ~15M parameters. 10 dilation layers, 128-channel residual, 256-channel skip.
-    Receptive field: 4093 samples (kernel=3).
+    Receptive field: 2047 samples (kernel=3).
 
     Recommended for:
         - Long sequences (> 8192 samples)
@@ -367,14 +407,17 @@ class WaveNetLarge(WaveNetBase):
         >>> out = model(x)  # (4, 3)
     """
 
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "channels": 128,
+        "skip_channels": 256,
+        "n_layers": 10,
+    }
+
     def __init__(self, in_shape: tuple[int], out_size: int, **kwargs):
         super().__init__(
             in_shape=in_shape,
             out_size=out_size,
-            channels=128,
-            skip_channels=256,
-            n_layers=10,
-            **kwargs,
+            **{**copy.deepcopy(self._variant_defaults), **kwargs},
         )
 
     def __repr__(self) -> str:

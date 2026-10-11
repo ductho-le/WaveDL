@@ -20,6 +20,8 @@ import numpy as np
 from scipy.stats import pearsonr
 from sklearn.metrics import r2_score
 
+from .targets import flatten_targets_by_channel
+
 
 # ==============================================================================
 # PUBLICATION-QUALITY PLOT CONFIGURATION
@@ -208,29 +210,32 @@ def calc_pearson(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     This metric is important for physics-based signal regression papers.
 
     Args:
-        y_true: Ground truth values of shape (N, num_targets)
-        y_pred: Predicted values of shape (N, num_targets)
+        y_true: Ground truth vectors ``(N,T)`` or fields ``(N,C,H,W)``
+        y_pred: Predictions with the same shape as ``y_true``
 
     Returns:
         Mean Pearson correlation across all targets
     """
-    if y_true.ndim == 1:
-        y_true = y_true.reshape(-1, 1)
-        y_pred = y_pred.reshape(-1, 1)
+    y_true, y_pred = _validated_metric_arrays(y_true, y_pred)
 
     n_samples = y_true.shape[0]
     correlations = []
     for i in range(y_true.shape[1]):
+        # Physical fields can have a large offset and small variation. Computing
+        # the mean in float32 loses that variation and can turn anticorrelated
+        # maps into a reported zero correlation. Promote one channel at a time.
+        true_channel = np.asarray(y_true[:, i], dtype=np.float64)
+        pred_channel = np.asarray(y_pred[:, i], dtype=np.float64)
         # Check for near-constant arrays to avoid NaN
-        std_true = np.std(y_true[:, i])
-        std_pred = np.std(y_pred[:, i])
+        std_true = np.std(true_channel)
+        std_pred = np.std(pred_channel)
 
         # Pearson is degenerate for < 3 samples (any 2 points are perfectly
         # collinear → a spurious ±1.0), so report 0.0 instead of a misleading 1.0.
-        if n_samples < 3 or std_true < 1e-9 or std_pred < 1e-9:
+        if n_samples < 3 or std_true == 0 or std_pred == 0:
             correlations.append(0.0)
         else:
-            corr, _ = pearsonr(y_true[:, i], y_pred[:, i])
+            corr, _ = pearsonr(true_channel, pred_channel)
             # Handle NaN from pearsonr (shouldn't happen with std check, but safety)
             correlations.append(corr if not np.isnan(corr) else 0.0)
 
@@ -242,29 +247,178 @@ def calc_per_target_r2(y_true: np.ndarray, y_pred: np.ndarray) -> np.ndarray:
     Calculate R² score for each target independently.
 
     Args:
-        y_true: Ground truth values of shape (N, num_targets)
-        y_pred: Predicted values of shape (N, num_targets)
+        y_true: Ground truth vectors ``(N,T)`` or fields ``(N,C,H,W)``
+        y_pred: Predictions with the same shape as ``y_true``
 
     Returns:
         Array of R² scores, one per target
     """
-    if y_true.ndim == 1:
-        return np.array([r2_score(y_true, y_pred)])
+    y_true, y_pred = _validated_metric_arrays(y_true, y_pred)
 
     r2_scores = []
     for i in range(y_true.shape[1]):
-        try:
-            r2 = r2_score(y_true[:, i], y_pred[:, i])
-            r2_scores.append(r2)
-        except ValueError:
-            r2_scores.append(0.0)
+        r2 = r2_score(
+            np.asarray(y_true[:, i], dtype=np.float64),
+            np.asarray(y_pred[:, i], dtype=np.float64),
+        )
+        r2_scores.append(r2)
 
     return np.array(r2_scores)
+
+
+class StreamingFieldMetrics:
+    """Accumulate dense-field statistics without retaining every map.
+
+    Parallel centered-moment updates avoid cancellation when a channel has a
+    large mean compared with its spatial variation. Statistics are computed
+    per channel over samples and spatial positions, matching
+    ``r2_score``/``calc_pearson`` applied to ``flatten_targets_by_channel``.
+
+    Args:
+        channels: Number of field channels ``C``.
+        physical_scale: Optional per-channel factor applied to absolute
+            errors (e.g. the target scaler's ``scale_``) when reporting MAE.
+        track_relative_l2: Also accumulate per-sample relative L2 errors.
+    """
+
+    def __init__(
+        self,
+        channels: int,
+        physical_scale: np.ndarray | None = None,
+        *,
+        track_relative_l2: bool = False,
+    ):
+        self.channels = channels
+        self.physical_scale = (
+            np.ones(channels) if physical_scale is None else np.asarray(physical_scale)
+        )
+        self.track_relative_l2 = track_relative_l2
+        self.count = 0
+        self.sample_count = 0
+        self.mean_true = np.zeros(channels, dtype=np.float64)
+        self.mean_pred = np.zeros(channels, dtype=np.float64)
+        self.centered_true = np.zeros(channels, dtype=np.float64)
+        self.centered_pred = np.zeros(channels, dtype=np.float64)
+        self.centered_cross = np.zeros(channels, dtype=np.float64)
+        self.sum_squared_error = np.zeros(channels, dtype=np.float64)
+        self.sum_absolute_physical_error = np.zeros(channels, dtype=np.float64)
+        self.sum_relative_l2 = np.zeros(channels, dtype=np.float64)
+
+    def update(self, target: np.ndarray, prediction: np.ndarray) -> None:
+        target = np.asarray(target)
+        prediction = np.asarray(prediction)
+        if target.shape != prediction.shape:
+            raise ValueError("Targets and predictions must have matching shapes.")
+        if self.track_relative_l2 and target.ndim > 2 and len(target):
+            # Per-sample, per-channel relative L2 over the spatial axes.
+            spatial_axes = tuple(range(2, target.ndim))
+            target64 = target.astype(np.float64, copy=False)
+            error64 = prediction.astype(np.float64, copy=False) - target64
+            true_norm = np.sqrt(np.sum(np.square(target64), axis=spatial_axes))
+            error_norm = np.sqrt(np.sum(np.square(error64), axis=spatial_axes))
+            self.sum_relative_l2 += (error_norm / np.maximum(true_norm, 1e-12)).sum(
+                axis=0
+            )
+            del target64, error64
+        self.sample_count += len(target)
+
+        target_flat = flatten_targets_by_channel(target).astype(np.float64, copy=False)
+        prediction_flat = flatten_targets_by_channel(prediction).astype(
+            np.float64, copy=False
+        )
+        if target_flat.shape[1] != self.channels:
+            raise ValueError(f"Expected {self.channels} field channel(s).")
+        batch_count = len(target_flat)
+        if batch_count == 0:
+            return
+
+        batch_true_mean = target_flat.mean(axis=0)
+        batch_pred_mean = prediction_flat.mean(axis=0)
+        true_centered = target_flat - batch_true_mean
+        pred_centered = prediction_flat - batch_pred_mean
+        delta_true = batch_true_mean - self.mean_true
+        delta_pred = batch_pred_mean - self.mean_pred
+        total_count = self.count + batch_count
+        correction = self.count * batch_count / total_count
+        self.centered_true += np.square(true_centered).sum(axis=0) + (
+            np.square(delta_true) * correction
+        )
+        self.centered_pred += np.square(pred_centered).sum(axis=0) + (
+            np.square(delta_pred) * correction
+        )
+        self.centered_cross += (true_centered * pred_centered).sum(axis=0) + (
+            delta_true * delta_pred * correction
+        )
+        self.mean_true += delta_true * (batch_count / total_count)
+        self.mean_pred += delta_pred * (batch_count / total_count)
+        self.count = total_count
+
+        error = prediction_flat - target_flat
+        self.sum_squared_error += np.square(error).sum(axis=0)
+        self.sum_absolute_physical_error += np.abs(
+            error * self.physical_scale.reshape(-1)
+        ).sum(axis=0)
+
+    def per_channel(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return per-channel ``(r2, pearson)`` arrays (NaN if undefined)."""
+        if self.count < 2:
+            nan = np.full(self.channels, np.nan)
+            return nan, nan.copy()
+        # Match sklearn's finite convention for constant target channels:
+        # perfect predictions score 1; any nonzero residual scores 0.
+        r2_values = np.where(self.sum_squared_error == 0.0, 1.0, 0.0)
+        variable = self.centered_true > 0.0
+        r2_values[variable] = 1.0 - (
+            self.sum_squared_error[variable] / self.centered_true[variable]
+        )
+        correlation_denominator = np.sqrt(self.centered_true) * np.sqrt(
+            self.centered_pred
+        )
+        correlation_values = np.divide(
+            self.centered_cross,
+            correlation_denominator,
+            out=np.zeros(self.channels, dtype=np.float64),
+            where=correlation_denominator > 0.0,
+        )
+        return r2_values, np.clip(correlation_values, -1.0, 1.0)
+
+    def compute(self) -> tuple[float, float, np.ndarray]:
+        """Return mean ``R²``, mean Pearson, and per-channel physical MAE."""
+        if self.count == 0:
+            return float("nan"), float("nan"), np.full(self.channels, np.nan)
+        mae_per_channel = self.sum_absolute_physical_error / self.count
+        if self.count < 2:
+            return float("nan"), float("nan"), mae_per_channel
+        r2_values, correlation_values = self.per_channel()
+        return (
+            float(np.mean(r2_values)),
+            float(np.mean(correlation_values)),
+            mae_per_channel,
+        )
 
 
 # ==============================================================================
 # VISUALIZATION HELPERS (internal)
 # ==============================================================================
+def _validated_metric_arrays(y_true, y_pred) -> tuple[np.ndarray, np.ndarray]:
+    """Validate paired regression data before reporting numerical results."""
+    y_true, y_pred = np.asarray(y_true), np.asarray(y_pred)
+    if y_true.shape != y_pred.shape:
+        raise ValueError(
+            f"Prediction shape {y_pred.shape} does not match target shape {y_true.shape}."
+        )
+    for array in (y_true, y_pred):
+        if (
+            array.size == 0
+            or array.dtype.kind not in "biuf"
+            or not np.isfinite(array).all()
+        ):
+            raise ValueError(
+                "Metrics require non-empty arrays containing finite real values."
+            )
+    return flatten_targets_by_channel(y_true), flatten_targets_by_channel(y_pred)
+
+
 def _prepare_plot_data(
     y_true: np.ndarray,
     y_pred: np.ndarray,
@@ -273,10 +427,10 @@ def _prepare_plot_data(
     seed: int = 42,
 ) -> tuple[np.ndarray, np.ndarray, list[str], int]:
     """Prepare data for plotting: reshape, sample, and generate param names."""
-    # Handle 1D case
-    if y_true.ndim == 1:
-        y_true = y_true.reshape(-1, 1)
-        y_pred = y_pred.reshape(-1, 1)
+    y_true, y_pred = _validated_metric_arrays(y_true, y_pred)
+    # Compute plotting statistics in double precision, matching reported metrics.
+    y_true = np.asarray(y_true, dtype=np.float64)
+    y_pred = np.asarray(y_pred, dtype=np.float64)
 
     num_params = y_true.shape[1]
 
@@ -369,12 +523,7 @@ def plot_scientific_scatter(
     _ensure_style_configured()
     # Compute R² on the FULL dataset BEFORE subsampling so the annotation matches
     # the reported (full-dataset) metric rather than a random 2000-point subset.
-    _yt_full = y_true.reshape(-1, 1) if y_true.ndim == 1 else y_true
-    _yp_full = y_pred.reshape(-1, 1) if y_pred.ndim == 1 else y_pred
-    full_r2 = [
-        r2_score(_yt_full[:, i], _yp_full[:, i]) if len(_yt_full) >= 2 else float("nan")
-        for i in range(_yt_full.shape[1])
-    ]
+    full_r2 = calc_per_target_r2(y_true, y_pred)
     y_true, y_pred, param_names, num_params = _prepare_plot_data(
         y_true, y_pred, param_names, max_samples
     )
@@ -400,7 +549,7 @@ def plot_scientific_scatter(
         # Ideal diagonal line
         min_val = min(y_true[:, i].min(), y_pred[:, i].min())
         max_val = max(y_true[:, i].max(), y_pred[:, i].max())
-        margin = (max_val - min_val) * 0.05
+        margin = (max_val - min_val) * 0.05 or max(abs(min_val) * 0.05, 0.05)
         ax.plot(
             [min_val - margin, max_val + margin],
             [min_val - margin, max_val + margin],
@@ -620,7 +769,7 @@ def create_training_curves(
 
     def set_lr_ticks(ax: plt.Axes, data: list[float], n_ticks: int = 4) -> None:
         """Set n uniformly spaced ticks on LR axis with 10^n format labels."""
-        valid_data = [v for v in data if v is not None and not np.isnan(v) and v > 0]
+        valid_data = [v for v in data if v is not None and np.isfinite(v) and v > 0]
         if not valid_data:
             return
         vmin, vmax = min(valid_data), max(valid_data)
@@ -642,7 +791,7 @@ def create_training_curves(
 
     def set_loss_ticks(ax: plt.Axes, data: list[float]) -> None:
         """Set ticks at powers of 10 that cover the data range."""
-        valid_data = [v for v in data if v is not None and not np.isnan(v) and v > 0]
+        valid_data = [v for v in data if v is not None and np.isfinite(v) and v > 0]
         if not valid_data:
             return
         vmin, vmax = min(valid_data), max(valid_data)
@@ -691,7 +840,7 @@ def create_training_curves(
         lines.append(line_lr)
 
     # Combined legend
-    labels = [l.get_label() for l in lines]
+    labels = [str(line.get_label()) for line in lines]
     ax1.legend(
         lines,
         labels,
@@ -961,7 +1110,7 @@ def plot_correlation_heatmap(
     fig, ax = plt.subplots(figsize=(fig_size, fig_size))
 
     # Heatmap using Rectangle patches (vector-compatible, no imshow)
-    cmap = plt.cm.RdBu_r
+    cmap = plt.colormaps["RdBu_r"]
     norm = Normalize(vmin=-1, vmax=1)
 
     for i in range(num_params):
@@ -1088,10 +1237,11 @@ def plot_relative_error(
             markeredgecolor="none",
             label="Data",
         )
-        mean_rel = np.nanmean(rel_error[:, i])
-        ax.axhline(
-            y=mean_rel, color=COLORS["accent"], linestyle="-", lw=1.2, label="Mean"
-        )
+        if mask.any():
+            mean_rel = rel_error[mask, i].mean()
+            ax.axhline(
+                y=mean_rel, color=COLORS["accent"], linestyle="-", lw=1.2, label="Mean"
+            )
 
         ax.set_title(f"{param_names[i]}")
         ax.set_xlabel("True Value")
@@ -1215,9 +1365,13 @@ def plot_prediction_vs_index(
         Matplotlib Figure object
     """
     _ensure_style_configured()
+    # This plot promises sample order. Random subsampling would display shuffled
+    # samples under fabricated sequential indices and hide time-dependent errors.
     y_true, y_pred, param_names, num_params = _prepare_plot_data(
-        y_true, y_pred, param_names, max_samples
+        y_true, y_pred, param_names
     )
+    if max_samples is not None:
+        y_true, y_pred = y_true[:max_samples], y_pred[:max_samples]
     indices = np.arange(len(y_true))
     fig, axes = _create_subplot_grid(num_params)
 
@@ -1302,13 +1456,23 @@ def plot_error_boxplot(
     fig, ax = plt.subplots(figsize=(fig_width, FIGURE_WIDTH_INCH * 0.4))
 
     # Box plot (filter NaN for each parameter — near-zero targets excluded)
-    bp = ax.boxplot(
-        [errors[:, i][np.isfinite(errors[:, i])] for i in range(num_params)],
-        labels=param_names,
-        patch_artist=True,
-        showfliers=True,
-        flierprops={"marker": "o", "markersize": 3, "alpha": 0.5},
-    )
+    box_data = [errors[:, i][np.isfinite(errors[:, i])] for i in range(num_params)]
+    try:
+        bp = ax.boxplot(
+            box_data,
+            tick_labels=param_names,
+            patch_artist=True,
+            showfliers=True,
+            flierprops={"marker": "o", "markersize": 3, "alpha": 0.5},
+        )
+    except TypeError:
+        bp = ax.boxplot(
+            box_data,
+            labels=param_names,
+            patch_artist=True,
+            showfliers=True,
+            flierprops={"marker": "o", "markersize": 3, "alpha": 0.5},
+        )
 
     # Color the boxes
     for patch in bp["boxes"]:

@@ -15,6 +15,7 @@ Version: 1.0.0
 import gc
 import hashlib
 import logging
+import math
 import os
 import pickle
 from abc import ABC, abstractmethod
@@ -27,9 +28,16 @@ import torch
 from accelerate import Accelerator
 from scipy.sparse import issparse
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
+
+from .distributed import wait_for_everyone
+from .targets import (
+    SpatialTargetScaler,
+    canonical_target_shape,
+    canonicalize_targets,
+    create_target_scaler,
+)
 
 
 # Optional scipy.io for MATLAB files
@@ -48,6 +56,26 @@ except ImportError:
 # Supported key names for input/output arrays (priority order, pairwise aligned)
 INPUT_KEYS = ["input_train", "input_test", "X", "data", "inputs", "features", "x"]
 OUTPUT_KEYS = ["output_train", "output_test", "Y", "labels", "outputs", "targets", "y"]
+
+
+def _as_finite_float32(values: Any, name: str) -> np.ndarray:
+    """Reject invalid physical values before casting them into training tensors."""
+    array = np.asarray(values)
+    if array.dtype.kind not in "biuf" or not np.isfinite(array).all():
+        raise ValueError(f"{name} must contain only finite real values.")
+    with np.errstate(over="ignore", invalid="ignore"):
+        result = array.astype(np.float32, copy=False)
+    if not np.isfinite(result).all():
+        raise ValueError(f"{name} contains values outside the finite float32 range.")
+    return result
+
+
+def _bounded_batch_size(
+    shape, dtype, max_items: int, max_bytes: int = 32 * 1024**2
+) -> int:
+    """Bound dense processing chunks by bytes as well as sample count."""
+    sample_bytes = math.prod(shape[1:]) * max(np.dtype(dtype).itemsize, 8)
+    return min(max_items, max(1, max_bytes // max(1, sample_bytes)))
 
 
 def _compute_file_hash(
@@ -81,7 +109,7 @@ def _compute_file_hash(
         hasher.update(str(file_size).encode())
         with open(path, "rb") as f:
             hasher.update(f.read(1024 * 1024))  # First 1MB
-            if file_size > 2 * 1024 * 1024:
+            if file_size > 1024 * 1024:
                 f.seek(-1024 * 1024, 2)
                 hasher.update(f.read())  # Last 1MB
         return hasher.hexdigest()
@@ -208,6 +236,19 @@ class DataSource(ABC):
         """
         pass
 
+    @abstractmethod
+    def load_mmap(self, path: str) -> LazyDataHandle:
+        """
+        Load arrays through a lazy data handle.
+
+        Args:
+            path: Path to the data file
+
+        Returns:
+            LazyDataHandle instance
+        """
+        pass
+
     @staticmethod
     def detect_format(path: str) -> str:
         """
@@ -245,9 +286,18 @@ class DataSource(ABC):
 class NPZSource(DataSource):
     """Load data from NumPy .npz archives."""
 
+    def __init__(self, *, allow_pickle: bool = False):
+        self.allow_pickle = allow_pickle
+
     @staticmethod
-    def _safe_load(path: str, keys_to_probe: list[str], mmap_mode: str | None = None):
-        """Load NPZ with pickle only if needed (sparse matrix support).
+    def _safe_load(
+        path: str,
+        keys_to_probe: list[str],
+        mmap_mode: str | None = None,
+        *,
+        allow_pickle: bool = False,
+    ):
+        """Load NPZ without executing pickle unless explicitly trusted.
 
         The error for object arrays happens at ACCESS time, not load time.
         So we need to probe the keys to detect if pickle is required.
@@ -256,28 +306,35 @@ class NPZSource(DataSource):
         open for arrays to remain valid. Caller is responsible for closing.
         For non-mmap loading, use _load_and_copy() instead to avoid leaks.
         """
-        data = np.load(path, allow_pickle=False, mmap_mode=mmap_mode)
+        data = np.load(path, allow_pickle=allow_pickle, mmap_mode=mmap_mode)
         try:
             # Probe keys to trigger error if object arrays exist
             for key in keys_to_probe:
                 if key in data:
                     _ = data[key]  # This raises ValueError for object arrays
             return data
-        except ValueError as e:
+        except Exception as e:
+            data.close()
             if "allow_pickle=False" in str(e):
-                # Fallback for sparse matrices stored as object arrays
-                data.close() if hasattr(data, "close") else None
-                return np.load(path, allow_pickle=True, mmap_mode=mmap_mode)
+                raise ValueError(
+                    "NPZ object arrays require pickle, which can execute arbitrary "
+                    "code. Convert the dataset to numeric arrays or HDF5, or use "
+                    "allow_pickle=True (--allow_pickle) only for a trusted file."
+                ) from e
             raise
 
     @staticmethod
-    def _load_and_copy(path: str, keys: list[str]) -> dict[str, np.ndarray]:
+    def _load_and_copy(
+        path: str, keys: list[str], *, allow_pickle: bool = False
+    ) -> dict[str, np.ndarray]:
         """Load NPZ and copy arrays, ensuring file is properly closed.
 
         This prevents file descriptor leaks by copying arrays before closing.
         Use this for eager loading; use _safe_load for memory-mapped access.
         """
-        data = NPZSource._safe_load(path, keys, mmap_mode=None)
+        data = NPZSource._safe_load(
+            path, keys, mmap_mode=None, allow_pickle=allow_pickle
+        )
         try:
             result = {}
             for key in keys:
@@ -306,7 +363,9 @@ class NPZSource(DataSource):
                 f"Found: {keys}"
             )
 
-        data = self._load_and_copy(path, [input_key, output_key])
+        data = self._load_and_copy(
+            path, [input_key, output_key], allow_pickle=self.allow_pickle
+        )
         inp = data[input_key]
         outp = data[output_key]
 
@@ -318,10 +377,11 @@ class NPZSource(DataSource):
 
     def load_mmap(self, path: str) -> LazyDataHandle:
         """
-        Load data using memory-mapped mode for zero-copy access.
+        Load NPZ arrays through the common lazy-handle interface.
 
-        This allows processing large datasets without loading them entirely
-        into RAM. Critical for HPC environments with memory constraints.
+        NumPy cannot memory-map members of a ZIP archive. Both requested
+        arrays are materialized in RAM, even with mmap_mode='r'. Use HDF5 or
+        MATLAB v7.3 files when datasets exceed available memory.
 
         Returns a LazyDataHandle for consistent API across all data sources.
         The NpzFile is kept open for lazy access.
@@ -331,7 +391,7 @@ class NPZSource(DataSource):
                 # Use inputs and outputs
                 pass  # File automatically closed
 
-        Note: Returns memory-mapped arrays - do NOT modify them.
+        Note: Returned arrays are independent of the original archive.
         """
         # First pass to find keys without loading data
         with np.load(path, allow_pickle=False) as probe:
@@ -348,7 +408,9 @@ class NPZSource(DataSource):
             )
 
         # Keep NpzFile open for lazy access (like HDF5/MATSource)
-        data = self._safe_load(path, [input_key, output_key], mmap_mode="r")
+        data = self._safe_load(
+            path, [input_key, output_key], mmap_mode="r", allow_pickle=self.allow_pickle
+        )
         inp = data[input_key]
         outp = data[output_key]
 
@@ -368,7 +430,7 @@ class NPZSource(DataSource):
                 f"Supported keys: {OUTPUT_KEYS}. Found: {keys}"
             )
 
-        data = self._load_and_copy(path, [output_key])
+        data = self._load_and_copy(path, [output_key], allow_pickle=self.allow_pickle)
         return data[output_key]
 
 
@@ -726,7 +788,7 @@ class MATSource(DataSource):
         return outp
 
 
-def get_data_source(format: str) -> DataSource:
+def get_data_source(format: str, *, allow_pickle: bool = False) -> DataSource:
     """
     Factory function to get the appropriate DataSource for a format.
 
@@ -747,11 +809,13 @@ def get_data_source(format: str) -> DataSource:
             f"Unsupported format: {format}. Supported: {list(sources.keys())}"
         )
 
+    if format == "npz":
+        return NPZSource(allow_pickle=allow_pickle)
     return sources[format]()
 
 
 def load_training_data(
-    path: str, format: str = "auto"
+    path: str, format: str = "auto", *, allow_pickle: bool = False
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Load training data from file with automatic format detection.
@@ -773,11 +837,13 @@ def load_training_data(
     if format == "auto":
         format = DataSource.detect_format(path)
 
-    source = get_data_source(format)
+    source = get_data_source(format, allow_pickle=allow_pickle)
     return source.load(path)
 
 
-def load_outputs_only(path: str, format: str = "auto") -> np.ndarray:
+def load_outputs_only(
+    path: str, format: str = "auto", *, allow_pickle: bool = False
+) -> np.ndarray:
     """
     Load only output/target arrays from file (memory-efficient).
 
@@ -794,7 +860,7 @@ def load_outputs_only(path: str, format: str = "auto") -> np.ndarray:
     if format == "auto":
         format = DataSource.detect_format(path)
 
-    source = get_data_source(format)
+    source = get_data_source(format, allow_pickle=allow_pickle)
     return source.load_outputs_only(path)
 
 
@@ -804,6 +870,8 @@ def _load_npz_for_test(
     output_keys: list[str],
     explicit_input_key: str | None,
     explicit_output_key: str | None,
+    *,
+    allow_pickle: bool = False,
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """Load NPZ file for test/inference with key validation."""
     with np.load(path, allow_pickle=False) as probe:
@@ -824,7 +892,9 @@ def _load_npz_for_test(
             f"Explicit --output_key '{explicit_output_key}' not found. Available: {keys}"
         )
 
-    data = NPZSource._load_and_copy(path, [inp_key] + ([out_key] if out_key else []))
+    data = NPZSource._load_and_copy(
+        path, [inp_key] + ([out_key] if out_key else []), allow_pickle=allow_pickle
+    )
     inp = data[inp_key]
     if inp.dtype == object:
         inp = np.array([x.toarray() if hasattr(x, "toarray") else x for x in inp])
@@ -898,7 +968,12 @@ def _load_mat_for_test(
             )
 
         # OOM guard
-        n_samples = f[inp_key].shape[-1]  # MAT is transposed
+        input_dataset = f[inp_key]
+        n_samples = (
+            len(input_dataset["jc"]) - 1
+            if mat_source._is_sparse_dataset(input_dataset)
+            else input_dataset.shape[-1]
+        )  # MAT is transposed
         if n_samples > 100000:
             raise ValueError(
                 f"Dataset has {n_samples:,} samples. load_test_data() loads "
@@ -926,6 +1001,8 @@ def load_test_data(
     input_key: str | None = None,
     output_key: str | None = None,
     input_channels: int | None = None,
+    *,
+    allow_pickle: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     """
     Load test/inference data and return PyTorch tensors ready for model input.
@@ -954,7 +1031,7 @@ def load_test_data(
     Returns:
         Tuple of:
             - X: Input tensor with channel dimension (N, 1, *spatial_dims)
-            - y: Target tensor (N, T) or None if targets not present
+            - y: Target tensor ``(N,T)`` or ``(N,C,H,W)``, or None if absent
 
     Example:
         >>> X, y = load_test_data("test_data.npz")
@@ -965,7 +1042,7 @@ def load_test_data(
     if format == "auto":
         format = DataSource.detect_format(path)
 
-    source = get_data_source(format)
+    source = get_data_source(format, allow_pickle=allow_pickle)
 
     # Build custom key lists if provided
     if input_key:
@@ -988,7 +1065,12 @@ def load_test_data(
     try:
         if format == "npz":
             inp, outp = _load_npz_for_test(
-                path, custom_input_keys, custom_output_keys, input_key, output_key
+                path,
+                custom_input_keys,
+                custom_output_keys,
+                input_key,
+                output_key,
+                allow_pickle=allow_pickle,
             )
         elif format == "hdf5":
             inp, outp = _load_hdf5_for_test(
@@ -1023,7 +1105,12 @@ def load_test_data(
         # Re-call helpers with None for explicit keys (validation already done above)
         if format == "npz":
             inp, outp = _load_npz_for_test(
-                path, custom_input_keys, custom_output_keys, None, None
+                path,
+                custom_input_keys,
+                custom_output_keys,
+                None,
+                None,
+                allow_pickle=allow_pickle,
             )
         elif format == "hdf5":
             inp, outp = _load_hdf5_for_test(
@@ -1043,13 +1130,22 @@ def load_test_data(
         outp = outp.toarray()
 
     # Convert to tensors
-    X = torch.tensor(np.asarray(inp), dtype=torch.float32)
+    inp = _as_finite_float32(inp, "Inputs")
+    if not 2 <= inp.ndim <= 5 or any(size == 0 for size in inp.shape):
+        raise ValueError(
+            f"Inputs must be a non-empty array of rank 2-5, got {inp.shape}."
+        )
+    X = torch.from_numpy(np.ascontiguousarray(inp))
 
     if outp is not None:
-        y = torch.tensor(np.asarray(outp), dtype=torch.float32)
-        # Normalize target shape: (N,) → (N, 1)
-        if y.ndim == 1:
-            y = y.unsqueeze(1)
+        # Vector targets stay (N,T); scalar and multi-property fields use the
+        # canonical channels-first layout (N,C,H,W).
+        outp = canonicalize_targets(outp)
+        if len(outp) != len(inp):
+            raise ValueError(
+                f"Input/output sample mismatch: {len(inp)} inputs but {len(outp)} targets."
+            )
+        y = torch.from_numpy(np.ascontiguousarray(_as_finite_float32(outp, "Targets")))
     else:
         y = None
 
@@ -1125,6 +1221,8 @@ def memmap_worker_init_fn(worker_id: int):
         dataset = worker_info.dataset
         # Force re-initialization of memmap in each worker
         dataset.data = None
+        if hasattr(dataset, "target_data"):
+            dataset.target_data = None
 
         # Seed numpy RNG per worker using PyTorch's worker seed for reproducibility
         # This ensures random augmentations (noise, shifts, etc.) are unique per worker
@@ -1161,15 +1259,24 @@ class MemmapDataset(Dataset):
     def __init__(
         self,
         memmap_path: str,
-        targets: torch.Tensor,
+        targets: torch.Tensor | None,
         shape: tuple[int, ...],
         indices: np.ndarray,
+        target_memmap_path: str | None = None,
+        target_shape: tuple[int, ...] | None = None,
     ):
+        if targets is None and (target_memmap_path is None or target_shape is None):
+            raise ValueError(
+                "Provide either in-memory targets or target_memmap_path + target_shape."
+            )
         self.memmap_path = memmap_path
         self.targets = targets
         self.shape = shape
         self.indices = indices
         self.data: np.memmap | None = None  # Lazy initialization
+        self.target_memmap_path = target_memmap_path
+        self.target_shape = target_shape
+        self.target_data: np.memmap | None = None
 
     def __len__(self) -> int:
         return len(self.indices)
@@ -1185,7 +1292,18 @@ class MemmapDataset(Dataset):
 
         # .copy() detaches from mmap buffer - essential for PyTorch pinned memory
         x = torch.from_numpy(self.data[real_idx].copy()).contiguous()
-        y = self.targets[real_idx]
+        if self.target_memmap_path is not None:
+            if self.target_data is None:
+                target_full_shape = (self.shape[0], *self.target_shape)
+                self.target_data = np.memmap(
+                    self.target_memmap_path,
+                    dtype="float32",
+                    mode="r",
+                    shape=target_full_shape,
+                )
+            y = torch.from_numpy(self.target_data[real_idx].copy()).contiguous()
+        else:
+            y = self.targets[real_idx]
 
         return x, y
 
@@ -1199,19 +1317,103 @@ class MemmapDataset(Dataset):
 # ==============================================================================
 # DATA PREPARATION
 # ==============================================================================
+def _iter_target_batches(targets: Any, indices: np.ndarray, batch_size: int = 256):
+    """Yield canonical target batches restricted to ``indices``.
+
+    Contiguous slices are read and then masked, so HDF5/MAT sources stream
+    sequentially instead of issuing per-sample point selections. Chunks with
+    no selected samples are skipped without being read.
+    """
+
+    batch_size = _bounded_batch_size(targets.shape, targets.dtype, batch_size)
+    selected = np.zeros(len(targets), dtype=bool)
+    selected[np.asarray(indices, dtype=np.int64)] = True
+    for start in range(0, len(selected), batch_size):
+        stop = min(start + batch_size, len(selected))
+        mask = selected[start:stop]
+        if not mask.any():
+            continue
+        batch = np.asarray(targets[start:stop])
+        yield canonicalize_targets(batch if mask.all() else batch[mask])
+
+
+def _validate_scaler_compatibility(current: Any, expected: Any) -> None:
+    """Reject a resume that changes the model's standardized target space."""
+    current_shape = tuple(getattr(current, "target_shape_", (len(current.mean_),)))
+    expected_shape = tuple(getattr(expected, "target_shape_", (len(expected.mean_),)))
+    if (
+        len(expected_shape) == 3
+        and getattr(expected, "normalization_version_", 0)
+        != SpatialTargetScaler.NORMALIZATION_VERSION
+    ):
+        raise ValueError(
+            "The dense checkpoint uses an older target normalization version. "
+            "Dense normalization now preserves large physical offsets accurately. "
+            "Use --fresh or a separate output directory to retrain this field "
+            "model; its original normalization cannot be reused safely."
+        )
+    compatible = current_shape == expected_shape
+    for name in ("mean_", "scale_"):
+        current_stat = np.asarray(getattr(current, name, None))
+        expected_stat = np.asarray(getattr(expected, name, None))
+        compatible = compatible and current_stat.shape == expected_stat.shape
+        if compatible:
+            compatible = bool(
+                np.allclose(current_stat, expected_stat, rtol=1e-10, atol=1e-12)
+            )
+    if not compatible:
+        raise ValueError(
+            "Target normalization changed since the checkpoint was saved. "
+            "Resuming with a different scaler would change the meaning of model "
+            "outputs. Use --fresh or a separate output directory for this dataset "
+            "and training split."
+        )
+
+
+def _fit_resume_scaler(args: Any, val_split: float) -> Any:
+    """Check new split statistics before modifying an existing run's cache."""
+    data_format = DataSource.detect_format(args.data_path)
+    with get_data_source(
+        data_format, allow_pickle=getattr(args, "allow_pickle", False)
+    ).load_mmap(args.data_path) as (inputs, targets):
+        num_samples = len(inputs)
+        if data_format == "mat" and targets.ndim == 2:
+            targets = np.asarray(targets[:])
+            if (targets.shape[0] == 1 and targets.shape[1] == num_samples) or (
+                targets.shape[1] == 1 and targets.shape[0] != num_samples
+            ):
+                targets = targets.T
+        if len(targets) != num_samples:
+            raise ValueError(
+                f"Input/output sample mismatch: {num_samples} inputs but "
+                f"{len(targets)} targets."
+            )
+        train_indices, _ = train_test_split(
+            np.arange(num_samples), test_size=val_split, random_state=args.seed
+        )
+        target_shape = canonical_target_shape(tuple(targets.shape))
+        if len(target_shape) == 3:
+            return SpatialTargetScaler().fit_batches(
+                _iter_target_batches(targets, train_indices)
+            )
+        return create_target_scaler(np.asarray(targets[:])[train_indices])
+
+
 def prepare_data(
     args: Any,
     logger: logging.Logger,
     accelerator: Accelerator,
     cache_dir: str = ".",
     val_split: float = 0.2,
-) -> tuple[DataLoader, DataLoader, StandardScaler, tuple[int, ...], int]:
+    *,
+    expected_scaler: Any = None,
+) -> tuple[DataLoader, DataLoader, Any, tuple[int, ...], int]:
     """
     Prepare DataLoaders with DDP synchronization guarantees.
 
     This function handles:
     1. Loading raw data and creating memmap cache (Rank 0 only)
-    2. Fitting StandardScaler on training set only (no data leakage)
+    2. Fitting a vector or channel-wise field scaler on training data only
     3. Synchronizing all ranks before proceeding
     4. Creating thread-safe DataLoaders for DDP training
 
@@ -1226,23 +1428,28 @@ def prepare_data(
         accelerator: Accelerator instance for DDP coordination
         cache_dir: Directory for cache files (default: current directory)
         val_split: Validation set fraction (default: 0.2)
+        expected_scaler: Checkpoint scaler to preserve when resuming. Changed
+            statistics are rejected before any existing cache files are removed.
 
     Returns:
         Tuple of:
             - train_dl: Training DataLoader
             - val_dl: Validation DataLoader
-            - scaler: Fitted StandardScaler (for inverse transforms)
+            - scaler: Fitted target scaler (for inverse transforms)
             - in_shape: Input spatial dimensions - (L,), (H, W), or (D, H, W)
-            - out_dim: Number of output targets
+            - out_dim: Number of vector targets or dense output channels
 
     Cache Files Created:
         - train_data_cache.dat: Memory-mapped input data
-        - scaler.pkl: Fitted StandardScaler
+        - target_data_cache.dat: Memory-mapped scaled dense targets (field mode)
+        - scaler.pkl: Fitted target scaler
         - data_metadata.pkl: Shape and dimension metadata
     """
     CACHE_FILE = os.path.join(cache_dir, "train_data_cache.dat")
+    TARGET_CACHE_FILE = os.path.join(cache_dir, "target_data_cache.dat")
     SCALER_FILE = os.path.join(cache_dir, "scaler.pkl")
     META_FILE = os.path.join(cache_dir, "data_metadata.pkl")
+    os.makedirs(cache_dir, exist_ok=True)
 
     # ==========================================================================
     # PHASE 1: DATA GENERATION (Rank 0 Only)
@@ -1262,6 +1469,43 @@ def prepare_data(
                 meta = pickle.load(f)
             cached_file_size = meta.get("file_size", None)
             cached_content_hash = meta.get("content_hash", None)
+            if meta.get("allow_pickle", True) != getattr(args, "allow_pickle", False):
+                cache_exists = False
+
+            if (
+                meta.get("output_kind") == "field"
+                and meta.get("target_normalization_version", 0)
+                != SpatialTargetScaler.NORMALIZATION_VERSION
+            ):
+                cache_exists = False
+
+            if meta.get("output_kind") == "field" and not os.path.exists(
+                TARGET_CACHE_FILE
+            ):
+                cache_exists = False
+
+            if cache_exists:
+                expected_input_bytes = (
+                    int(np.prod(meta["shape"])) * np.dtype(np.float32).itemsize
+                )
+                if os.path.getsize(CACHE_FILE) != expected_input_bytes:
+                    cache_exists = False
+
+            if cache_exists and meta.get("output_kind") == "field":
+                target_cache_shape = tuple(meta.get("target_cache_shape", ()))
+                expected_target_bytes = (
+                    int(np.prod(target_cache_shape)) * np.dtype(np.float32).itemsize
+                )
+                if (
+                    not target_cache_shape
+                    or os.path.getsize(TARGET_CACHE_FILE) != expected_target_bytes
+                ):
+                    if accelerator.is_main_process:
+                        logger.warning(
+                            "⚠️  Dense target cache has an unexpected size; "
+                            "regenerating it..."
+                        )
+                    cache_exists = False
 
             # Get current file stats
             current_stats = os.stat(args.data_path)
@@ -1339,11 +1583,42 @@ def prepare_data(
             logging.debug(f"Cache validation failed ({e}). Regenerating...")
             cache_exists = False
 
+    if expected_scaler is not None:
+        validation_error = None
+        if accelerator.is_main_process:
+            try:
+                if cache_exists:
+                    with open(SCALER_FILE, "rb") as f:
+                        _validate_scaler_compatibility(pickle.load(f), expected_scaler)
+                else:
+                    # This extra streaming pass is restricted to a resume that
+                    # needs a cache rebuild. Validate before invalidation, so a
+                    # rejected resume preserves the original scaler and units.
+                    _validate_scaler_compatibility(
+                        _fit_resume_scaler(args, val_split), expected_scaler
+                    )
+            except Exception as exc:
+                validation_error = exc
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            error_messages = [str(validation_error) if validation_error else None]
+            torch.distributed.broadcast_object_list(error_messages, src=0)
+            if error_messages[0] is not None and validation_error is None:
+                validation_error = ValueError(error_messages[0])
+        if validation_error is not None:
+            raise validation_error
+
+    # Invalidate the old completion sentinel before any rank starts waiting.
+    # The barrier closes a race where non-main ranks could otherwise observe
+    # stale metadata while rank 0 was recreating an interrupted dense cache.
+    if not cache_exists and accelerator.is_main_process and os.path.exists(META_FILE):
+        os.remove(META_FILE)
+    wait_for_everyone(accelerator)
+
     if not cache_exists:
         if accelerator.is_main_process:
             # Delete stale cache files to force regeneration
             # This prevents silent reuse of old data when metadata invalidates cache
-            for stale_file in [CACHE_FILE, SCALER_FILE]:
+            for stale_file in [META_FILE, CACHE_FILE, TARGET_CACHE_FILE, SCALER_FILE]:
                 if os.path.exists(stale_file):
                     try:
                         os.remove(stale_file)
@@ -1356,7 +1631,9 @@ def prepare_data(
             # Fail explicitly if stale cache files couldn't be removed
             # This prevents silent reuse of outdated data
             remaining_stale = [
-                f for f in [CACHE_FILE, SCALER_FILE] if os.path.exists(f)
+                f
+                for f in [META_FILE, CACHE_FILE, TARGET_CACHE_FILE, SCALER_FILE]
+                if os.path.exists(f)
             ]
             if remaining_stale:
                 raise RuntimeError(
@@ -1379,16 +1656,21 @@ def prepare_data(
                     f"CRITICAL: Data file not found: {args.data_path}"
                 )
 
-            # Load raw data using memory-mapped mode for all formats
-            # This avoids loading the entire dataset into RAM at once
-            # All load_mmap() methods now return LazyDataHandle consistently
+            # HDF5/MAT stream slices; NPZ materializes its compressed arrays.
+            # All load_mmap() methods return a common data handle.
             _lazy_handle = None
             try:
-                source = get_data_source(data_format)
+                source = get_data_source(
+                    data_format, allow_pickle=getattr(args, "allow_pickle", False)
+                )
                 if hasattr(source, "load_mmap"):
                     _lazy_handle = source.load_mmap(args.data_path)
                     inp, outp = _lazy_handle.inputs, _lazy_handle.outputs
-                    logger.info("   Using memory-mapped loading (low memory mode)")
+                    logger.info(
+                        "   Loading NPZ arrays into host memory before caching"
+                        if data_format == "npz"
+                        else "   Using chunked loading before caching"
+                    )
                 else:
                     inp, outp = load_training_data(args.data_path, format=data_format)
                     logger.info("   Using eager loading (full data in memory)")
@@ -1396,173 +1678,221 @@ def prepare_data(
                 logger.error(f"Failed to load data file: {e}")
                 raise
 
-            # Detect shape (handle sparse matrices) - DIMENSION AGNOSTIC
-            num_samples = len(inp)
+            try:
+                # Detect shape (handle sparse matrices) - DIMENSION AGNOSTIC
+                num_samples = len(inp)
+                if num_samples < 2:
+                    raise ValueError("Training requires at least two input samples.")
 
-            # MAT files store outputs column-major. The eager MATSource.load() path
-            # normalizes transposed MATLAB vectors, but the mmap path returns a raw
-            # transposed view with NO normalization. Apply the same normalization
-            # here so out_dim and the scaler are correct — otherwise a single target
-            # saved as a (1, N) row vector yields out_dim=N and crashes scaler fitting.
-            if data_format == "mat" and len(getattr(outp, "shape", ())) == 2:
-                outp = np.asarray(outp[:])
-                if outp.shape[0] == 1 and outp.shape[1] == num_samples:
-                    outp = outp.T  # (1, N) -> (N, 1): N samples, 1 target
-                elif outp.shape[1] == 1 and outp.shape[0] != num_samples:
-                    outp = outp.T  # (T, 1) -> (1, T): 1 sample, T targets
+                # MAT files store outputs column-major. The eager MATSource.load() path
+                # normalizes transposed MATLAB vectors, but the mmap path returns a raw
+                # transposed view with NO normalization. Apply the same normalization
+                # here so out_dim and the scaler are correct — otherwise a single target
+                # saved as a (1, N) row vector yields out_dim=N and crashes scaler fitting.
+                if data_format == "mat" and len(getattr(outp, "shape", ())) == 2:
+                    outp = np.asarray(outp[:])
+                    if outp.shape[0] == 1 and outp.shape[1] == num_samples:
+                        outp = outp.T  # (1, N) -> (N, 1): N samples, 1 target
+                    elif outp.shape[1] == 1 and outp.shape[0] != num_samples:
+                        outp = outp.T  # (T, 1) -> (1, T): 1 sample, T targets
 
-            # Handle 1D targets: (N,) -> treat as single output
-            if outp.ndim == 1:
-                out_dim = 1
-            else:
-                out_dim = outp.shape[1]
+                if len(outp) != num_samples:
+                    raise ValueError(
+                        f"Input/output sample mismatch: {num_samples} inputs but "
+                        f"{len(outp)} targets."
+                    )
 
-            sample_0 = inp[0]
-            if issparse(sample_0) or hasattr(sample_0, "toarray"):
-                sample_0 = sample_0.toarray()
+                # Canonical target contract:
+                #   vector (N,) / (N,T) -> (N,T)
+                #   field  (N,H,W)      -> (N,1,H,W)
+                #   field  (N,C,H,W)    -> unchanged
+                target_shape = canonical_target_shape(tuple(outp.shape))
+                out_dim = target_shape[0]
+                output_kind = "field" if len(target_shape) == 3 else "vector"
 
-            # Detect dimensionality and validate single-channel assumption
-            raw_shape = sample_0.shape
+                sample_0 = inp[0]
+                if issparse(sample_0) or hasattr(sample_0, "toarray"):
+                    sample_0 = sample_0.toarray()
 
-            # Heuristic for ambiguous multi-channel detection:
-            # Trigger when shape is EXACTLY 3D (could be C,H,W or D,H,W) with:
-            #   - First dim small (<=16) - looks like channels
-            #   - BOTH remaining dims large (>16) - confirming it's an image, not a tiny patch
-            # This distinguishes (3, 256, 256) from (8, 1024) or (128, 128)
-            # Use --single_channel to confirm shallow 3D volumes like (8, 128, 128)
-            is_ambiguous_shape = (
-                len(raw_shape) == 3  # Exactly 3D: could be (C, H, W) or (D, H, W)
-                and raw_shape[0] <= 16  # First dim looks like channels
-                and raw_shape[1] > 16
-                and raw_shape[2] > 16  # Both spatial dims are large
-            )
+                # Detect dimensionality and validate single-channel assumption
+                raw_shape = sample_0.shape
+                if not 1 <= len(raw_shape) <= 3 or any(size == 0 for size in raw_shape):
+                    raise ValueError(
+                        f"Training inputs require 1D, 2D, or 3D non-empty samples, got {raw_shape}."
+                    )
 
-            # Check for user confirmation via --single_channel flag
-            user_confirmed_single_channel = getattr(args, "single_channel", False)
-
-            if is_ambiguous_shape and not user_confirmed_single_channel:
-                raise ValueError(
-                    f"Ambiguous input shape detected: sample shape {raw_shape}. "
-                    f"This could be either:\n"
-                    f"  - Multi-channel 2D data (C={raw_shape[0]}, H={raw_shape[1]}, W={raw_shape[2]})\n"
-                    f"  - Single-channel 3D volume (D={raw_shape[0]}, H={raw_shape[1]}, W={raw_shape[2]})\n\n"
-                    f"If this is single-channel 3D/shallow volume data, use --single_channel flag.\n"
-                    f"If this is multi-channel 2D data, reshape to (N*C, H, W) with adjusted targets."
+                # Heuristic for ambiguous multi-channel detection:
+                # Trigger when shape is EXACTLY 3D (could be C,H,W or D,H,W) with:
+                #   - First dim small (<=16) - looks like channels
+                #   - BOTH remaining dims large (>16) - confirming it's an image, not a tiny patch
+                # This distinguishes (3, 256, 256) from (8, 1024) or (128, 128)
+                # Use --single_channel to confirm shallow 3D volumes like (8, 128, 128)
+                is_ambiguous_shape = (
+                    len(raw_shape) == 3  # Exactly 3D: could be (C, H, W) or (D, H, W)
+                    and raw_shape[0] <= 16  # First dim looks like channels
+                    and raw_shape[1] > 16
+                    and raw_shape[2] > 16  # Both spatial dims are large
                 )
 
-            spatial_shape = raw_shape
-            full_shape = (
-                num_samples,
-                1,
-            ) + spatial_shape  # Add channel dim: (N, 1, ...)
+                # Check for user confirmation via --single_channel flag
+                user_confirmed_single_channel = getattr(args, "single_channel", False)
 
-            dim_names = {1: "1D (L)", 2: "2D (H, W)", 3: "3D (D, H, W)"}
-            dim_type = dim_names.get(len(spatial_shape), f"{len(spatial_shape)}D")
-            logger.info(
-                f"   Shape Detected: {full_shape} [{dim_type}] | Output Dim: {out_dim}"
-            )
+                if is_ambiguous_shape and not user_confirmed_single_channel:
+                    raise ValueError(
+                        f"Ambiguous input shape detected: sample shape {raw_shape}. "
+                        f"This could be either:\n"
+                        f"  - Multi-channel 2D data (C={raw_shape[0]}, H={raw_shape[1]}, W={raw_shape[2]})\n"
+                        f"  - Single-channel 3D volume (D={raw_shape[0]}, H={raw_shape[1]}, W={raw_shape[2]})\n\n"
+                        f"If this is single-channel 3D/shallow volume data, use --single_channel flag.\n"
+                        f"If this is multi-channel 2D data, reshape to (N*C, H, W) with adjusted targets."
+                    )
 
-            # Compute metadata now; META_FILE is written LAST (after cache +
-            # scaler) as the completion sentinel — see cache_complete flag.
-            file_stats = os.stat(args.data_path)
-            content_hash = _compute_file_hash(
-                args.data_path, mode=getattr(args, "cache_validate", "sha256")
-            )
-            _cache_meta = {
-                "shape": full_shape,
-                "out_dim": out_dim,
-                "data_path": os.path.abspath(args.data_path),
-                "file_size": file_stats.st_size,
-                "content_hash": content_hash,
-                # Split parameters the scaler fit depends on (see cache validation).
-                "val_split": val_split,
-                "seed": getattr(args, "seed", None),
-            }
+                spatial_shape = raw_shape
+                full_shape = (
+                    num_samples,
+                    1,
+                ) + spatial_shape  # Add channel dim: (N, 1, ...)
 
-            # Create memmap cache
-            if not os.path.exists(CACHE_FILE):
-                logger.info("   Writing Memmap Cache (one-time operation)...")
-                fp = np.memmap(CACHE_FILE, dtype="float32", mode="w+", shape=full_shape)
-
-                chunk_size = 2000
-                pbar = tqdm(
-                    range(0, num_samples, chunk_size),
-                    desc="Caching",
-                    disable=not accelerator.is_main_process,
+                dim_names = {1: "1D (L)", 2: "2D (H, W)", 3: "3D (D, H, W)"}
+                dim_type = dim_names.get(len(spatial_shape), f"{len(spatial_shape)}D")
+                logger.info(
+                    f"   Shape Detected: {full_shape} [{dim_type}] | "
+                    f"Output: {target_shape} [{output_kind}]"
                 )
 
-                for i in pbar:
-                    end = min(i + chunk_size, num_samples)
-                    batch = inp[i:end]
+                # Compute metadata now; META_FILE is written LAST (after cache +
+                # scaler) as the completion sentinel — see cache_complete flag.
+                file_stats = os.stat(args.data_path)
+                content_hash = _compute_file_hash(
+                    args.data_path, mode=getattr(args, "cache_validate", "sha256")
+                )
+                _cache_meta = {
+                    "shape": full_shape,
+                    "out_dim": out_dim,
+                    "target_shape": target_shape,
+                    "output_kind": output_kind,
+                    "target_normalization_version": (
+                        SpatialTargetScaler.NORMALIZATION_VERSION
+                        if output_kind == "field"
+                        else None
+                    ),
+                    "target_cache_shape": (num_samples, *target_shape),
+                    "target_cache_nbytes": int(np.prod((num_samples, *target_shape)))
+                    * np.dtype(np.float32).itemsize,
+                    "data_path": os.path.abspath(args.data_path),
+                    "allow_pickle": getattr(args, "allow_pickle", False),
+                    "file_size": file_stats.st_size,
+                    "content_hash": content_hash,
+                    # Split parameters the scaler fit depends on (see cache validation).
+                    "val_split": val_split,
+                    "seed": getattr(args, "seed", None),
+                }
 
-                    # Handle sparse/dense conversion
-                    if issparse(batch[0]) or hasattr(batch[0], "toarray"):
-                        data_chunk = np.stack(
-                            [x.toarray().astype(np.float32) for x in batch]
+                # Create memmap cache
+                if not os.path.exists(CACHE_FILE):
+                    logger.info("   Writing Memmap Cache (one-time operation)...")
+                    fp = np.memmap(
+                        CACHE_FILE, dtype="float32", mode="w+", shape=full_shape
+                    )
+
+                    chunk_size = _bounded_batch_size(full_shape, np.float32, 2000)
+                    pbar = tqdm(
+                        range(0, num_samples, chunk_size),
+                        desc="Caching",
+                        disable=not accelerator.is_main_process,
+                    )
+
+                    for i in pbar:
+                        end = min(i + chunk_size, num_samples)
+                        batch = inp[i:end]
+
+                        # Handle sparse/dense conversion
+                        if issparse(batch[0]) or hasattr(batch[0], "toarray"):
+                            data_chunk = np.stack([x.toarray() for x in batch])
+                        else:
+                            data_chunk = np.asarray(batch)
+                        data_chunk = _as_finite_float32(data_chunk, "Inputs")
+
+                        # Add channel dimension if needed (handles 1D, 2D, and 3D spatial data)
+                        # data_chunk shape: (batch, *spatial) -> need (batch, 1, *spatial)
+                        # full_shape is (N, 1, *spatial), so expected ndim = len(full_shape)
+                        if data_chunk.ndim == len(full_shape) - 1:
+                            # Missing channel dim: (batch, *spatial) -> (batch, 1, *spatial)
+                            data_chunk = np.expand_dims(data_chunk, 1)
+
+                        fp[i:end] = data_chunk
+
+                        # Periodic flush to disk
+                        if i % 10000 == 0:
+                            fp.flush()
+
+                    fp.flush()
+                    del fp
+                    gc.collect()
+
+                # Train/Val split and scaler fitting
+                indices = np.arange(num_samples)
+                tr_idx, val_idx = train_test_split(
+                    indices, test_size=val_split, random_state=args.seed
+                )
+
+                if not os.path.exists(SCALER_FILE):
+                    logger.info("   Fitting target scaler (training set only)...")
+
+                    if output_kind == "field":
+                        scaler = SpatialTargetScaler().fit_batches(
+                            _iter_target_batches(outp, tr_idx)
                         )
                     else:
-                        data_chunk = np.asarray(batch, dtype=np.float32)
+                        # Vector labels are normally small; materialize them for the
+                        # exact sklearn StandardScaler behavior used by legacy runs.
+                        outp_all = np.asarray(outp[:])
+                        if (
+                            outp_all.dtype.kind not in "biuf"
+                            or not np.isfinite(outp_all).all()
+                        ):
+                            raise ValueError(
+                                "Targets must contain only finite real values."
+                            )
+                        outp_train = outp_all[tr_idx]
+                        scaler = create_target_scaler(canonicalize_targets(outp_train))
+                    with open(SCALER_FILE, "wb") as f:
+                        pickle.dump(scaler, f)
 
-                    # Add channel dimension if needed (handles 1D, 2D, and 3D spatial data)
-                    # data_chunk shape: (batch, *spatial) -> need (batch, 1, *spatial)
-                    # full_shape is (N, 1, *spatial), so expected ndim = len(full_shape)
-                    if data_chunk.ndim == len(full_shape) - 1:
-                        # Missing channel dim: (batch, *spatial) -> (batch, 1, *spatial)
-                        data_chunk = np.expand_dims(data_chunk, 1)
+                if output_kind == "field" and not os.path.exists(TARGET_CACHE_FILE):
+                    logger.info("   Writing scaled target memmap cache...")
+                    target_full_shape = (num_samples, *target_shape)
+                    target_fp = np.memmap(
+                        TARGET_CACHE_FILE,
+                        dtype="float32",
+                        mode="w+",
+                        shape=target_full_shape,
+                    )
+                    target_chunk_size = _bounded_batch_size(outp.shape, outp.dtype, 256)
+                    for start in range(0, num_samples, target_chunk_size):
+                        end = min(start + target_chunk_size, num_samples)
+                        target_batch = canonicalize_targets(outp[start:end])
+                        target_fp[start:end] = _as_finite_float32(
+                            scaler.transform(target_batch), "Scaled targets"
+                        )
+                    target_fp.flush()
+                    del target_fp
 
-                    fp[i:end] = data_chunk
+                # Write META_FILE LAST as completion sentinel.
+                # Order: CACHE_FILE -> SCALER_FILE -> META_FILE.
+                # If any prior step is interrupted, META_FILE won't exist (or
+                # will lack cache_complete), so the next run regenerates.
+                _cache_meta["cache_complete"] = True
+                meta_tmp_file = f"{META_FILE}.tmp"
+                with open(meta_tmp_file, "wb") as f:
+                    pickle.dump(_cache_meta, f)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(meta_tmp_file, META_FILE)
 
-                    # Periodic flush to disk
-                    if i % 10000 == 0:
-                        fp.flush()
-
-                fp.flush()
-                del fp
-                gc.collect()
-
-            # Train/Val split and scaler fitting
-            indices = np.arange(num_samples)
-            tr_idx, val_idx = train_test_split(
-                indices, test_size=val_split, random_state=args.seed
-            )
-
-            if not os.path.exists(SCALER_FILE):
-                logger.info("   Fitting StandardScaler (training set only)...")
-
-                # Convert lazy datasets to numpy for reliable indexing
-                # (h5py and _TransposedH5Dataset may not support fancy indexing)
-                if hasattr(outp, "_dataset") or hasattr(outp, "file"):
-                    # Lazy h5py or _TransposedH5Dataset — load full output array
-                    # (targets are small enough to fit in RAM, unlike inputs)
-                    outp_all = np.array(outp[:])
-                    outp_train = outp_all[tr_idx]
-                else:
-                    # Already numpy array
-                    outp_train = outp[tr_idx]
-
-                # Ensure 2D for StandardScaler: (N,) -> (N, 1)
-                if outp_train.ndim == 1:
-                    outp_train = outp_train.reshape(-1, 1)
-
-                scaler = StandardScaler()
-                scaler.fit(outp_train)
-                with open(SCALER_FILE, "wb") as f:
-                    pickle.dump(scaler, f)
-
-            # Write META_FILE LAST as completion sentinel.
-            # Order: CACHE_FILE -> SCALER_FILE -> META_FILE.
-            # If any prior step is interrupted, META_FILE won't exist (or
-            # will lack cache_complete), so the next run regenerates.
-            _cache_meta["cache_complete"] = True
-            with open(META_FILE, "wb") as f:
-                pickle.dump(_cache_meta, f)
-
-            # Cleanup: close file handles BEFORE deleting references
-            if _lazy_handle is not None:
-                try:
+            finally:
+                if _lazy_handle is not None:
                     _lazy_handle.close()
-                except Exception:
-                    pass
             del inp, outp
             gc.collect()
 
@@ -1612,13 +1942,40 @@ def prepare_data(
     # ==========================================================================
     # PHASE 2: SYNCHRONIZED LOADING (All Ranks)
     # ==========================================================================
-    accelerator.wait_for_everyone()
+    wait_for_everyone(accelerator)
 
     # Load metadata
     with open(META_FILE, "rb") as f:
         meta = pickle.load(f)
         full_shape = meta["shape"]
         out_dim = meta["out_dim"]
+        target_shape = tuple(meta.get("target_shape", (out_dim,)))
+        output_kind = meta.get("output_kind", "vector")
+
+    if not meta.get("cache_complete", False):
+        raise RuntimeError(
+            f"Cache metadata is incomplete: {META_FILE}. Remove the output cache "
+            "directory and rerun training."
+        )
+    expected_input_bytes = int(np.prod(full_shape)) * np.dtype(np.float32).itemsize
+    if os.path.getsize(CACHE_FILE) != expected_input_bytes:
+        raise RuntimeError(
+            f"Input cache has an unexpected size: {CACHE_FILE}. Remove the output "
+            "cache directory and rerun training."
+        )
+    if output_kind == "field":
+        target_cache_shape = (full_shape[0], *target_shape)
+        expected_target_bytes = (
+            int(np.prod(target_cache_shape)) * np.dtype(np.float32).itemsize
+        )
+        if (
+            not os.path.exists(TARGET_CACHE_FILE)
+            or os.path.getsize(TARGET_CACHE_FILE) != expected_target_bytes
+        ):
+            raise RuntimeError(
+                f"Dense target cache is missing or incomplete: {TARGET_CACHE_FILE}. "
+                "Remove the output cache directory and rerun training."
+            )
 
     # Load and validate scaler
     with open(SCALER_FILE, "rb") as f:
@@ -1627,16 +1984,30 @@ def prepare_data(
     if not hasattr(scaler, "scale_") or scaler.scale_ is None:
         raise RuntimeError("CRITICAL: Scaler is not properly fitted (scale_ is None)")
 
-    # Load targets only (memory-efficient - avoids loading large input arrays)
-    # This is critical for HPC environments with memory constraints during DDP
-    outp = load_outputs_only(args.data_path)
-
-    # Ensure 2D for StandardScaler: (N,) -> (N, 1)
-    if outp.ndim == 1:
-        outp = outp.reshape(-1, 1)
-
-    y_scaled = scaler.transform(outp).astype(np.float32)
-    y_tensor = torch.tensor(y_scaled)
+    y_tensor = None
+    if output_kind == "vector":
+        # Vector labels are small enough to keep in memory and retain the
+        # established fast indexing behavior.
+        outp = canonicalize_targets(
+            load_outputs_only(
+                args.data_path, allow_pickle=getattr(args, "allow_pickle", False)
+            )
+        )
+        if tuple(outp.shape[1:]) != target_shape:
+            raise ValueError(
+                f"Target shape changed since cache creation: expected "
+                f"{target_shape}, got {tuple(outp.shape[1:])}. "
+                "Use --fresh or remove the output cache directory."
+            )
+        if outp.dtype.kind not in "biuf" or not np.isfinite(outp).all():
+            raise ValueError("Targets must contain only finite real values.")
+        y_scaled = _as_finite_float32(scaler.transform(outp), "Scaled targets")
+        y_tensor = torch.tensor(y_scaled)
+    elif not os.path.exists(TARGET_CACHE_FILE):
+        raise RuntimeError(
+            f"Dense target cache missing: {TARGET_CACHE_FILE}. Remove the output "
+            "cache directory and rerun training."
+        )
 
     # Regenerate indices (deterministic with same seed)
     indices = np.arange(full_shape[0])
@@ -1645,8 +2016,14 @@ def prepare_data(
     )
 
     # Create datasets
-    tr_ds = MemmapDataset(CACHE_FILE, y_tensor, full_shape, tr_idx)
-    val_ds = MemmapDataset(CACHE_FILE, y_tensor, full_shape, val_idx)
+    dataset_kwargs = {}
+    if output_kind == "field":
+        dataset_kwargs = {
+            "target_memmap_path": TARGET_CACHE_FILE,
+            "target_shape": target_shape,
+        }
+    tr_ds = MemmapDataset(CACHE_FILE, y_tensor, full_shape, tr_idx, **dataset_kwargs)
+    val_ds = MemmapDataset(CACHE_FILE, y_tensor, full_shape, val_idx, **dataset_kwargs)
 
     # Create DataLoaders with thread-safe configuration
     loader_kwargs = {

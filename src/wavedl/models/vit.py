@@ -65,7 +65,8 @@ class PatchEmbed(nn.Module):
         self.patch_size = patch_size
         self.embed_dim = embed_dim
         self.pad_if_needed = pad_if_needed
-        self._padding = None  # Will be set if padding is needed
+        self._padding: tuple[int, ...] | None = None  # Will be set if padding is needed
+        self.proj: nn.Conv1d | nn.Conv2d
 
         if self.dim == 1:
             # 1D: segment patches
@@ -97,7 +98,7 @@ class PatchEmbed(nn.Module):
             )
         elif self.dim == 2:
             # 2D: grid patches
-            H, W = in_shape
+            H, W = in_shape[0], in_shape[1]
             h_rem, w_rem = H % patch_size, W % patch_size
             if h_rem != 0 or w_rem != 0:
                 if pad_if_needed:

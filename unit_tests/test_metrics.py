@@ -175,6 +175,13 @@ class TestCalcPearson:
         # Average of 1.0 and 0.0
         assert corr == pytest.approx(0.5, abs=1e-6)
 
+    def test_dense_fields_are_flattened_per_channel(self):
+        """Dense fields compute one correlation per property channel."""
+        y_true = np.arange(2 * 2 * 3 * 4, dtype=np.float32).reshape(2, 2, 3, 4)
+        y_pred = y_true.copy()
+
+        assert calc_pearson(y_true, y_pred) == pytest.approx(1.0, abs=1e-6)
+
 
 # ==============================================================================
 # R² SCORE TESTS
@@ -241,6 +248,15 @@ class TestCalcPerTargetR2:
         assert r2_scores[1] > 0.9  # Good prediction
         assert r2_scores[2] < r2_scores[1]  # Poor is worse than good
         assert r2_scores[3] < r2_scores[1]  # Random is worse than good
+
+    def test_dense_fields_return_one_score_per_channel(self):
+        """Spatial axes are observations, not separate named targets."""
+        y_true = np.arange(2 * 3 * 4 * 5, dtype=np.float32).reshape(2, 3, 4, 5)
+        y_pred = y_true.copy()
+
+        r2_scores = calc_per_target_r2(y_true, y_pred)
+
+        np.testing.assert_allclose(r2_scores, np.ones(3))
 
 
 # ==============================================================================
@@ -358,6 +374,19 @@ class TestVisualization:
 # ==============================================================================
 class TestEdgeCases:
     """Tests for edge cases and error handling."""
+
+    @pytest.mark.parametrize("field", [False, True])
+    def test_large_float32_offsets_preserve_r2_and_correlation(self, field):
+        true = np.array([1e9, 1e9 + 64, 1e9, 1e9 + 64], dtype=np.float32)
+        pred = true[::-1].copy()
+        shape = (1, 1, 2, 2) if field else (4, 1)
+
+        np.testing.assert_allclose(
+            calc_per_target_r2(true.reshape(shape), pred.reshape(shape)), [-3.0]
+        )
+        assert calc_pearson(true.reshape(shape), pred.reshape(shape)) == pytest.approx(
+            -1.0
+        )
 
     def test_calc_pearson_small_sample(self):
         """Test Pearson with minimal sample size."""

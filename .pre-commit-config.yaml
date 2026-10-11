@@ -65,7 +65,7 @@ repos:
     hooks:
       - id: clean-cache
         name: clean cache directories
-        entry: python -c "import shutil, pathlib; dirs = ['__pycache__', '.pytest_cache', '.ruff_cache', '.cache', '.hf_cache', '.torch_cache', '.triton_cache', '.inductor_cache', '.matplotlib', '.fontconfig', '.local']; exts = ['.egg-info']; [shutil.rmtree(p, ignore_errors=True) for p in pathlib.Path('.').rglob('*') if p.is_dir() and (p.name in dirs or any(p.name.endswith(e) for e in exts))]"
+        entry: python -c "import shutil, pathlib; dirs = ['__pycache__', '.pytest_cache', '.ruff_cache', '.mypy_cache', '.cache', '.hf_cache', '.torch_cache', '.triton_cache', '.inductor_cache', '.matplotlib', '.fontconfig', '.local']; exts = ['.egg-info']; [shutil.rmtree(p, ignore_errors=True) for p in pathlib.Path('.').rglob('*') if p.is_dir() and (p.name in dirs or any(p.name.endswith(e) for e in exts))]"
         language: python
         pass_filenames: false
         always_run: true

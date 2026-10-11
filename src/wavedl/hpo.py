@@ -36,7 +36,12 @@ Author: Ductho Le (ductho.le@outlook.com)
 """
 
 import argparse
+import hashlib
 import json
+import math
+import os
+import queue
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -53,6 +58,18 @@ except ImportError:
 
 def _detect_gpu_count() -> int:
     """Return the number of GPUs via nvidia-smi (best effort, defaults to 1)."""
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if visible is not None:
+        return max(
+            1,
+            len(
+                [
+                    value
+                    for value in visible.split(",")
+                    if value.strip() and value.strip() != "-1"
+                ]
+            ),
+        )
     try:
         result = subprocess.run(
             ["nvidia-smi", "--list-gpus"], capture_output=True, text=True
@@ -72,6 +89,9 @@ def _detect_gpu_count() -> int:
 DEFAULT_MODELS = ["cnn", "resnet18", "resnet34"]
 QUICK_MODELS = ["cnn"]
 MEDIUM_MODELS = ["cnn", "resnet18"]
+DENSE_MODELS = ["unet_field"]
+DEFAULT_BATCH_SIZES = [16, 32, 64, 128]
+DENSE_BATCH_SIZES = [1, 2, 4, 8]
 
 # All 6 optimizers
 DEFAULT_OPTIMIZERS = ["adamw", "adam", "sgd", "nadam", "radam", "rmsprop"]
@@ -98,6 +118,111 @@ QUICK_LOSSES = ["mse"]
 MEDIUM_LOSSES = ["mse", "mae", "huber"]
 
 
+def _detect_target_shape(
+    data_path: str, *, allow_pickle: bool = False
+) -> tuple[int, ...]:
+    """Inspect labels and return WaveDL's canonical per-sample shape.
+
+    HDF5 and MAT files expose dataset metadata lazily, so large target maps are
+    not materialized just to configure a sweep. NPZ has no general lazy shape
+    API, but only its output member is loaded rather than the input data.
+    """
+    from wavedl.utils import (
+        DataSource,
+        canonical_target_shape,
+        get_data_source,
+        load_outputs_only,
+    )
+
+    data_format = DataSource.detect_format(data_path)
+    if data_format in ("hdf5", "mat"):
+        handle = get_data_source(data_format, allow_pickle=allow_pickle).load_mmap(
+            data_path
+        )
+        try:
+            raw_shape = tuple(handle.outputs.shape)
+            if data_format == "mat" and len(raw_shape) == 2:
+                num_samples = handle.inputs.shape[0]
+                if raw_shape[0] == 1 and raw_shape[1] == num_samples:
+                    raw_shape = (num_samples, 1)
+                elif raw_shape[1] == 1 and raw_shape[0] != num_samples:
+                    raw_shape = (1, raw_shape[0])
+        finally:
+            handle.close()
+        return canonical_target_shape(raw_shape)
+
+    targets = load_outputs_only(data_path, allow_pickle=allow_pickle)
+    try:
+        return canonical_target_shape(tuple(targets.shape))
+    finally:
+        del targets
+
+
+def _resolve_models_for_target(
+    target_shape: tuple[int, ...],
+    requested_models: list[str] | None = None,
+    *,
+    quick: bool = False,
+    medium: bool = False,
+) -> list[str]:
+    """Choose an HPO model space and reject incompatible model/target pairs."""
+    from wavedl.models import get_model
+
+    target_shape = tuple(target_shape)
+    if len(target_shape) not in (1, 3):
+        raise ValueError(
+            f"Unsupported canonical target shape {target_shape}. Expected a vector "
+            "(T,) or dense 2D field (C,H,W)."
+        )
+
+    is_field = len(target_shape) == 3
+    if requested_models:
+        models = list(requested_models)
+    elif is_field:
+        models = DENSE_MODELS.copy()
+    elif quick:
+        models = QUICK_MODELS.copy()
+    elif medium:
+        models = MEDIUM_MODELS.copy()
+    else:
+        models = DEFAULT_MODELS.copy()
+
+    incompatible = []
+    for model_name in models:
+        model_class = get_model(model_name)
+        if (
+            is_field and not getattr(model_class, "supports_spatial_output", False)
+        ) or (not is_field and getattr(model_class, "requires_spatial_output", False)):
+            incompatible.append(model_name)
+
+    if incompatible:
+        target_kind = "dense 2D field" if is_field else "vector"
+        recommendation = (
+            "Use --models unet_field or register a model with "
+            "supports_spatial_output=True."
+            if is_field
+            else "Choose a vector-output model such as cnn or unet_regression."
+        )
+        raise ValueError(
+            f"Model(s) {', '.join(incompatible)} are incompatible with {target_kind} "
+            f"targets shaped {target_shape}. {recommendation}"
+        )
+
+    return models
+
+
+def _resolve_batch_sizes(
+    target_shape: tuple[int, ...] | None,
+    requested_batch_sizes: list[int] | None = None,
+) -> list[int]:
+    """Use memory-conscious defaults for dense target maps."""
+    if requested_batch_sizes:
+        return list(requested_batch_sizes)
+    if isinstance(target_shape, (list, tuple)) and len(target_shape) == 3:
+        return DENSE_BATCH_SIZES.copy()
+    return DEFAULT_BATCH_SIZES.copy()
+
+
 # =============================================================================
 # OBJECTIVE FUNCTION
 # =============================================================================
@@ -113,21 +238,48 @@ def create_objective(args):
       pruning and reduces overhead, but trials share GPU memory.
     """
 
+    target_shape = getattr(args, "target_shape", None)
+    if not isinstance(target_shape, (list, tuple)):
+        # Backward compatibility for callers that construct a Namespace and
+        # invoke create_objective() directly instead of going through main().
+        target_shape = (1,)
+    models = _resolve_models_for_target(
+        tuple(target_shape),
+        args.models,
+        quick=args.quick,
+        medium=args.medium,
+    )
+
+    # Lease actual visible device IDs. Round-robin trial numbers can assign a
+    # new trial to a GPU whose earlier (slower) trial is still running.
+    gpu_pool = queue.Queue()
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    n_gpus = getattr(args, "n_gpus", 1)
+    n_gpus = n_gpus if isinstance(n_gpus, int) else 1
+    gpu_ids = (
+        [
+            value.strip()
+            for value in visible.split(",")
+            if value.strip() and value.strip() != "-1"
+        ]
+        if visible is not None
+        else [str(index) for index in range(max(1, n_gpus))]
+    )
+    for gpu_id in gpu_ids:
+        gpu_pool.put(gpu_id)
+
     def objective(trial):
         # Select search space based on mode (quick < medium < full)
         # CLI arguments always take precedence over defaults
         if args.quick:
-            models = args.models or QUICK_MODELS
             optimizers = args.optimizers or QUICK_OPTIMIZERS
             schedulers = args.schedulers or QUICK_SCHEDULERS
             losses = args.losses or QUICK_LOSSES
         elif args.medium:
-            models = args.models or MEDIUM_MODELS
             optimizers = args.optimizers or MEDIUM_OPTIMIZERS
             schedulers = args.schedulers or MEDIUM_SCHEDULERS
             losses = args.losses or MEDIUM_LOSSES
         else:
-            models = args.models or DEFAULT_MODELS
             optimizers = args.optimizers or DEFAULT_OPTIMIZERS
             schedulers = args.schedulers or DEFAULT_SCHEDULERS
             losses = args.losses or DEFAULT_LOSSES
@@ -135,7 +287,9 @@ def create_objective(args):
         # Suggest hyperparameters
         model = trial.suggest_categorical("model", models)
         lr = trial.suggest_float("lr", 1e-5, 1e-2, log=True)
-        batch_sizes = args.batch_sizes or [16, 32, 64, 128]
+        batch_sizes = _resolve_batch_sizes(
+            getattr(args, "target_shape", None), args.batch_sizes
+        )
         batch_size = trial.suggest_categorical("batch_size", batch_sizes)
         optimizer = trial.suggest_categorical("optimizer", optimizers)
         scheduler = trial.suggest_categorical("scheduler", schedulers)
@@ -177,6 +331,9 @@ def create_objective(args):
                     momentum=momentum,
                     trial=trial,  # Enable pruning via trial.report/should_prune
                     verbose=False,
+                    selection_metric="mse",
+                    timeout_seconds=args.timeout,
+                    allow_pickle=getattr(args, "allow_pickle", False) is True,
                 )
 
                 if result["pruned"]:
@@ -186,11 +343,17 @@ def create_objective(args):
                     raise optuna.TrialPruned()
 
                 val_loss = result["best_val_loss"]
+                if not math.isfinite(val_loss):
+                    raise FloatingPointError(
+                        "Trial returned a non-finite validation MSE."
+                    )
                 print(
                     f"Trial {trial.number}: val_loss={val_loss:.6f} ({result['epochs_trained']} epochs)"
                 )
                 return val_loss
 
+            except TimeoutError as error:
+                raise optuna.TrialPruned(str(error)) from error
             except optuna.TrialPruned:
                 raise  # Re-raise for Optuna to handle
             except Exception as e:
@@ -227,7 +390,17 @@ def create_objective(args):
             str(args.max_epochs),
             "--seed",
             str(args.seed),
+            "--selection_metric",
+            "mse",
+            "--workers",
+            "0",
         ]
+        if getattr(args, "allow_pickle", False) is True:
+            cmd.append("--allow_pickle")
+
+        modules = getattr(args, "import_modules", [])
+        if isinstance(modules, (list, tuple)) and modules:
+            cmd.extend(["--import", *modules])
 
         # Add conditional args
         if loss == "huber":
@@ -240,20 +413,12 @@ def create_objective(args):
             cmd.extend(["--output_dir", tmpdir])
             history_file = Path(tmpdir) / "training_history.csv"
 
-            # GPU isolation for parallel trials: assign each trial to a specific GPU
-            # This prevents multiple trials from competing for all GPUs
             env = None
-            if args.n_jobs > 1:
-                import os
-
-                # GPU count is detected once in main() (stored on args.n_gpus),
-                # avoiding a per-trial nvidia-smi subprocess spawn.
-                n_gpus = max(1, getattr(args, "n_gpus", 1))
-
-                # Assign trial to a specific GPU (round-robin)
-                gpu_id = trial.number % n_gpus
+            gpu_id = None
+            if args.n_jobs > 1 and gpu_ids:
+                gpu_id = gpu_pool.get()
                 env = os.environ.copy()
-                env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+                env["CUDA_VISIBLE_DEVICES"] = gpu_id
 
             # Run training
             # Note: We inherit the user's cwd instead of setting cwd=Path(__file__).parent
@@ -326,7 +491,11 @@ def create_objective(args):
                         f"Trial {trial.number}: Training completed but no val_loss found"
                     )
 
-                print(f"Trial {trial.number}: val_loss={val_loss:.6f}")
+                if not math.isfinite(val_loss):
+                    raise FloatingPointError(
+                        "Trial returned a non-finite validation MSE."
+                    )
+                print(f"Trial {trial.number}: val_mse={val_loss:.6f}")
                 return val_loss
 
             except subprocess.TimeoutExpired:
@@ -335,6 +504,9 @@ def create_objective(args):
             except Exception as e:
                 print(f"Trial {trial.number}: Error - {e}")
                 raise
+            finally:
+                if gpu_id is not None:
+                    gpu_pool.put(gpu_id)
 
     return objective
 
@@ -359,6 +531,20 @@ Examples:
     # Required
     parser.add_argument(
         "--data_path", type=str, required=True, help="Path to training data"
+    )
+
+    parser.add_argument(
+        "--allow_pickle",
+        action="store_true",
+        help="Allow trusted legacy NPZ object arrays (can execute arbitrary code).",
+    )
+
+    parser.add_argument(
+        "--import",
+        dest="import_modules",
+        nargs="+",
+        default=[],
+        help="Trusted custom model modules or Python files to import.",
     )
 
     # HPO settings
@@ -400,24 +586,30 @@ Examples:
         "--models",
         nargs="+",
         default=None,
-        help=f"Models to search (default: {DEFAULT_MODELS})",
+        help=(
+            f"Models to search (vector default: {DEFAULT_MODELS}; "
+            f"dense-field default: {DENSE_MODELS})"
+        ),
     )
     parser.add_argument(
         "--optimizers",
         nargs="+",
         default=None,
+        choices=DEFAULT_OPTIMIZERS,
         help=f"Optimizers to search (default: {DEFAULT_OPTIMIZERS})",
     )
     parser.add_argument(
         "--schedulers",
         nargs="+",
         default=None,
+        choices=DEFAULT_SCHEDULERS,
         help=f"Schedulers to search (default: {DEFAULT_SCHEDULERS})",
     )
     parser.add_argument(
         "--losses",
         nargs="+",
         default=None,
+        choices=DEFAULT_LOSSES,
         help=f"Losses to search (default: {DEFAULT_LOSSES})",
     )
     parser.add_argument(
@@ -425,7 +617,10 @@ Examples:
         type=int,
         nargs="+",
         default=None,
-        help="Batch sizes to search (default: 16 32 64 128)",
+        help=(
+            "Batch sizes to search (vector default: 16 32 64 128; "
+            "dense-field default: 1 2 4 8)"
+        ),
     )
 
     # Training settings for each trial
@@ -461,6 +656,19 @@ Examples:
     )
 
     args = parser.parse_args()
+    for name in ("n_trials", "max_epochs", "timeout"):
+        if getattr(args, name) < 1:
+            parser.error(f"--{name} must be >= 1.")
+    if args.batch_sizes and any(value < 1 for value in args.batch_sizes):
+        parser.error("--batch_sizes values must be >= 1.")
+
+    from wavedl.models import import_model_modules
+
+    args.import_modules = [
+        str(Path(name).resolve()) if name.endswith(".py") else name
+        for name in args.import_modules
+    ]
+    import_model_modules(args.import_modules)
 
     # Convert to absolute path (child processes may run in different cwd)
     args.data_path = str(Path(args.data_path).resolve())
@@ -469,6 +677,22 @@ Examples:
     if not Path(args.data_path).exists():
         print(f"Error: Data file not found: {args.data_path}")
         sys.exit(1)
+
+    # Resolve the model search space once before creating any trials. Without
+    # this check, a dense dataset combined with the historical CNN/ResNet
+    # defaults would make every HPO trial fail after training startup.
+    try:
+        args.target_shape = _detect_target_shape(
+            args.data_path, allow_pickle=args.allow_pickle
+        )
+        args.models = _resolve_models_for_target(
+            args.target_shape,
+            args.models,
+            quick=args.quick,
+            medium=args.medium,
+        )
+    except (KeyError, OSError, ValueError) as error:
+        parser.error(str(error))
 
     # Detect GPU count once (reused by subprocess trials for round-robin pinning).
     args.n_gpus = _detect_gpu_count()
@@ -486,6 +710,9 @@ Examples:
     print("WaveDL Hyperparameter Optimization")
     print("=" * 60)
     print(f"Data: {args.data_path}")
+    target_kind = "dense 2D field" if len(args.target_shape) == 3 else "vector"
+    print(f"Targets: {target_kind} {args.target_shape}")
+    print(f"Models: {', '.join(args.models)}")
     print(f"Trials: {args.n_trials}")
     # Determine mode name for display
     if args.quick:
@@ -527,7 +754,36 @@ Examples:
         pruner=pruner,
         storage=storage,
         load_if_exists=True,
+        sampler=optuna.samplers.TPESampler(seed=args.seed),
     )
+
+    if storage:
+        with open(args.data_path, "rb") as data_file:
+            data_digest = hashlib.file_digest(data_file, "sha256").hexdigest()
+        signature = {
+            "data_sha256": data_digest,
+            "target_shape": list(args.target_shape),
+            "selection_metric": "normalized_mse_v1",
+            "seed": args.seed,
+            "models": args.models,
+            "optimizers": args.optimizers,
+            "schedulers": args.schedulers,
+            "losses": args.losses,
+            "batch_sizes": args.batch_sizes,
+            "quick": args.quick,
+            "medium": args.medium,
+            "max_epochs": args.max_epochs,
+            "inprocess": args.inprocess,
+            "import_modules": args.import_modules,
+        }
+        prior_signature = study.user_attrs.get("wavedl_signature")
+        if (prior_signature is not None and prior_signature != signature) or (
+            study.trials and prior_signature is None
+        ):
+            parser.error(
+                "Existing study belongs to different data/search settings or an older objective. Use a new --study_name or --storage none."
+            )
+        study.set_user_attr("wavedl_signature", signature)
 
     # Surface implicit resume: a persistent study with the same name is reused,
     # which appends to prior trials. Warn so a search-space change isn't silent.
@@ -583,11 +839,14 @@ Examples:
     # Save results
     results = {
         "best_value": study.best_value,
+        "objective_metric": "normalized_mse",
+        "seed": args.seed,
         "best_params": study.best_params,
         "n_trials": len(completed_trials),
         "study_name": args.study_name,
     }
 
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, "w") as f:
         json.dump(results, f, indent=2)
 
@@ -598,7 +857,15 @@ Examples:
     print("TO TRAIN WITH BEST PARAMETERS:")
     print("=" * 60)
     cmd_parts = ["wavedl-train"]
-    cmd_parts.append(f"--data_path {args.data_path}")
+    cmd_parts.append(f"--data_path {shlex.quote(args.data_path)}")
+    cmd_parts.append("--selection_metric mse")
+    cmd_parts.append(f"--seed {args.seed}")
+    if args.import_modules:
+        cmd_parts.append(
+            "--import " + " ".join(shlex.quote(name) for name in args.import_modules)
+        )
+    if args.allow_pickle:
+        cmd_parts.append("--allow_pickle")
     for key, value in study.best_params.items():
         cmd_parts.append(f"--{key} {value}")
     print(" \\\n    ".join(cmd_parts))

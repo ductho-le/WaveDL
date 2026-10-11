@@ -136,12 +136,11 @@ class ResNet3DBase(BaseModel):
             nn.Linear(regression_hidden // 2, out_size),
         )
 
-        # Optionally freeze backbone for fine-tuning
+        # Adapt before freezing so the replacement stem is frozen too.
+        self._adapt_stem_for_single_channel()
+
         if freeze_backbone:
             self._freeze_backbone()
-
-        # Adapt first conv for single-channel input (instead of expand in forward)
-        self._adapt_stem_for_single_channel()
 
     def _adapt_stem_for_single_channel(self):
         """Modify stem conv to accept 1 channel, averaging pretrained RGB weights."""
@@ -163,10 +162,8 @@ class ResNet3DBase(BaseModel):
         self.backbone.stem[0] = new_conv
 
     def _freeze_backbone(self):
-        """Freeze all backbone parameters except the fc head."""
-        for name, param in self.backbone.named_parameters():
-            if "fc" not in name:
-                param.requires_grad = False
+        """Freeze feature extraction while retaining the regression head."""
+        self._freeze_backbone_modules(("fc",))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

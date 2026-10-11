@@ -11,10 +11,15 @@ Quick Start:
     3. Implement your architecture in __init__ and forward
     4. Train: wavedl-train --import my_model --model my_model --data_path data.npz
 
-Requirements (your model MUST):
+This file implements the vector-output contract. Requirements (your model MUST):
     1. Inherit from BaseModel
     2. Accept (in_shape, out_size, **kwargs) in __init__
     3. Return tensor of shape (batch, out_size) from forward()
+
+For dense 2D regression, also accept out_shape=(C, H, W), set
+supports_spatial_output = True (and requires_spatial_output = True for a
+field-only model), and return exactly (batch, C, H, W). See UNetField in
+unet.py for a complete implementation.
 
 See README.md "Adding Custom Models" section for more details.
 
@@ -25,13 +30,14 @@ import torch
 import torch.nn as nn
 
 from wavedl.models.base import BaseModel
+from wavedl.models.registry import register_model  # noqa: F401 - template decorator
 
 
 # Uncomment the decorator to register this model
 # @register_model("my_model")
 class TemplateModel(BaseModel):
     """
-    Template Model Architecture (2D only).
+    Template vector-regression architecture (2D input only).
 
     Replace this docstring with your model description.
     The first line will appear in --list_models output.

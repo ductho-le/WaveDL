@@ -55,6 +55,13 @@ class TestExpressionConstraint:
         result = constraint(pred)
         assert result.item() == pytest.approx(0.0, abs=1e-6)
 
+    def test_expression_applies_per_pixel_to_dense_channels(self):
+        """Field channel symbols should retain their spatial dimensions."""
+        constraint = ExpressionConstraint("y0 - y1")
+        pred = torch.ones(2, 2, 3, 4)
+
+        assert constraint(pred).item() == pytest.approx(0.0, abs=1e-6)
+
     def test_math_functions(self):
         """Math functions (sin, cos, exp) should work."""
         constraint = ExpressionConstraint("sin(y0)")
@@ -205,6 +212,42 @@ class TestPhysicsConstrainedLoss:
         # MSE = (1² + 1²)/2 = 1, c1 = 0.5*1² = 0.5, c2 = 2.0*1² = 2.0
         expected = 1.0 + 0.5 + 2.0
         assert result.item() == pytest.approx(expected, abs=1e-5)
+
+    def test_dense_channel_scaler_is_broadcast_in_physical_space(self):
+        """Spatial scaler statistics must denormalize every map pixel."""
+        constraint = ExpressionConstraint("y0 - y1")
+        constrained = PhysicsConstrainedLoss(
+            nn.MSELoss(),
+            [constraint],
+            weights=[1.0],
+            output_mean=torch.tensor([[[10.0]], [[5.0]]]),
+            output_std=torch.tensor([[[2.0]], [[3.0]]]),
+        )
+        pred = torch.zeros(2, 2, 3, 4)
+
+        result = constrained(pred, torch.zeros_like(pred))
+
+        assert result.item() == pytest.approx(25.0, abs=1e-6)
+
+    def test_large_physical_mean_preserves_float32_round_trip_and_gradients(self):
+        """Do not discard a large mean's residual before adding predictions."""
+        constrained = PhysicsConstrainedLoss(
+            nn.MSELoss(),
+            [ExpressionConstraint("y0 - 1000000000")],
+            weights=[1.0],
+            output_mean=[[[1.0e9 + 32]]],
+            output_std=[[[32.0]]],
+        )
+        pred = torch.tensor([-1.0, 1.0]).reshape(2, 1, 1, 1).requires_grad_()
+        physical = constrained._denormalize(pred)
+        torch.testing.assert_close(
+            physical.flatten(), torch.tensor([1.0e9, 1.0e9 + 64]), rtol=0, atol=0
+        )
+        assert all(buffer.dtype == torch.float32 for buffer in constrained.buffers())
+        loss = constrained(pred, pred.detach())
+        assert loss.item() == pytest.approx(2048.0)
+        loss.backward()
+        assert torch.isfinite(pred.grad).all()
 
 
 # ==============================================================================

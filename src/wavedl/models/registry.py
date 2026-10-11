@@ -88,7 +88,8 @@ def build_model(
                   - 1D: (L,) for signal length
                   - 2D: (H, W) for image dimensions
                   - 3D: (D, H, W) for volume dimensions
-        out_size: Number of output regression targets
+        out_size: Number of vector targets or dense output channels. Dense
+                  models receive their canonical ``out_shape`` through kwargs.
         **kwargs: Additional model-specific parameters
 
     Returns:
@@ -101,3 +102,40 @@ def build_model(
     """
     ModelClass = get_model(name)
     return ModelClass(in_shape=in_shape, out_size=out_size, **kwargs)
+
+
+def import_model_modules(modules: list[str]) -> None:
+    """Import explicitly trusted custom modules, idempotently and without name collisions.
+
+    Python model definitions are executable code and must come from a trusted source.
+    Checkpoints never trigger these imports automatically.
+    """
+    import hashlib
+    import importlib
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    for name in modules:
+        if not name.endswith(".py"):
+            importlib.import_module(name)
+            continue
+        path = Path(name).resolve(strict=True)
+        module_name = (
+            "wavedl_custom_" + hashlib.sha256(str(path).encode()).hexdigest()[:16]
+        )
+        if module_name in sys.modules:
+            continue
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Cannot load custom model module from {path}")
+        module = importlib.util.module_from_spec(spec)
+        prior_registry = MODEL_REGISTRY.copy()
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            sys.modules.pop(module_name, None)
+            MODEL_REGISTRY.clear()
+            MODEL_REGISTRY.update(prior_registry)
+            raise

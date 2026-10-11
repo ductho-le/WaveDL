@@ -377,9 +377,8 @@ class DenseNet121Pretrained(BaseModel):
             self._freeze_backbone()
 
     def _freeze_backbone(self):
-        for name, param in self.backbone.named_parameters():
-            if "classifier" not in name:
-                param.requires_grad = False
+        """Freeze feature extraction while retaining the regression head."""
+        self._freeze_backbone_modules(("classifier",))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.backbone(x)

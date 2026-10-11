@@ -131,9 +131,8 @@ class FastViTBase(BaseModel):
             )
 
     def _freeze_backbone(self):
-        """Freeze backbone parameters."""
-        for param in self.backbone.parameters():
-            param.requires_grad = False
+        """Freeze feature extraction while retaining the regression head."""
+        self._freeze_backbone_modules()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         features = self.backbone(x)

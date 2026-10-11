@@ -34,18 +34,18 @@
 
 ## 💡 What is WaveDL?
 
-WaveDL is a **deep learning framework** built for **wave-based inverse problems** — from ultrasonic NDE and geophysics to biomedical tissue characterization. It provides a robust, scalable training pipeline for mapping multi-dimensional data (1D/2D/3D) to physical quantities.
+WaveDL is a **deep learning framework** built for **wave-based inverse problems** — from ultrasonic NDE and geophysics to biomedical tissue characterization. It provides a robust, scalable training pipeline for mapping multi-dimensional data (1D/2D/3D) to physical quantities or dense 2D property fields.
 
 ```
 Input: Waveforms, spectrograms, B-scans, dispersion curves, ...
    ↓
-Output: Material properties, defect dimensions, damage locations, ...
+Output: Material properties, defect dimensions, elasticity/velocity maps, ...
 ```
 
 The framework handles the engineering challenges of large-scale deep learning — big datasets, distributed training, and HPC deployment — so you can focus on the science, not the infrastructure.
 
 **Built for researchers who need:**
-- 📊 Multi-target regression with reproducibility and fair benchmarking
+- 📊 Vector and dense 2D regression with reproducibility and fair benchmarking
 - 🚀 Seamless multi-GPU training on HPC clusters
 - 💾 Memory-efficient handling of large-scale datasets
 - 🔧 Easy integration of custom model architectures
@@ -59,12 +59,12 @@ The framework handles the engineering challenges of large-scale deep learning �
 <tr>
 <td width="50%" valign="top">
 
-**⚡ Load All Data — No More Bottleneck**
+**⚡ Dataset Caching**
 
-Train on datasets larger than RAM:
-- Memory-mapped, zero-copy streaming
-- Full random shuffling at GPU speed
-- Your GPU stays fed — always
+Prepare data for repeated training:
+- Memory-mapped training caches
+- Chunked HDF5 and MATLAB v7.3 preprocessing
+- NPZ loading and cross-validation require host memory
 
 </td>
 <td width="50%" valign="top">
@@ -73,7 +73,7 @@ Train on datasets larger than RAM:
 
 20+ architectures (70+ variants), ready to go:
 - CNNs, ResNets, ViTs, SSMs, WaveNets...
-- All adapted for regression
+- Vector regression plus a [dense-output U-Net](#dense-2d-field-regression)
 - [Add your own](#adding-custom-models) in one line
 
 </td>
@@ -81,12 +81,12 @@ Train on datasets larger than RAM:
 <tr>
 <td width="50%" valign="top">
 
-**🛡️ DDP That Actually Works**
+**🛡️ Distributed Training**
 
-Multi-GPU training without the pain:
+Coordinate training across ranks:
 - Synchronized early stopping
-- Deadlock-free checkpointing
-- Correct metric aggregation
+- Collective epoch checkpoints
+- Global validation metric aggregation
 
 </td>
 <td width="50%" valign="top">
@@ -113,12 +113,12 @@ Built for high-performance clusters:
 </td>
 <td width="50%" valign="top">
 
-**🔄 Crash-Proof Training**
+**🔄 Training Recovery**
 
-Never lose your progress:
-- Full state checkpoints
-- Resume from any point
-- Emergency saves on interrupt
+Resume interrupted experiments:
+- Model, optimizer, and scheduler checkpoints
+- Epoch-boundary resume
+- Best-effort emergency saves on interrupt
 
 </td>
 </tr>
@@ -159,7 +159,14 @@ Deploy models anywhere:
 pip install --upgrade wavedl
 ```
 
-This installs everything you need: training, inference, HPO, ONNX export.
+This installs the training, inference, HPO, and ONNX export dependencies.
+The unreleased source requires Python 3.11+, PyTorch 2.13+, torchvision 0.28+,
+and ONNX 1.22+. Install a compatible PyTorch/torchvision pair for your CPU or
+CUDA/ROCm platform in a dedicated environment. Changes under `[Unreleased]`
+are available from source until the next package release.
+
+See [security and deployment boundaries](.github/SECURITY.md) for vulnerability
+reporting procedures, safe deserialization practices, and secure data handling guidelines.
 
 #### From Source (for development)
 
@@ -194,7 +201,7 @@ wavedl-train --model cnn --data_path train.npz --num_gpus 4 --output_dir results
 # Resume training (automatic - just re-run with same output_dir)
 wavedl-train --model <model_name> --data_path <train_data> --output_dir <output_folder>
 
-# Force fresh start (ignores existing checkpoints)
+# Force fresh start (archives prior training artifacts under previous_runs/)
 wavedl-train --model <model_name> --data_path <train_data> --output_dir <output_folder> --fresh
 
 # List available models
@@ -206,7 +213,13 @@ wavedl-train --list_models
 > - **HPC clusters** (SLURM, PBS, etc.): Uses local caching, offline WandB
 > - **Local machines**: Uses standard cache locations (~/.cache)
 >
-> **Auto-Resume**: If training crashes or is interrupted, simply re-run with the same `--output_dir`. The framework automatically detects incomplete training and resumes from the last checkpoint.
+> **Auto-Resume**: Re-running an incomplete experiment with the same `--output_dir`
+> selects an available checkpoint. Epoch checkpoints preserve the optimizer and
+> learning-rate schedule. Emergency checkpoints replay the interrupted epoch and
+> are not exact recovery; OneCycle recovery requires an epoch-boundary checkpoint.
+> Use `--resume <checkpoint_directory>` to select one explicitly. `--fresh` archives
+> prior training artifacts under `previous_runs/` and cannot be combined with `--resume`.
+> Use a separate output/cache directory for every independent concurrent run.
 
 <details>
 <summary><b>Advanced: Direct Accelerate Launch</b></summary>
@@ -229,7 +242,7 @@ accelerate launch --num_machines 2 --main_process_ip <ip> -m wavedl.train --mode
 # Basic inference
 wavedl-test --checkpoint <checkpoint_folder> --data_path <test_data>
 
-# With visualization, CSV export, and multiple file formats
+# With visualization, prediction export, and multiple plot formats
 wavedl-test --checkpoint <checkpoint_folder> --data_path <test_data> \
   --plot --plot_format png pdf --save_predictions --output_dir <output_folder>
 
@@ -247,20 +260,89 @@ wavedl-test --checkpoint <checkpoint_folder> --data_path <test_data> \
 ```
 
 **Output:**
-- **Console**: R², Pearson correlation, MAE per parameter
-- **CSV** (with `--save_predictions`): True, predicted, error, and absolute error for all parameters
-- **Plots** (with `--plot`): 10 publication-quality plots (scatter, histogram, residuals, Bland-Altman, Q-Q, correlation, relative error, CDF, index plot, box plot)
-- **Format** (with `--plot_format`): Supported formats: `png` (default), `pdf` (vector), `svg` (vector), `eps` (LaTeX), `tiff`, `jpg`, `ps`
+
+- **Console**: R², Pearson correlation, and MAE per parameter/channel; dense fields also report relative L2 error
+- **Predictions** (with `--save_predictions`): vector outputs use CSV; dense fields use compressed `predictions.npz` with `target`, `prediction`, `error`, and `channel_names` arrays (or only `prediction` and `channel_names` when targets are absent)
+- **Plots** (with `--plot`): vectors produce 10 publication-quality diagnostic plots; dense fields with ground truth produce target, prediction, and error maps
+- **Format** (with `--plot_format`): Supported formats: `png` (default), `pdf` and `svg` (vector graphics), `eps` (LaTeX), `tiff`, `jpg`, `ps`
+
+For dense fields, R² and Pearson correlation are computed independently per
+property channel over all sample-pixel values and then averaged; MAE/RMSE also
+aggregate spatial values, while relative L2 error averages sample/channel field
+norms. Field plots are intentionally limited to the first three samples and six
+channels to keep result directories manageable.
 
 > [!NOTE]
 > `wavedl-test` auto-detects the model architecture from checkpoint metadata. If unavailable, it falls back to folder name parsing. Use `--model` to override if needed.
+
+### Dense 2D Field Regression
+
+Use `--model unet_field` for supervised, pixel-wise prediction of an elasticity, stiffness, velocity, density, or similar 2D property map. This model is field-only; continue using `unet_regression` or another vector architecture for `(N, T)` targets. The built-in field model follows WaveDL's existing **single-channel input** convention: store each input as `(H_in, W_in)`, and the data loader adds the channel axis internally.
+
+Accepted target layouts are:
+
+| Stored target layout | Meaning | Model layout |
+|----------------------|---------|--------------|
+| `(N, H_out, W_out)` | One scalar field per sample | `(N, 1, H_out, W_out)` |
+| `(N, C, H_out, W_out)` | `C` property fields per sample | unchanged |
+
+Targets must be channels-first; channels-last arrays such as `(N, H, W, C)` are not guessed and should be transposed before saving. The 2D input and output grid resolutions are independent, so `(H_in, W_in)` may differ from `(H_out, W_out)`, but their spatial rank must match. `unet_field` infers the target grid during training and interpolates its dense head to that size. Each output channel is standardized independently using statistics over the training samples and both spatial axes, rather than fitting a separate scaler at every pixel.
+
+Dense caches record their normalization version and rebuild automatically after
+normalization changes. Checkpoints from the earlier experimental dense scaler
+require retraining with `--fresh` or a new output directory. Vector checkpoints
+retain their target normalization. Legacy Mamba/Vim weights are an exception:
+the corrected selective scan changes predictions, so unversioned scan weights
+are rejected. Use the original WaveDL version for legacy inference/resume, or
+retrain with `--fresh`. New checkpoints store the scan version in their weights.
+WaveNet retains the published optimizer parameter layout for resume compatibility.
+Resuming also verifies that the current training
+split has the same target normalization as the saved checkpoint.
+
+This small synthetic example exercises different input/output grid sizes:
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(7)
+wave_images = rng.normal(size=(80, 64, 96)).astype(np.float32)
+property_maps = wave_images[:, ::2, ::2]  # (N, H_out, W_out) = (80, 32, 48)
+
+np.savez(
+    "field_data.npz",
+    input_train=wave_images[:64],
+    output_train=property_maps[:64],
+    input_test=wave_images[64:],
+    output_test=property_maps[64:],
+)
+```
+
+```bash
+wavedl-train --model unet_field --data_path field_data.npz --batch_size 4 --epochs 5 \
+  --output_dir field_run
+
+wavedl-test --checkpoint field_run/best_checkpoint --data_path field_data.npz \
+  --param_names property --save_predictions --plot --output_dir field_results
+```
+
+For multiple output properties, stack maps on axis 1 to create `(N, C, H_out, W_out)` targets. The channel count is detected automatically; no output-grid CLI flag is required.
+
+Dense decoders and target maps use substantially more GPU memory and disk than
+vector regression. Start with a small batch size (for example, 1–8). Training
+also creates `target_data_cache.dat` in the output directory with size roughly
+`N × C × H_out × W_out × 4` bytes, so place the output directory on scratch
+storage with adequate quota for large FWI or elastography datasets.
+
+> [!IMPORTANT]
+> This feature implements **supervised dense inversion**: it learns property fields from paired wave measurements and reference maps. It can provide a direct learned estimate or an initialization/prior for an FWI workflow, but it is not full waveform inversion by itself. True FWI requires a differentiable (or adjoint-gradient) wave solver and an iterative observed-versus-simulated data-consistency/misfit loop; that solver loop is not part of the current WaveDL CLI.
 
 ### Adding Custom Models
 
 <details>
 <summary><b>Creating Your Own Architecture</b></summary>
 
-**Requirements** (your model must):
+**Requirements** (for a vector-output model):
+
 1. Inherit from `BaseModel`
 2. Accept `in_shape`, `out_size` in `__init__`
 3. Return a tensor of shape `(batch, out_size)` from `forward()`
@@ -301,6 +383,8 @@ wavedl-train --import my_model.py --model my_model --data_path train.npz
 ```
 
 WaveDL handles everything else: training loop, logging, checkpoints, multi-GPU, early stopping, etc.
+
+For a custom dense 2D model, also accept the inferred `out_shape=(C, H_out, W_out)`, set `supports_spatial_output = True` (and `requires_spatial_output = True` if it cannot emit vectors), and return exactly `(batch, C, H_out, W_out)`.
 
 </details>
 
@@ -349,11 +433,23 @@ WaveDL/
 > [!NOTE]
 > All configuration options below work with `wavedl-train`. The wrapper script passes all arguments directly to `train.py`.
 
+<a id="available-models"></a>
 <details>
 <summary><b>Available Models</b> — 20+ architectures (70+ variants)</summary>
 
-| Model | Backbone Params | Dim |
-|-------|-----------------|-----|
+**Output support**
+
+| Output type | Built-in models | Stored target | Model output |
+|-------------|-----------------|---------------|--------------|
+| Vector regression | Every model except `unet_field` | `(N,)` or `(N, T)` | `(N, T)` |
+| Dense 2D field | `unet_field` | `(N, H_out, W_out)` or `(N, C, H_out, W_out)` | `(N, C, H_out, W_out)` |
+
+The dimensionality column below describes the **input**. A model accepting 2D
+input does not automatically support dense output; look at the output-support
+table above when selecting a model.
+
+| Model | Backbone Params | Input Dim |
+|-------|-----------------|-----------|
 | **── Classic CNNs ──** |||
 | **CNN** — Convolutional Neural Network |||
 | `cnn` | 1.6M | 1D/2D/3D |
@@ -455,9 +551,13 @@ WaveDL/
 | `mc3_18` — Mixed Convolution 3D | 11.5M | 3D |
 | **U-Net** — U-shaped Network |||
 | `unet_regression` | 31.0M | 1D/2D/3D |
+| `unet_field` 🗺️ | ~31.0M | 2D |
 
 
 ⭐ = **Pretrained on ImageNet** (recommended for smaller datasets). Weights are downloaded automatically on first use.
+
+🗺️ = **Dense 2D field output**. Unmarked models produce regression vectors.
+
 - **Cache location**: `~/.cache/torch/hub/checkpoints/` (or `./.torch_cache/` on HPC if home is not writable)
 - **Use pretrained weights**: Pass `--pretrained` (default: train from scratch). Only effective for `*_pretrained` model variants marked with ⭐ above.
 
@@ -558,9 +658,11 @@ print(f'\n✓ All {len(urls) + len(timm_models)} pretrained weight files cached!
 | `--workers` | `-1` | DataLoader workers per GPU (-1=auto-detect) |
 | `--seed` | `2025` | Random seed |
 | `--output_dir` | `.` | Output directory for checkpoints |
+| `--selection_metric` | `loss` | Select checkpoints by configured loss or normalized `mse`; CV supports `loss` |
+| `--allow_pickle` | `False` | Opt in to loading trusted legacy NPZ object arrays |
 | `--resume` | `None` | Checkpoint to resume (auto-detected if not set) |
 | `--save_every` | `50` | Checkpoint frequency |
-| `--fresh` | `False` | Force fresh training, ignore existing checkpoints |
+| `--fresh` | `False` | Archive previous training artifacts and start fresh |
 | `--single_channel` | `False` | Confirm data is single-channel (for shallow 3D volumes like `(8, 128, 128)`) |
 
 </details>
@@ -616,6 +718,7 @@ WaveDL automatically enables performance optimizations for modern GPUs:
 
 </details>
 
+<a id="loss-functions"></a>
 <details>
 <summary><b>Loss Functions</b></summary>
 
@@ -626,7 +729,7 @@ WaveDL automatically enables performance optimizations for modern GPUs:
 | `huber` | `--loss huber --huber_delta 1.0` | Best of MSE + MAE | Robust, smooth transition |
 | `smooth_l1` | `--loss smooth_l1` | Similar to Huber | PyTorch native implementation |
 | `log_cosh` | `--loss log_cosh` | Smooth approximation to MAE | Differentiable everywhere |
-| `weighted_mse` | `--loss weighted_mse --loss_weights "2.0,1.0,1.0"` | Prioritize specific targets | Per-target weighting |
+| `weighted_mse` | `--loss weighted_mse --loss_weights "2.0,1.0,1.0"` | Prioritize specific targets/properties | Per-vector-target or per-field-channel weighting |
 
 **Example:**
 ```bash
@@ -635,10 +738,15 @@ wavedl-train --model cnn --loss huber --huber_delta 0.5
 
 # Weighted MSE: prioritize thickness (first target)
 wavedl-train --model cnn --loss weighted_mse --loss_weights "2.0,1.0,1.0"
+
+# Dense maps: weight the first property channel twice as strongly
+wavedl-train --model unet_field --loss weighted_mse --loss_weights "2.0,1.0" \
+    --data_path field_data.npz --batch_size 4
 ```
 
 </details>
 
+<a id="optimizers"></a>
 <details>
 <summary><b>Optimizers</b></summary>
 
@@ -662,6 +770,7 @@ wavedl-train --model cnn --optimizer radam --lr 1e-3
 
 </details>
 
+<a id="learning-rate-schedulers"></a>
 <details>
 <summary><b>Learning Rate Schedulers</b></summary>
 
@@ -699,7 +808,11 @@ For robust model evaluation, simply add the `--cv` flag:
 # 5-fold cross-validation
 wavedl-train --model cnn --cv 5 --data_path train_data.npz
 
-# Stratified CV (recommended for unbalanced data)
+# Dense 2D field cross-validation (non-stratified)
+wavedl-train --model unet_field --cv 5 --data_path field_data.npz \
+    --batch_size 4
+
+# Stratified CV for unbalanced vector targets
 wavedl-train --model cnn --cv 5 --cv_stratify --loss huber --epochs 100
 
 # Full configuration
@@ -711,13 +824,21 @@ wavedl-train --model cnn --cv 5 --cv_stratify \
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `--cv` | `0` | Number of CV folds (0=disabled, normal training) |
-| `--cv_stratify` | `False` | Use stratified splitting (bins targets) |
+| `--cv_stratify` | `False` | Bin vector targets for stratified splitting; unsupported for dense fields |
 | `--cv_bins` | `10` | Number of bins for stratified CV |
 
 **Output:**
 - `cv_summary.json`: Aggregated metrics (mean ± std)
 - `cv_results.csv`: Per-fold detailed results
 - `fold_*/`: Individual fold models and scalers
+
+Dense field CV can require substantial host memory because folds are currently
+materialized in memory. Do not combine it with `--cv_stratify`; use smaller
+datasets/batches or run separate held-out experiments for very large field maps.
+CV preserves custom loss weights, Huber delta, and pretrained initialization.
+Physical constraints and gradient accumulation require standard training; CV
+rejects these options instead of silently ignoring them. CV runs in one process
+and currently selects folds using the configured loss (`--selection_metric loss`).
 
 </details>
 
@@ -761,6 +882,7 @@ seed: 2025
 
 </details>
 
+<a id="physical-constraints"></a>
 <details>
 <summary><b>Physical Constraints</b> — Enforce Physics During Training</summary>
 
@@ -800,12 +922,13 @@ import torch
 def constraint(pred, inputs=None):
     """
     Args:
-        pred:   (batch, num_outputs)
+        pred:   (batch, num_outputs) vectors or (batch, C, H, W) fields
         inputs: (batch, features) or (batch, C, H, W) or (batch, C, D, H, W)
     Returns:
-        (batch,) — violation per sample (0 = satisfied)
+        Violation tensor; WaveDL reduces all returned values to one penalty.
     """
-    # Outputs (same for all data types)
+    # For vectors, y0/y1/y2 are (batch,). For dense outputs they are
+    # (batch, H, W), so this same expression applies at every pixel.
     y0, y1, y2 = pred[:, 0], pred[:, 1], pred[:, 2]
 
     # Inputs — Tabular: (batch, features)
@@ -846,7 +969,7 @@ def constraint(pred, inputs=None):
 
 | Variable | Meaning |
 |----------|---------|
-| `y0`, `y1`, ... | Model outputs |
+| `y0`, `y1`, ... | Vector outputs `(B,)` or dense property channels `(B,H,W)` |
 | `x[0]`, `x[1]`, ... | Input values (1D tabular) |
 | `x[i,j]`, `x[i,j,k]` | Input values (2D/3D: images, volumes) |
 | `x_mean`, `x_sum`, `x_max`, `x_min`, `x_std` | Input aggregates |
@@ -879,12 +1002,27 @@ wavedl-hpo --data_path train.npz --n_trials 50 --medium
 # Full search with specific models
 wavedl-hpo --data_path train.npz --n_trials 100 --models cnn resnet18 efficientnet_b0
 
+# Dense field search (auto-selects unet_field and small batch candidates)
+wavedl-hpo --data_path field_data.npz --n_trials 30
+
 # In-process mode (enables pruning, faster, single-GPU)
 wavedl-hpo --data_path train.npz --n_trials 50 --inprocess
 ```
 
 > [!TIP]
 > **GPU Detection**: HPO auto-detects GPUs and runs one trial per GPU in parallel. Use `--inprocess` for single-GPU with pruning support (early stopping of bad trials).
+
+HPO inspects the target shape before creating a study. Vector data uses the
+standard CNN/ResNet model presets and batch candidates 16/32/64/128. Dense data
+uses `unet_field` and batch candidates 1/2/4/8. Explicit `--models` values are
+validated against the target contract before any trials launch; use
+`--batch_sizes` to override the memory-conscious dense defaults.
+
+HPO compares trials using the same normalized validation MSE, even when their
+training losses differ. It seeds the sampler and records a study signature covering
+the dataset, search settings, and objective. Use a new study name when those
+settings change or when migrating a legacy study without this signature; mixing
+incompatible trials is rejected. Parallel trials lease distinct visible GPUs.
 
 **Train with best parameters**
 
@@ -899,20 +1037,20 @@ wavedl-train --data_path train.npz --model cnn --lr 3.2e-4 --batch_size 128 ...
 
 | Parameter | Default | You Can Override With |
 |-----------|---------|----------------------|
-| Models | cnn, resnet18, resnet34 | `--models X Y Z` |
+| Models | Vector: cnn, resnet18, resnet34; dense: unet_field | `--models X Y Z` |
 | Optimizers | [all 6](#optimizers) | `--optimizers X Y` |
 | Schedulers | [all 8](#learning-rate-schedulers) | `--schedulers X Y` |
 | Losses | [all 6](#loss-functions) | `--losses X Y` |
 | Learning rate | 1e-5 → 1e-2 | (always searched) |
-| Batch size | 16, 32, 64, 128 | (always searched) |
+| Batch size | Vector: 16, 32, 64, 128; dense: 1, 2, 4, 8 | `--batch_sizes N ...` |
 
 **Search Presets:**
 
-| Mode | Models | Optimizers | Schedulers | Use Case |
-|------|--------|------------|------------|----------|
-| Full (default) | cnn, resnet18, resnet34 | all 6 | all 8 | Production search |
-| `--medium` | cnn, resnet18 | adamw, adam, sgd | plateau, cosine, onecycle | Balanced exploration |
-| `--quick` | cnn | adamw | plateau | Fast validation |
+| Mode | Vector models | Dense models | Optimizers | Schedulers | Use Case |
+|------|---------------|--------------|------------|------------|----------|
+| Full (default) | cnn, resnet18, resnet34 | unet_field | all 6 | all 8 | Production search |
+| `--medium` | cnn, resnet18 | unet_field | adamw, adam, sgd | plateau, cosine, onecycle | Balanced exploration |
+| `--quick` | cnn | unet_field | adamw | plateau | Fast validation |
 
 **Execution Modes:**
 
@@ -931,7 +1069,7 @@ wavedl-train --data_path train.npz --model cnn --lr 3.2e-4 --batch_size 128 ...
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `--data_path` | (required) | Training data file |
-| `--models` | 3 defaults | Models to search (specify any number) |
+| `--models` | Target-aware | Compatible models to search (specify any number) |
 | `--n_trials` | `50` | Number of trials to run |
 | `--quick` | `False` | Quick mode: minimal search space |
 | `--medium` | `False` | Medium mode: balanced search space |
@@ -939,6 +1077,7 @@ wavedl-train --data_path train.npz --model cnn --lr 3.2e-4 --batch_size 128 ...
 | `--optimizers` | all 6 | Optimizers to search |
 | `--schedulers` | all 8 | Schedulers to search |
 | `--losses` | all 6 | Losses to search |
+| `--batch_sizes` | Target-aware | Batch sizes to search |
 | `--n_jobs` | `-1` | Parallel trials (-1 = auto-detect GPUs) |
 | `--max_epochs` | `50` | Max epochs per trial |
 | `--output` | `hpo_results.json` | Output file |
@@ -965,7 +1104,7 @@ WaveDL supports multiple data formats for training and inference:
 | Key | Shape | Type | Description |
 |-----|-------|------|-------------|
 | `input_train` / `input_test` | `(N, L)`, `(N, H, W)`, or `(N, D, H, W)` | `float32` | N samples of 1D/2D/3D representations |
-| `output_train` / `output_test` | `(N, T)` | `float32` | N samples with T regression targets |
+| `output_train` / `output_test` | `(N,)`, `(N, T)`, `(N, H, W)`, or `(N, C, H, W)` | `float32` | Scalar/vector targets, scalar 2D fields, or channels-first multi-property 2D fields |
 
 > [!TIP]
 > - **Flexible Key Names**: WaveDL auto-detects common key pairs:
@@ -974,7 +1113,8 @@ WaveDL supports multiple data formats for training and inference:
 >   - `data`/`labels`, `inputs`/`outputs`, `features`/`targets`
 > - **Automatic Dimension Detection**: Channel dimension is added automatically. No manual reshaping required!
 > - **Sparse Matrix Support**: NPZ and MAT v7.3 files with scipy/MATLAB sparse matrices are automatically converted to dense arrays.
-> - **Auto-Normalization**: Target values are automatically standardized during training. MAE is reported in original physical units.
+> - **Auto-Normalization**: Vector targets are standardized per parameter. Dense targets are standardized per property channel over all training samples and pixels. MAE is reported in original physical units.
+> - **Dense Target Layout**: Store a scalar map as `(N, H, W)` or multiple property maps as `(N, C, H, W)`. Convert channels-last targets explicitly before saving.
 
 > [!IMPORTANT]
 > **MATLAB Users**: MAT files must be saved with the `-v7.3` flag for memory-efficient loading:
@@ -1061,7 +1201,8 @@ import numpy as np
 
 data = np.load('train_data.npz')
 assert data['input_train'].ndim >= 2, "Input must be at least 2D: (N, ...) "
-assert data['output_train'].ndim == 2, "Output must be 2D: (N, T)"
+assert data['output_train'].ndim in (1, 2, 3, 4), \
+    "Output must be (N,), (N,T), (N,H,W), or (N,C,H,W)"
 assert len(data['input_train']) == len(data['output_train']), "Sample mismatch"
 
 print(f"✓ Input:  {data['input_train'].shape} {data['input_train'].dtype}")
@@ -1214,7 +1355,7 @@ Beyond the material characterization example above, the WaveDL pipeline can be a
 | Bone QUS | Axial-transmission signals, ... | Porosity, cortical thickness, elastic modulus ... |
 
 > [!NOTE]
-> Adapting WaveDL to these applications requires preparing your own dataset and choosing a suitable model architecture to match your input dimensionality.
+> Adapting WaveDL to these applications requires preparing your own dataset and choosing a suitable model architecture to match your input and target dimensionality. Dense maps use supervised `unet_field` training as described above; conventional FWI still requires an external wave solver and data-misfit optimization loop.
 
 ---
 

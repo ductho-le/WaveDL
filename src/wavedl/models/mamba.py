@@ -9,7 +9,7 @@ for long sequences and high-resolution images.
 **Key Features**:
     - Bidirectional SSM for image understanding
     - O(n) linear complexity
-    - 2.8x faster than ViT, 86.8% less GPU memory
+    - Portable pure-PyTorch implementation; performance depends on hardware
     - Works for 1D (time-series) and 2D (images)
 
 **Variants**:
@@ -19,8 +19,7 @@ for long sequences and high-resolution images.
     - vim_base: 98M params for 2D images
 
 **Dependencies**:
-    - Optional: mamba-ssm (for optimized CUDA kernels)
-    - Fallback: Pure PyTorch implementation
+    - PyTorch only; this module does not automatically dispatch to mamba-ssm
 
 Reference:
     Zhu, L., et al. (2024). Vision Mamba: Efficient Visual Representation
@@ -72,17 +71,18 @@ class SelectiveSSM(nn.Module):
     The key innovation is making the SSM parameters (B, C, Δ) input-dependent,
     allowing the model to selectively focus on or ignore inputs.
 
-    This is a pure-PyTorch implementation with chunked parallel scan for
-    numerical stability. For sequences > 2048 or production use, consider
-    the optimized mamba-ssm package with CUDA kernels.
+    This is a pure-PyTorch implementation with a stable associative scan.
+    For long sequences, a separate implementation using the optimized
+    mamba-ssm CUDA kernels may be faster; installing that package alone does
+    not change this implementation.
 
     Args:
         d_model: Model dimension
         d_state: SSM state dimension (default: 16)
         d_conv: Local convolution width (default: 4)
         expand: Expansion factor for inner dimension (default: 2)
-        chunk_size: Chunk size for parallel scan (default: 256).
-            Smaller = more stable but slower. Larger = faster but may overflow.
+        chunk_size: Chunk size for the stable associative scan (default: 256).
+            Controls the size of intermediate tensors for long sequences.
     """
 
     def __init__(
@@ -98,7 +98,14 @@ class SelectiveSSM(nn.Module):
         self.d_model = d_model
         self.d_state = d_state
         self.d_inner = d_model * expand
+        if (
+            not isinstance(chunk_size, int)
+            or isinstance(chunk_size, bool)
+            or chunk_size <= 0
+        ):
+            raise ValueError("chunk_size must be a positive integer.")
         self.chunk_size = chunk_size
+        self.register_buffer("scan_version", torch.tensor(2, dtype=torch.int64))
 
         # Input projection
         self.in_proj = nn.Linear(d_model, self.d_inner * 2, bias=False)
@@ -125,6 +132,35 @@ class SelectiveSSM(nn.Module):
         # Output projection
         self.out_proj = nn.Linear(self.d_inner, d_model, bias=False)
 
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        version = state_dict.get(prefix + "scan_version")
+        if version is None or version.numel() != 1 or version.item() != 2:
+            error_msgs.append(
+                f"{prefix} uses an unversioned or unsupported Mamba selective scan. "
+                "Published legacy weights use a different numerical recurrence. "
+                "Use the original WaveDL version for legacy inference/resume, or "
+                "retrain with --fresh in this version. Weights cannot be migrated "
+                "by adding a version marker."
+            )
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
@@ -141,7 +177,8 @@ class SelectiveSSM(nn.Module):
 
             warnings.warn(
                 f"Sequence length {L} > {MAX_RECOMMENDED_SEQUENCE_LENGTH}. "
-                "Consider using mamba-ssm package for better performance.",
+                "This pure-PyTorch scan may be expensive; a separate implementation "
+                "using mamba-ssm CUDA kernels may offer better performance.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -180,6 +217,36 @@ class SelectiveSSM(nn.Module):
         # Output projection
         return self.out_proj(y)
 
+    @staticmethod
+    def _scan_states(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        """Compute ``h[t] = a[t] * h[t-1] + b[t]`` with zero initial state.
+
+        Pair adjacent affine recurrences, scan the pairs, then recover the even
+        positions. This associative scan uses O(L) work and O(log L) depth,
+        without dividing by cumulative products that underflow for ordinary
+        Mamba decay rates. All operations remain differentiable.
+        """
+        length = b.shape[1]
+        if length == 0:
+            raise ValueError("Selective scan requires a nonempty sequence.")
+        if length == 1:
+            # Keep a zero gradient for transition parameters at length one,
+            # including distributed training where unused parameters matter.
+            return b + a * 0.0
+
+        pairs = length // 2
+        a_even, a_odd = a[:, : 2 * pairs : 2], a[:, 1 : 2 * pairs : 2]
+        b_even, b_odd = b[:, : 2 * pairs : 2], b[:, 1 : 2 * pairs : 2]
+        odd_states = SelectiveSSM._scan_states(a_odd * a_even, b_odd + a_odd * b_even)
+        even_states = torch.cat(
+            [b[:, :1], b[:, 2::2] + a[:, 2::2] * odd_states[:, : (length - 1) // 2]],
+            dim=1,
+        )
+        states = torch.stack([even_states[:, :pairs], odd_states], dim=2).flatten(1, 2)
+        if length % 2:
+            states = torch.cat([states, even_states[:, -1:]], dim=1)
+        return states
+
     def _selective_scan_single(
         self,
         x: torch.Tensor,
@@ -189,37 +256,11 @@ class SelectiveSSM(nn.Module):
         C: torch.Tensor,
         D: torch.Tensor,
     ) -> torch.Tensor:
-        """
-        Single-chunk parallel scan for short sequences (L <= MAX_SAFE_SEQUENCE_LENGTH).
-
-        Uses log-space cumsum which is stable for short sequences.
-        """
-        # Compute discretized A_bar: (B, L, d_inner, d_state)
+        """Stable associative scan for short sequences."""
         A_bar = torch.exp(delta.unsqueeze(-1) * A)
-
-        # Input contribution: (B, L, d_inner, d_state)
         BX = delta.unsqueeze(-1) * B.unsqueeze(2) * x.unsqueeze(-1)
-
-        # Log-space parallel scan
-        log_A_bar = torch.log(A_bar.clamp(min=1e-10))
-        log_A_cumsum = torch.cumsum(log_A_bar, dim=1)
-        A_cumsum = torch.exp(log_A_cumsum.clamp(max=80))  # Prevent overflow
-
-        # Closed form of h_t = A_bar_t · h_{t-1} + BX_t is
-        #   h_t = P_t · Σ_{i≤t} (BX_i / P_i),  where P_t = ∏_{j≤t} A_bar_j (= A_cumsum).
-        # Divide by the INCLUSIVE cumulative product and do NOT divide the result
-        # by A_bar afterwards. Using the shifted product + trailing /A_bar (the
-        # previous code) shifts both index bounds down by one — an off-by-one that
-        # only matches the true recurrence at t=0.
-        weighted_BX = BX / A_cumsum.clamp(min=1e-10)
-        weighted_BX_cumsum = torch.cumsum(weighted_BX, dim=1)
-
-        # Final state
-        h = A_cumsum * weighted_BX_cumsum
-
-        # Output
-        y = (C.unsqueeze(2) * h).sum(-1) + D * x
-        return y
+        h = self._scan_states(A_bar, BX)
+        return (C.unsqueeze(2) * h).sum(-1) + D * x
 
     def _chunked_selective_scan(
         self,
@@ -230,73 +271,32 @@ class SelectiveSSM(nn.Module):
         C: torch.Tensor,
         D: torch.Tensor,
     ) -> torch.Tensor:
-        """
-        Chunked parallel scan for long sequences.
-
-        Processes in chunks of self.chunk_size, carrying state between chunks.
-        This prevents log-cumsum from growing unbounded while maintaining
-        reasonable parallelism within each chunk.
-        """
+        """Scan bounded chunks while preserving the exact recurrent state."""
         batch_size, seq_len, d_inner = x.shape
-        d_state = self.d_state
-        chunk_size = self.chunk_size
-
-        # Initialize output and state
+        if seq_len == 0:
+            raise ValueError("Selective scan requires a nonempty sequence.")
+        h_state = x.new_zeros(batch_size, d_inner, self.d_state)
         y_chunks = []
-        h_state = torch.zeros(
-            batch_size, d_inner, d_state, device=x.device, dtype=x.dtype
-        )
-
-        # Process in chunks
-        for start in range(0, seq_len, chunk_size):
-            end = min(start + chunk_size, seq_len)
-
-            # Extract chunk
+        for start in range(0, seq_len, self.chunk_size):
+            end = min(start + self.chunk_size, seq_len)
             x_chunk = x[:, start:end]
             delta_chunk = delta[:, start:end]
-            B_chunk = B[:, start:end]
-            C_chunk = C[:, start:end]
-
-            # Compute A_bar for chunk: (B, chunk_len, d_inner, d_state)
             A_bar = torch.exp(delta_chunk.unsqueeze(-1) * A)
-
-            # Input contribution
             BX = (
-                delta_chunk.unsqueeze(-1) * B_chunk.unsqueeze(2) * x_chunk.unsqueeze(-1)
+                delta_chunk.unsqueeze(-1)
+                * B[:, start:end].unsqueeze(2)
+                * x_chunk.unsqueeze(-1)
             )
-
-            # Within-chunk parallel scan (short enough to be stable)
-            log_A_bar = torch.log(A_bar.clamp(min=1e-10))
-            log_A_cumsum = torch.cumsum(log_A_bar, dim=1)
-            A_cumsum = torch.exp(log_A_cumsum.clamp(max=80))
-
-            # Same closed form as the single-chunk scan (see _selective_scan_single):
-            # divide by the inclusive cumprod, with no trailing /A_bar.
-            weighted_BX = BX / A_cumsum.clamp(min=1e-10)
-            weighted_BX_cumsum = torch.cumsum(weighted_BX, dim=1)
-
-            # Chunk-internal state (without carry-over)
-            h_chunk_internal = A_cumsum * weighted_BX_cumsum
-
-            # Add contribution from previous state
-            # h_state: (B, d_inner, d_state) -> (B, 1, d_inner, d_state)
-            # A_cumsum: (B, chunk_len, d_inner, d_state)
-            h_state_contribution = h_state.unsqueeze(1) * A_cumsum
-
-            # Total state for this chunk
-            h_chunk = h_chunk_internal + h_state_contribution
-
-            # Output for this chunk
-            y_chunk = (C_chunk.unsqueeze(2) * h_chunk).sum(-1) + D * x_chunk
-            y_chunks.append(y_chunk)
-
-            # Update carry-over state for next chunk
-            # Final state of this chunk: h_chunk[:, -1]
-            h_state = h_chunk[:, -1]
-
-        # Concatenate all chunks
-        y = torch.cat(y_chunks, dim=1)
-        return y
+            # Fold the previous chunk's final state into this chunk's first
+            # input contribution, then use the same zero-state scan.
+            BX = torch.cat(
+                [BX[:, :1] + A_bar[:, :1] * h_state.unsqueeze(1), BX[:, 1:]],
+                dim=1,
+            )
+            h = self._scan_states(A_bar, BX)
+            y_chunks.append((C[:, start:end].unsqueeze(2) * h).sum(-1) + D * x_chunk)
+            h_state = h[:, -1]
+        return torch.cat(y_chunks, dim=1)
 
 
 # =============================================================================

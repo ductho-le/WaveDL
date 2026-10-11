@@ -10,7 +10,11 @@
 # =============================================================================
 # MODEL
 # =============================================================================
-model: cnn                    # 21 architectures (69 variants) available:
+model: cnn                    # 20+ architecture families (72 variants currently):
+                              # Run `wavedl-train --list_models` for the
+                              # authoritative list installed in your environment.
+                              # All models below produce vectors except
+                              # `unet_field`, which produces dense 2D fields.
                               #
                               # ── Classic CNNs ──
                               # CNN:       cnn
@@ -20,7 +24,8 @@ model: cnn                    # 21 architectures (69 variants) available:
                               #
                               # ── Efficient/Mobile CNNs ──
                               # MobileNetV3: mobilenet_v3_small, mobilenet_v3_large
-                              # EfficientNet: efficientnet_b0, efficientnet_b1, efficientnet_b2
+                              # EfficientNet: efficientnet_b0, efficientnet_b2,
+                              #               efficientnet_b4, efficientnet_b7
                               # EfficientNetV2: efficientnet_v2_s, efficientnet_v2_m, efficientnet_v2_l
                               # RegNet:    regnet_y_400mf, regnet_y_800mf, regnet_y_1_6gf,
                               #            regnet_y_3_2gf, regnet_y_8gf
@@ -40,18 +45,20 @@ model: cnn                    # 21 architectures (69 variants) available:
                               # ── Hybrid CNN-Transformer ──
                               # FastViT:   fastvit_t8, fastvit_t12, fastvit_s12, fastvit_sa12
                               # CAFormer:  caformer_s18, caformer_s36, caformer_m36, poolformer_s12
-                              # EfficientViT: efficientvit_m0, efficientvit_m1, efficientvit_m2,
-                              #               efficientvit_b0, efficientvit_b1, efficientvit_b2,
-                              #               efficientvit_b3, efficientvit_l1, efficientvit_l2
+                              # EfficientViT: efficientvit_m1, efficientvit_b1,
+                              #               efficientvit_b2, efficientvit_l2
                               #
                               # ── State Space Models ──
                               # Mamba:     mamba_1d
                               # Vision Mamba: vim_tiny, vim_small, vim_base
+                              # S4D:       s4d_small, s4d, s4d_large
                               #
                               # ── Specialized Architectures ──
                               # TCN:       tcn_small, tcn, tcn_large
+                              # WaveNet:   wavenet_small, wavenet, wavenet_large
                               # ResNet3D:  resnet3d_18, mc3_18
-                              # U-Net:     unet_regression
+                              # U-Net:     unet_regression (vector),
+                              #            unet_field (dense 2D field)
 
 pretrained: false             # Set to true to use ImageNet pretrained weights
                               # (only effective for *_pretrained model variants)
@@ -72,7 +79,7 @@ grad_accum_steps: 1            # Gradient accumulation steps (effective batch = 
 # =============================================================================
 loss: mse                     # Options: mse, mae, huber, smooth_l1, log_cosh, weighted_mse
 # huber_delta: 1.0            # Delta for Huber loss (only if loss: huber)
-# loss_weights: "1.0,2.0,1.0" # Comma-separated weights for weighted_mse
+# loss_weights: "1.0,2.0,1.0" # Per-parameter/channel weights for weighted_mse
 
 # =============================================================================
 # OPTIMIZER
@@ -98,13 +105,15 @@ scheduler: plateau            # Options: plateau, cosine, cosine_restarts, onecy
 # CROSS-VALIDATION (Optional)
 # =============================================================================
 cv: 0                         # Number of folds (0 = disabled, e.g., 5 for 5-fold CV)
-cv_stratify: false            # Stratified splits based on output values
+cv_stratify: false            # Stratified splits for vector targets only
 cv_bins: 10                   # Number of bins for stratification
 
 # =============================================================================
 # DATA & OUTPUT
 # =============================================================================
 # data_path: train_data.npz   # Required - path to training data
+                              # Targets: (N,T) vectors, (N,H,W) scalar maps,
+                              # or channels-first (N,C,H,W) property maps.
 # output_dir: ./experiments   # Output directory for checkpoints/logs
 # resume: null                # Path to checkpoint to resume from
 # save_every: 50              # Save checkpoint every N epochs (0 = disabled)
@@ -143,7 +152,8 @@ compile: false                # torch.compile() for faster training (PyTorch 2.0
 # constraint_reduction: mse   # Reduction: mse (squared) or mae (linear)
 #
 # Expression syntax:
-#   Variables: y0, y1, ... (outputs), x[0], x[1], ... (inputs)
+#   Variables: y0, y1, ... (vector targets or dense output channels),
+#              x[0], x[1], ... (inputs)
 #   Aggregates: x_mean, x_sum, x_max, x_min, x_std
 #   Operators: +, -, *, /, **, >, <, >=, <=, ==
 #   Functions: sin, cos, exp, log, sqrt, sigmoid, softplus, tanh, relu, abs

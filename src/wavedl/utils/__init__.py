@@ -109,6 +109,7 @@ from .distributed import (  # noqa: E402
     broadcast_early_stop,
     broadcast_value,
     sync_tensor,
+    wait_for_everyone,
 )
 from .losses import (  # noqa: E402
     LogCoshLoss,
@@ -125,6 +126,7 @@ from .metrics import (  # noqa: E402
     FONT_SIZE_TEXT,
     FONT_SIZE_TICKS,
     MetricTracker,
+    StreamingFieldMetrics,
     calc_pearson,
     calc_per_target_r2,
     configure_matplotlib_style,
@@ -152,17 +154,25 @@ from .schedulers import (  # noqa: E402
     is_epoch_based,
     list_schedulers,
 )
+from .targets import (  # noqa: E402
+    SpatialTargetScaler,
+    canonical_target_shape,
+    canonicalize_targets,
+    create_target_scaler,
+    flatten_targets_by_channel,
+    get_target_shape,
+    is_spatial_target_shape,
+    scaler_target_shape,
+)
 
 
 __all__ = [
     "COLORS",
     "FIGURE_DPI",
     "FIGURE_WIDTH_CM",
-    # Style constants
     "FIGURE_WIDTH_INCH",
     "FONT_SIZE_TEXT",
     "FONT_SIZE_TICKS",
-    # Constraints
     "CVDataset",
     "DataSource",
     "ExpressionConstraint",
@@ -170,37 +180,38 @@ __all__ = [
     "HDF5Source",
     "LogCoshLoss",
     "MATSource",
-    # Data
     "MemmapDataset",
-    # Metrics
     "MetricTracker",
     "NPZSource",
     "PhysicsConstrainedLoss",
+    "SpatialTargetScaler",
+    "StreamingFieldMetrics",
     "WeightedMSELoss",
-    # Distributed
     "broadcast_early_stop",
     "broadcast_value",
     "build_constraints",
     "calc_pearson",
     "calc_per_target_r2",
+    "canonical_target_shape",
+    "canonicalize_targets",
     "configure_matplotlib_style",
     "create_default_config",
+    "create_target_scaler",
     "create_training_curves",
+    "flatten_targets_by_channel",
     "get_data_source",
-    # Losses
     "get_loss",
     "get_lr",
-    # Optimizers
     "get_optimizer",
     "get_optimizer_with_param_groups",
-    # Schedulers
     "get_scheduler",
     "get_scheduler_with_warmup",
+    "get_target_shape",
     "is_epoch_based",
+    "is_spatial_target_shape",
     "list_losses",
     "list_optimizers",
     "list_schedulers",
-    # Config
     "load_config",
     "load_outputs_only",
     "load_test_data",
@@ -218,11 +229,12 @@ __all__ = [
     "plot_residuals",
     "plot_scientific_scatter",
     "prepare_data",
-    # Cross-Validation
     "run_cross_validation",
     "save_config",
+    "scaler_target_shape",
     "setup_hpc_cache_dirs",
     "sync_tensor",
     "train_fold",
     "validate_config",
+    "wait_for_everyone",
 ]

@@ -378,3 +378,73 @@ class TestDistributedEdgeCases:
         result = sync_tensor(tensor, mock_accelerator)
 
         assert result.shape == (4, 3, 32, 32)
+
+
+def test_cpu_barrier_omits_device_ids_and_preserves_accelerator(monkeypatch):
+    from types import SimpleNamespace
+
+    from accelerate import Accelerator
+
+    from wavedl.utils import distributed
+
+    accelerator = SimpleNamespace(
+        num_processes=2,
+        device=torch.device("cpu"),
+        local_process_index=1,
+        wait_for_everyone=MagicMock(),
+    )
+    original_attributes = vars(accelerator).copy()
+    original_accelerate_barrier = Accelerator.wait_for_everyone
+    barrier = MagicMock()
+    monkeypatch.setattr(distributed.dist, "is_available", lambda: True)
+    monkeypatch.setattr(distributed.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(distributed.dist, "barrier", barrier)
+    # Reproduce the host capability that caused upstream to select MPS, while
+    # keeping the actual process-group device explicitly on CPU.
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+
+    distributed.wait_for_everyone(accelerator)
+
+    barrier.assert_called_once_with()
+    accelerator.wait_for_everyone.assert_not_called()
+    assert vars(accelerator) == original_attributes
+    assert Accelerator.wait_for_everyone is original_accelerate_barrier
+
+
+@pytest.mark.parametrize(
+    ("device", "processes", "available", "initialized"),
+    [
+        ("cpu", 1, True, True),
+        ("cpu", 2, True, False),
+        ("cpu", 2, False, False),
+        ("cuda:0", 2, True, True),
+        ("mps", 2, True, True),
+    ],
+)
+def test_non_cpu_group_wait_delegates_to_accelerate(
+    monkeypatch, device, processes, available, initialized
+):
+    from types import SimpleNamespace
+
+    from wavedl.utils import distributed
+
+    accelerator = SimpleNamespace(
+        num_processes=processes,
+        device=torch.device(device),
+        wait_for_everyone=MagicMock(),
+    )
+    barrier = MagicMock()
+    monkeypatch.setattr(distributed.dist, "is_available", lambda: available)
+    monkeypatch.setattr(distributed.dist, "is_initialized", lambda: initialized)
+    monkeypatch.setattr(distributed.dist, "barrier", barrier)
+
+    distributed.wait_for_everyone(accelerator)
+
+    accelerator.wait_for_everyone.assert_called_once_with()
+    barrier.assert_not_called()
+
+
+def test_barrier_helper_is_exported():
+    from wavedl.utils import distributed, wait_for_everyone
+
+    assert wait_for_everyone is distributed.wait_for_everyone

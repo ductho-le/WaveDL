@@ -8,9 +8,9 @@ Provides exponentially growing receptive field with linear parameter growth.
 
 **Key Features**:
     - Dilated convolutions: Exponentially growing receptive field
-    - Causal padding: No information leakage from future
+    - Causal convolution padding; GroupNorm uses the entire signal
     - Residual connections: Stable gradient flow
-    - Weight normalization: Faster convergence
+    - Group normalization across channels and sequence positions
 
 **Variants**:
     - tcn: Standard TCN with configurable depth and channels
@@ -18,11 +18,16 @@ Provides exponentially growing receptive field with linear parameter growth.
     - tcn_large: Higher capacity for complex patterns
 
 **Receptive Field Calculation**:
-    RF = 1 + (kernel_size - 1) * sum(dilation[i] for i in layers)
+    RF = 1 + 2 * (kernel_size - 1) * sum(dilation[i] for i in layers)
     With default settings (kernel=3, 8 layers, dilation=2^i):
-    RF = 1 + 2 * (1+2+4+8+16+32+64+128) = 511 samples
+    RF = 1 + 4 * (1+2+4+8+16+32+64+128) = 1021 samples
 
-**Note**: TCN is 1D-only. For 2D/3D data, use ResNet, EfficientNet, or Swin.
+**Note**: GroupNorm makes the complete model non-causal even though its
+convolutions use causal padding. It is intended for whole-signal regression,
+not autoregressive generation or streaming predictions. The receptive field
+below describes the convolution stack; normalization also couples all positions.
+
+TCN is 1D-only. For 2D/3D data, use ResNet, EfficientNet, or Swin.
 
 References:
     Bai, S., Kolter, J.Z., & Koltun, V. (2018). An Empirical Evaluation of
@@ -35,7 +40,8 @@ References:
 Author: Ductho Le (ductho.le@outlook.com)
 """
 
-from typing import Any
+import copy
+from typing import Any, ClassVar
 
 import torch
 import torch.nn as nn
@@ -85,8 +91,8 @@ class TemporalBlock(nn.Module):
     Temporal block with two causal dilated convolutions and residual connection.
 
     Architecture:
-        Input → CausalConv → LayerNorm → GELU → Dropout →
-                CausalConv → LayerNorm → GELU → Dropout → (+Input) → Output
+        Input → CausalConv → GroupNorm → GELU → Dropout →
+                CausalConv → GroupNorm → GELU → Dropout → (+Input) → Output
     """
 
     def __init__(
@@ -151,7 +157,7 @@ class TCNBase(BaseModel):
     4. Regression head
 
     The receptive field grows exponentially with depth:
-    RF = 1 + (kernel_size - 1) * sum(2^i for i in range(num_layers))
+    RF = 1 + 2 * (kernel_size - 1) * sum(2^i for i in range(num_layers))
     """
 
     def __init__(
@@ -269,6 +275,7 @@ class TCNBase(BaseModel):
             "num_channels": [64, 128, 256, 256, 512, 512, 512, 512],
             "kernel_size": 3,
             "dropout_rate": 0.1,
+            **copy.deepcopy(getattr(cls, "_variant_defaults", {})),
         }
 
 
@@ -283,7 +290,7 @@ class TCN(TCNBase):
     TCN: Standard Temporal Convolutional Network.
 
     ~6.9M backbone parameters. 8 temporal blocks with channels [64→128→256→256→512→512→512→512].
-    Receptive field: 511 samples with kernel_size=3.
+    Convolutional receptive field: 1021 samples with kernel_size=3.
 
     Recommended for:
         - Ultrasonic A-scan processing
@@ -325,7 +332,7 @@ class TCNSmall(TCNBase):
     TCN-Small: Lightweight variant for quick experiments.
 
     ~0.9M backbone parameters. 6 temporal blocks with channels [32→64→128→128→256→256].
-    Receptive field: 127 samples with kernel_size=3.
+    Convolutional receptive field: 253 samples with kernel_size=3.
 
     Recommended for:
         - Quick prototyping
@@ -344,8 +351,14 @@ class TCNSmall(TCNBase):
         >>> out = model(x)  # (4, 3)
     """
 
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "num_channels": [32, 64, 128, 128, 256, 256]
+    }
+
     def __init__(self, in_shape: tuple[int], out_size: int, **kwargs):
-        num_channels = [32, 64, 128, 128, 256, 256]
+        num_channels = kwargs.pop(
+            "num_channels", list(self._variant_defaults["num_channels"])
+        )
         super().__init__(
             in_shape=in_shape, out_size=out_size, num_channels=num_channels, **kwargs
         )
@@ -363,7 +376,7 @@ class TCNLarge(TCNBase):
     TCN-Large: High-capacity variant for complex patterns.
 
     ~10.0M backbone parameters. 10 temporal blocks with channels [64→128→256→256→512→512→512→512→512→512].
-    Receptive field: 2047 samples with kernel_size=3.
+    Convolutional receptive field: 4093 samples with kernel_size=3.
 
     Recommended for:
         - Long sequences (>4096 samples)
@@ -382,8 +395,14 @@ class TCNLarge(TCNBase):
         >>> out = model(x)  # (4, 3)
     """
 
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "num_channels": [64, 128, 256, 256, 512, 512, 512, 512, 512, 512]
+    }
+
     def __init__(self, in_shape: tuple[int], out_size: int, **kwargs):
-        num_channels = [64, 128, 256, 256, 512, 512, 512, 512, 512, 512]
+        num_channels = kwargs.pop(
+            "num_channels", list(self._variant_defaults["num_channels"])
+        )
         super().__init__(
             in_shape=in_shape, out_size=out_size, num_channels=num_channels, **kwargs
         )

@@ -188,10 +188,8 @@ class SwinTransformerBase(BaseModel):
         self.backbone.features[0][0] = new_conv
 
     def _freeze_backbone(self):
-        """Freeze all backbone parameters except the head."""
-        for name, param in self.backbone.named_parameters():
-            if "head" not in name:
-                param.requires_grad = False
+        """Freeze feature extraction while retaining the regression head."""
+        self._freeze_backbone_modules(("head",))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

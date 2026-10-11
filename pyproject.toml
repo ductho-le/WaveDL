@@ -6,7 +6,7 @@
 # ============================================================================
 
 [build-system]
-requires = ["setuptools>=61.0,<77"]
+requires = ["setuptools>=78.1.1"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
@@ -21,7 +21,8 @@ name = "wavedl"
 dynamic = ["version"]
 description = "A Scalable Deep Learning Framework for Wave-Based Inverse Problems"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [
     {name = "Ductho Le"}
@@ -36,11 +37,13 @@ keywords = [
     "machine-learning",
     "pytorch",
     "regression",
+    "dense-regression",
+    "seismic-imaging",
+    "elastography",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -50,8 +53,9 @@ classifiers = [
 ]
 dependencies = [
     # Core ML stack
-    "torch>=2.0.0",
-    "torchvision>=0.15.0",
+    # Security baseline; pair torchvision with the installed torch build.
+    "torch>=2.13.0",
+    "torchvision>=0.28.0",
     "timm>=0.9.0",  # Pretrained models (MaxViT, FastViT, CAFormer)
     "accelerate>=0.20.0",
     "numpy>=1.24.0",
@@ -69,19 +73,21 @@ dependencies = [
     # HPO
     "optuna>=3.0.0",
     # ONNX export
-    "onnx>=1.14.0",
+    "onnx>=1.22.0",
     "onnxruntime>=1.15.0",
-    "onnxscript>=0.1.0",  # Required by torch.onnx.export in PyTorch 2.1+
-    # torch.compile backend (Linux only)
-    "triton>=2.0.0; sys_platform == 'linux'",
+    "onnxscript>=0.1.0",
+    # PyTorch's platform-specific wheel selects its compatible Triton backend.
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
     "pytest-xdist>=3.5.0",
-    "ruff>=0.8.0",
+    "ruff==0.14.10",  # Match CI and pre-commit formatting
     "pre-commit>=3.5.0",
+    "build>=1.3.0",
+    "twine>=6.2.0",
+    "packaging>=24.0",  # Release version validation
 ]
 
 [project.scripts]
@@ -123,6 +129,7 @@ exclude = [
     "docs",
     "notebooks",
     ".pytest_cache",
+    ".mypy_cache",
     "wandb",
 ]
 

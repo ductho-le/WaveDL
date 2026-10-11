@@ -182,10 +182,8 @@ class RegNetBase(BaseModel):
         self.backbone.stem[0] = new_conv
 
     def _freeze_backbone(self):
-        """Freeze all backbone parameters except the fc layer."""
-        for name, param in self.backbone.named_parameters():
-            if "fc" not in name:
-                param.requires_grad = False
+        """Freeze feature extraction while retaining the regression head."""
+        self._freeze_backbone_modules(("fc",))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

@@ -11,11 +11,13 @@ Supported Losses:
     - huber: Huber Loss (smooth blend of MSE and MAE)
     - smooth_l1: Smooth L1 Loss (PyTorch native Huber variant)
     - log_cosh: Log-Cosh Loss (smooth approximation to MAE)
-    - weighted_mse: Per-target weighted MSE
+    - weighted_mse: Per-vector-target or per-field-channel weighted MSE
 
 Author: Ductho Le (ductho.le@outlook.com)
 Version: 1.0.0
 """
+
+import math
 
 import torch
 import torch.nn as nn
@@ -61,10 +63,16 @@ class LogCoshLoss(nn.Module):
         Returns:
             Loss value (scalar if reduction is 'mean' or 'sum')
         """
-        diff = pred - target
-        # log(cosh(x)) = x + softplus(-2x) - log(2)
-        # This formulation is numerically stable
-        loss = diff + torch.nn.functional.softplus(-2.0 * diff) - 0.693147  # log(2)
+        if pred.shape != target.shape:
+            raise ValueError("Prediction and target shapes must match.")
+        # Promote low precision before subtraction and never exponentiate a
+        # positive number: large negative errors otherwise overflow in fp16.
+        work_pred = (
+            pred.float() if pred.dtype in (torch.float16, torch.bfloat16) else pred
+        )
+        work_target = target.to(work_pred.dtype)
+        diff = (work_pred - work_target).abs()
+        loss = diff + torch.nn.functional.softplus(-2.0 * diff) - math.log(2.0)
 
         if self.reduction == "none":
             return loss
@@ -78,8 +86,8 @@ class WeightedMSELoss(nn.Module):
     """
     Weighted Mean Squared Error Loss.
 
-    Applies different weights to each target dimension, allowing
-    prioritization of specific outputs (e.g., prioritize thickness
+    Applies different weights to each vector target or dense property channel,
+    allowing prioritization of specific outputs (e.g., prioritize thickness
     over velocity in NDE applications).
 
     Example:
@@ -93,8 +101,8 @@ class WeightedMSELoss(nn.Module):
     ):
         """
         Args:
-            weights: Per-target weights. If None, equal weights (standard MSE).
-                     Length must match number of output targets.
+            weights: Per-target/channel weights. If None, use standard MSE.
+                     Length must match axis 1 of the model output.
             reduction: Specifies the reduction: 'none' | 'mean' | 'sum'
         """
         super().__init__()
@@ -105,6 +113,10 @@ class WeightedMSELoss(nn.Module):
         if weights is not None:
             if isinstance(weights, list):
                 weights = torch.tensor(weights, dtype=torch.float32)
+            if weights.ndim != 1 or weights.numel() == 0:
+                raise ValueError("Loss weights must be a non-empty 1D sequence.")
+            if not torch.isfinite(weights).all() or (weights < 0).any():
+                raise ValueError("Loss weights must be finite and non-negative.")
             self.register_buffer("weights", weights)
         else:
             self.weights = None
@@ -114,8 +126,8 @@ class WeightedMSELoss(nn.Module):
         Compute weighted MSE loss.
 
         Args:
-            pred: Predicted values of shape (N, T) where T is number of targets
-            target: Target values of shape (N, T)
+            pred: Predictions shaped (N,T) or dense fields (N,C,H,W)
+            target: Target tensor with the same shape as ``pred``
 
         Returns:
             Loss value (scalar if reduction is 'mean' or 'sum')
@@ -123,20 +135,33 @@ class WeightedMSELoss(nn.Module):
         Raises:
             ValueError: If weight dimension doesn't match target dimension
         """
+        if pred.shape != target.shape:
+            raise ValueError(
+                f"Prediction shape {tuple(pred.shape)} does not match target shape "
+                f"{tuple(target.shape)}."
+            )
         mse = (pred - target) ** 2
 
         if self.weights is not None:
-            # Validate weight dimension matches target dimension
-            if self.weights.shape[0] != pred.shape[-1]:
+            # Targets/channels live on axis 1 for both (N,T) vectors and
+            # channels-first dense fields (N,C,*spatial).
+            if pred.ndim < 2:
+                raise ValueError(
+                    f"WeightedMSELoss expects at least 2D predictions, got {pred.shape}."
+                )
+            if self.weights.shape[0] != pred.shape[1]:
                 raise ValueError(
                     f"Weight dimension ({self.weights.shape[0]}) must match "
-                    f"output dimension ({pred.shape[-1]}). "
+                    f"output channel dimension ({pred.shape[1]}). "
                     f"Check your --loss_weights argument."
                 )
             # Use local variable to avoid mutating registered buffer
             # (mutating self.weights breaks state_dict semantics)
             weights = self.weights.to(mse.device)
-            # Apply per-target weights with correct broadcasting: (N, T) * (T,) -> (N, T)
+            # (T,) broadcasts directly for vectors.  Dense fields need
+            # (1,C,1,1,...) so weights apply to physical channels, not width.
+            if pred.ndim > 2:
+                weights = weights.reshape(1, -1, *([1] * (pred.ndim - 2)))
             mse = mse * weights
 
         if self.reduction == "none":
@@ -182,7 +207,7 @@ def get_loss(
 
     Args:
         name: Loss function name (see list_losses())
-        weights: Per-target weights for weighted_mse
+        weights: Per-target/channel weights for weighted_mse
         delta: Delta parameter for Huber loss (default: 1.0)
         **kwargs: Additional arguments passed to loss constructor
 

@@ -921,6 +921,55 @@ class TestONNXDenormAccuracy:
         expected = normalized * mock_scaler.scale_ + mock_scaler.mean_
         np.testing.assert_array_almost_equal(denormalized, expected, decimal=5)
 
+    def test_dense_onnx_preserves_opset_dynamic_batch_and_denormalization(
+        self, temp_dir
+    ):
+        """Field export honors its requested opset and accepts later batches."""
+        import onnx
+        import onnxruntime as ort
+
+        from wavedl.models import UNetField
+        from wavedl.test import export_to_onnx
+        from wavedl.utils import SpatialTargetScaler
+
+        model = UNetField(
+            in_shape=(16, 16),
+            out_size=2,
+            out_shape=(2, 9, 11),
+            base_channels=2,
+            depth=2,
+            dropout_rate=0.0,
+        ).eval()
+        scaler = SpatialTargetScaler().fit(
+            np.arange(3 * 2 * 9 * 11, dtype=np.float32).reshape(3, 2, 9, 11)
+        )
+        sample_input = torch.randn(1, 1, 16, 16)
+        onnx_path = os.path.join(temp_dir, "field_denorm.onnx")
+
+        assert export_to_onnx(
+            model,
+            sample_input,
+            onnx_path,
+            opset_version=17,
+            scaler=scaler,
+            include_denorm=True,
+            validate=False,
+        )
+
+        exported = onnx.load(onnx_path)
+        assert exported.opset_import[0].version == 17
+        output_batch_dim = exported.graph.output[0].type.tensor_type.shape.dim[0]
+        assert output_batch_dim.dim_param == "batch_size"
+
+        later_batch = torch.randn(2, 1, 16, 16)
+        with torch.no_grad():
+            expected = scaler.inverse_transform(model(later_batch).numpy())
+        session = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+        actual = session.run(None, {"input": later_batch.numpy()})[0]
+
+        assert actual.shape == (2, 2, 9, 11)
+        np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=1e-5)
+
 
 # ==============================================================================
 # MAMBA NUMERICAL STABILITY TESTS

@@ -9,6 +9,7 @@ Author: Ductho Le (ductho.le@outlook.com)
 """
 
 from abc import ABC, abstractmethod
+from numbers import Integral
 from typing import Any
 
 import torch
@@ -36,7 +37,7 @@ def compute_num_groups(num_channels: int, preferred_groups: int = 32) -> int:
     Compute valid num_groups for GroupNorm that divides num_channels evenly.
 
     GroupNorm requires num_channels to be divisible by num_groups. This function
-    finds the largest valid divisor up to preferred_groups.
+    tries preferred_groups, then common divisors no larger than that value.
 
     Args:
         num_channels: Number of channels to normalize (must be positive)
@@ -50,9 +51,16 @@ def compute_num_groups(num_channels: int, preferred_groups: int = 32) -> int:
         >>> compute_num_groups(48)  # Returns 16 (48 % 32 != 0)
         >>> compute_num_groups(7)  # Returns 1 (prime number)
     """
-    # Try preferred groups first, then common divisors
+    for name, value in (
+        ("num_channels", num_channels),
+        ("preferred_groups", preferred_groups),
+    ):
+        if not isinstance(value, Integral) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"{name} must be a positive integer.")
+
+    # Preserve established group choices while respecting the requested maximum.
     for groups in [preferred_groups, 16, 8, 4, 2, 1]:
-        if groups <= num_channels and num_channels % groups == 0:
+        if groups <= min(num_channels, preferred_groups) and num_channels % groups == 0:
             return groups
 
     # Fallback: find any valid divisor (always returns at least 1)
@@ -78,7 +86,7 @@ class BaseModel(nn.Module, ABC):
 
     Attributes:
         in_shape: Input spatial dimensions (varies by dimensionality)
-        out_size: Number of output targets
+        out_size: Number of vector targets or dense output channels
 
     Example:
         from wavedl.models.base import BaseModel
@@ -95,6 +103,14 @@ class BaseModel(nn.Module, ABC):
                 return output
     """
 
+    # Vector regression is the default contract. Dense-output architectures
+    # opt in so the training/inference pipeline can reject incompatible model
+    # and target combinations before a loss broadcasts silently.
+    supports_spatial_output = False
+    requires_spatial_output = False
+    in_shape: tuple[int, ...]
+    out_size: int
+
     @abstractmethod
     def __init__(
         self,
@@ -110,12 +126,33 @@ class BaseModel(nn.Module, ABC):
                       - 1D: (L,) for signal length
                       - 2D: (H, W) for image dimensions
                       - 3D: (D, H, W) for volume dimensions
-            out_size: Number of regression output targets
+            out_size: Number of vector targets or dense output channels
             **kwargs: Model-specific hyperparameters
         """
         super().__init__()
-        self.in_shape = in_shape
-        self.out_size = out_size
+        try:
+            spatial_shape = tuple(in_shape)
+        except TypeError as exc:
+            raise ValueError(
+                "in_shape must contain one, two or three positive integers."
+            ) from exc
+        if len(spatial_shape) not in (1, 2, 3):
+            raise ValueError(f"Unsupported dimensionality: {len(spatial_shape)}D.")
+        if any(
+            not isinstance(size, Integral) or isinstance(size, bool) or size <= 0
+            for size in spatial_shape
+        ):
+            raise ValueError(
+                f"in_shape dimensions must be positive integers, got {spatial_shape}."
+            )
+        if (
+            not isinstance(out_size, Integral)
+            or isinstance(out_size, bool)
+            or out_size <= 0
+        ):
+            raise ValueError("out_size must be a positive integer.")
+        self.in_shape = tuple(int(size) for size in spatial_shape)
+        self.out_size = int(out_size)
 
     @abstractmethod
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -129,7 +166,8 @@ class BaseModel(nn.Module, ABC):
                - 3D: (B, C, D, H, W)
 
         Returns:
-            Output tensor of shape (B, out_size)
+            Vector models return ``(B, out_size)``. Spatial-output models may
+            return ``(B, out_size, *output_spatial_shape)``.
         """
         pass
 
@@ -177,6 +215,32 @@ class BaseModel(nn.Module, ABC):
                 f"Full input shape: {tuple(x.shape)} (B={x.shape[0]}, C={x.shape[1]})\n"
                 f"Hint: Ensure your data dimensions match the model's in_shape."
             )
+
+    def _freeze_backbone_modules(self, trainable_heads: tuple[str, ...] = ()) -> None:
+        """Freeze feature extraction, including running statistics and dropout.
+
+        Head names are module paths relative to ``self.backbone``. Matching an
+        entire path prevents names such as an SE block's ``fc1`` from being
+        mistaken for the regression head ``fc``.
+        """
+        from wavedl.models._pretrained_utils import freeze_backbone
+
+        freeze_backbone(self.backbone, exclude_patterns=list(trainable_heads))
+        self._backbone_trainable_heads = trainable_heads
+        self.backbone.eval()
+        for path in trainable_heads:
+            self.backbone.get_submodule(path).train(self.training)
+
+    def train(self, mode: bool = True):
+        """Set training mode while keeping explicitly frozen features fixed."""
+        super().train(mode)
+        if getattr(self, "freeze_backbone", False) and hasattr(
+            self, "_backbone_trainable_heads"
+        ):
+            self.backbone.eval()
+            for path in self._backbone_trainable_heads:
+                self.backbone.get_submodule(path).train(mode)
+        return self
 
     def count_parameters(self, trainable_only: bool = True) -> int:
         """
@@ -236,7 +300,9 @@ class BaseModel(nn.Module, ABC):
         no_decay_params = []
 
         for name, param in self.named_parameters():
-            if not param.requires_grad:
+            if not param.requires_grad and name not in getattr(
+                self, "_optimizer_checkpoint_parameters", ()
+            ):
                 continue
             # Skip weight decay for bias, normalization, and per-channel
             # scaling parameters (LayerScale gamma, GRN gamma/beta,

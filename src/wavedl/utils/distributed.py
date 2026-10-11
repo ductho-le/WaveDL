@@ -16,6 +16,25 @@ import torch.distributed as dist
 from accelerate import Accelerator
 
 
+def wait_for_everyone(accelerator: Accelerator) -> None:
+    """Synchronize ranks without passing accelerator device IDs to CPU Gloo.
+
+    Accelerate's barrier passes local device IDs even for CPU execution. Recent
+    PyTorch versions can then select physical MPS hardware on macOS, although
+    the process group is CPU Gloo. Omitting device IDs preserves the CPU backend.
+    Other devices and execution modes keep Accelerate's normal synchronization.
+    """
+    if (
+        accelerator.num_processes > 1
+        and accelerator.device.type == "cpu"
+        and dist.is_available()
+        and dist.is_initialized()
+    ):
+        dist.barrier()
+    else:
+        accelerator.wait_for_everyone()
+
+
 def broadcast_early_stop(should_stop: bool, accelerator: Accelerator) -> bool:
     """
     Broadcast early stopping decision from rank 0 to all processes.
@@ -61,8 +80,10 @@ def broadcast_value(value: int | float, accelerator: Accelerator) -> int | float
     Returns:
         Value from rank 0 (synchronized across all ranks)
     """
+    if accelerator.num_processes == 1:
+        return value
     is_int = isinstance(value, int)
-    dtype = torch.int64 if is_int else torch.float32
+    dtype = torch.int64 if is_int else torch.float64
 
     tensor = torch.tensor(value, device=accelerator.device, dtype=dtype)
 
@@ -98,6 +119,18 @@ def sync_tensor(
             f"Invalid reduction '{reduction}'. Must be one of {valid_reductions}"
         )
 
+    if reduction in {"max", "min"}:
+        # Accelerate.reduce always uses SUM internally; passing max/min there
+        # silently produces incorrect distributed results.
+        result = tensor.clone()
+        if accelerator.num_processes > 1:
+            if not dist.is_available() or not dist.is_initialized():
+                raise RuntimeError(
+                    "Max/min synchronization requires a torch.distributed process group."
+                )
+            op = dist.ReduceOp.MAX if reduction == "max" else dist.ReduceOp.MIN
+            dist.all_reduce(result, op=op)
+        return result
     return accelerator.reduce(tensor, reduction=reduction)
 
 

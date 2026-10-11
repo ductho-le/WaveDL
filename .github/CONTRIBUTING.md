@@ -82,7 +82,22 @@ pytest unit_tests/ -v
 pytest unit_tests/ -v -m "not slow"
 ```
 
-All tests should pass with no warnings.
+Investigate new warnings; documented upstream compatibility warnings may remain.
+For CPU validation, set `OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`,
+`HF_HUB_OFFLINE=1`, and `ACCELERATE_USE_CPU=true`.
+
+Also validate the shipped distribution and real distributed execution:
+
+```bash
+python -m build
+python -m twine check --strict dist/*
+python -m torch.distributed.run --standalone --nproc_per_node=2 tools/check_distributed.py --work-dir /tmp/wavedl-ddp-check
+```
+
+Use a new directory for each distributed smoke invocation. CI installs the wheel
+and runs `tools/smoke_installed.py` outside the checkout, then exercises CLI entry
+points. The test matrix covers Python 3.11–3.13, minimum/latest PyTorch, and Linux,
+Windows, and macOS; the full architecture suite runs separately on Linux.
 
 ## Pull Request Process
 
@@ -101,6 +116,11 @@ New models should:
 - Inherit from `BaseModel`
 - Use the `@register_model("model_name")` decorator
 - Support 1D, 2D, and 3D input shapes (if possible)
+- Declare their output contract: vector models return `(B, out_size)`; dense
+  2D models accept `out_shape=(C, H, W)`, set
+  `supports_spatial_output = True`, and return `(B, C, H, W)`
+- Set `requires_spatial_output = True` when the architecture cannot be used
+  with vector targets
 - Include docstrings and type hints
 
 ## Releasing (Maintainers)
@@ -130,23 +150,28 @@ We use automated releases via GitHub Actions. When you push a version tag, a Git
 
    > Note: `pyproject.toml` reads the version dynamically from `__init__.py`, so you only need to update it in one place.
 
-3. **Update `CITATION.cff`** version to match:
-   ```yaml
-   version: 1.2.0
+3. **Validate the intended tag** before tagging:
+   ```bash
+   python tools/check_release.py --tag v1.2.0 --notes-file /tmp/wavedl-release-notes.md
    ```
 
-4. **Commit and tag**:
+   The tag must match `__version__` and have a nonempty changelog entry. Keep the
+   preferred publication citation in `CITATION.cff`; its publication metadata is
+   independent of the software release version.
+
+4. **Commit and tag** the reviewed release:
    ```bash
-   git add CHANGELOG.md src/wavedl/__init__.py CITATION.cff
+   git add CHANGELOG.md src/wavedl/__init__.py
    git commit -m "Release v1.2.0"
    git tag v1.2.0
-   git push origin main --tags
+   git push origin main v1.2.0
    ```
 
-5. **GitHub Actions** will automatically:
-   - Run the test suite
-   - Extract changelog notes for the version
-   - Create a GitHub Release
+5. **GitHub Actions** checks the tag, runs lint and the test matrix, builds a wheel
+   from the source distribution, validates package metadata, and tests the installed
+   wheel. Only after those jobs succeed does it publish the same verified artifacts
+   to PyPI and create a GitHub Release. Configure PyPI trusted publishing for the
+   `pypi` GitHub environment before releasing.
 
 ### Version Guidelines
 

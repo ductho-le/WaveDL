@@ -14,20 +14,21 @@
 clear; clc;
 
 %% ========================= CONFIGURATION ================================
-ONNX_MODEL_PATH = 'model.onnx';
-TEST_DATA_PATH  = 'Test_data_100.mat';
+EXAMPLE_DIR     = fileparts(mfilename('fullpath'));
+ONNX_MODEL_PATH = fullfile(EXAMPLE_DIR, 'model.onnx');
+TEST_DATA_PATH  = fullfile(EXAMPLE_DIR, 'Test_data_100.mat');
 INPUT_SIZE      = [500, 500];  % Expected [H, W] for network initialization
 
 %% ========================= LOAD MODEL ===================================
 fprintf('📦 Loading ONNX model: %s\n', ONNX_MODEL_PATH);
 
-% Import and initialize network (suppress all warnings during import)
-warnState = warning('off', 'all');
+% Keep importer warnings visible: unsupported operators need user attention.
 net = importNetworkFromONNX(ONNX_MODEL_PATH);
-warning(warnState);
 
 exampleInput = dlarray(single(zeros([INPUT_SIZE, 1])), 'SSC');
-net = initialize(net, exampleInput);
+if ~net.Initialized
+    net = initialize(net, exampleInput);
+end
 
 fprintf('   ✔ Model loaded (%d layers)\n', numel(net.Layers));
 
@@ -37,11 +38,21 @@ data = load(TEST_DATA_PATH);
 
 X_raw = data.input_test;
 Y     = data.output_test;
+validateattributes(Y, {'numeric'}, {'real', 'finite', 'nonempty', '2d'}, ...
+    mfilename, 'output_test');
+validateattributes(X_raw, {'numeric'}, {'real', 'finite', 'nonempty'}, ...
+    mfilename, 'input_test');
 
 fprintf('   Raw shape: [%s]\n', join(string(size(X_raw)), ' × '));
 
 % Preprocess: handle MATLAB/Python dimension ordering differences
 X = preprocessData(X_raw, size(Y, 1));
+if size(X, 1) ~= size(Y, 1) || size(X, 2) ~= 1 || ...
+        ~isequal([size(X, 3), size(X, 4)], INPUT_SIZE)
+    error('WaveDL:InputShape', ...
+        'Expected %d single-channel samples of size %d-by-%d.', ...
+        size(Y, 1), INPUT_SIZE(1), INPUT_SIZE(2));
+end
 
 fprintf('   ✔ Loaded %d samples\n', size(X, 1));
 
@@ -57,7 +68,12 @@ for i = 1:N
     sample = prepareSample(X, i);
     dlSample = dlarray(sample, 'SSC');
     dlPred = predict(net, dlSample);
-    predictions(i, :) = extractdata(dlPred)';
+    values = gather(extractdata(dlPred));
+    if numel(values) ~= numOutputs || ~isreal(values) || any(~isfinite(values), 'all')
+        error('WaveDL:InvalidPrediction', ...
+            'Sample %d returned invalid predictions or an unexpected output count.', i);
+    end
+    predictions(i, :) = reshape(values, 1, []);
 end
 elapsedTime = toc;
 
@@ -66,7 +82,7 @@ fprintf('   ✔ Completed in %.2f s (%.1f ms/sample)\n', elapsedTime, elapsedTim
 %% ========================= METRICS ======================================
 fprintf('\n📊 Evaluation Metrics:\n');
 
-errors = predictions - Y;
+errors = double(predictions) - double(Y);
 metrics = struct(...
     'R2',   computeR2(Y, predictions), ...
     'RMSE', sqrt(mean(errors.^2, 'all')), ...
@@ -155,7 +171,23 @@ end
 end
 
 function r2 = computeR2(y_true, y_pred)
-ss_res = sum((y_true - y_pred).^2, 'all');
-ss_tot = sum((y_true - mean(y_true, 'all')).^2, 'all');
-r2 = 1 - (ss_res / ss_tot);
+% Match Python/sklearn's uniform mean of per-output R² values.
+% Pooling columns around one global mean exaggerates R² when physical
+% parameters have different offsets or units.
+y_true = double(y_true);
+y_pred = double(y_pred);
+if ~isequal(size(y_true), size(y_pred))
+    error('WaveDL:MetricShape', 'Prediction and target shapes must match.');
+end
+if size(y_true, 1) < 2
+    r2 = NaN;  % R² is undefined for one sample.
+    return;
+end
+ss_res = sum((y_true - y_pred).^2, 1);
+ss_tot = sum((y_true - mean(y_true, 1)).^2, 1);
+per_output = ones(1, size(y_true, 2));
+nonconstant = ss_tot > 0;
+per_output(nonconstant) = 1 - ss_res(nonconstant) ./ ss_tot(nonconstant);
+per_output(~nonconstant & ss_res > 0) = 0;
+r2 = mean(per_output);
 end

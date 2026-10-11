@@ -11,6 +11,10 @@ Common components used across multiple models:
 Author: Ductho Le (ductho.le@outlook.com)
 """
 
+import copy
+import math
+from numbers import Integral
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -50,6 +54,17 @@ def get_pool_layer(dim: int) -> type[nn.Module]:
 # =============================================================================
 
 
+def _global_response_norm(x, gamma, beta, spatial_dims, eps):
+    # Half-precision L2 norms can overflow even when every activation and the
+    # final normalized response are representable. Keep the reduction and
+    # modulation in float32, including the zero-initialized gamma product.
+    dtype = torch.promote_types(x.dtype, gamma.dtype)
+    work = x.float() if x.dtype in (torch.float16, torch.bfloat16) else x
+    response = torch.linalg.vector_norm(work, dim=spatial_dims, keepdim=True)
+    response = response / (response.mean(dim=1, keepdim=True) + eps)
+    return (gamma * (work * response) + beta + work).to(dtype=dtype)
+
+
 class GRN1d(nn.Module):
     """
     Global Response Normalization for 1D inputs.
@@ -67,10 +82,7 @@ class GRN1d(nn.Module):
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, C, L)
-        Gx = torch.norm(x, p=2, dim=2, keepdim=True)  # (B, C, 1)
-        Nx = Gx / (Gx.mean(dim=1, keepdim=True) + self.eps)  # (B, C, 1)
-        return self.gamma * (x * Nx) + self.beta + x
+        return _global_response_norm(x, self.gamma, self.beta, (2,), self.eps)
 
 
 class GRN2d(nn.Module):
@@ -90,10 +102,7 @@ class GRN2d(nn.Module):
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, C, H, W)
-        Gx = torch.norm(x, p=2, dim=(2, 3), keepdim=True)  # (B, C, 1, 1)
-        Nx = Gx / (Gx.mean(dim=1, keepdim=True) + self.eps)  # (B, C, 1, 1)
-        return self.gamma * (x * Nx) + self.beta + x
+        return _global_response_norm(x, self.gamma, self.beta, (2, 3), self.eps)
 
 
 class GRN3d(nn.Module):
@@ -113,10 +122,7 @@ class GRN3d(nn.Module):
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, C, D, H, W)
-        Gx = torch.norm(x, p=2, dim=(2, 3, 4), keepdim=True)  # (B, C, 1, 1, 1)
-        Nx = Gx / (Gx.mean(dim=1, keepdim=True) + self.eps)  # (B, C, 1, 1, 1)
-        return self.gamma * (x * Nx) + self.beta + x
+        return _global_response_norm(x, self.gamma, self.beta, (2, 3, 4), self.eps)
 
 
 def get_grn_layer(dim: int) -> type[nn.Module]:
@@ -188,11 +194,16 @@ class DropPath(nn.Module):
 
     def __init__(self, drop_prob: float = 0.0):
         super().__init__()
+        if not 0.0 <= drop_prob <= 1.0:
+            raise ValueError("drop_prob must be between 0 and 1.")
         self.drop_prob = drop_prob
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.drop_prob == 0.0 or not self.training:
             return x
+
+        if self.drop_prob == 1.0:
+            return x * 0.0
 
         keep_prob = 1 - self.drop_prob
         # Shape: (batch_size, 1, 1, ...) for broadcasting
@@ -217,7 +228,7 @@ def freeze_backbone(
     Args:
         model: The model whose parameters to freeze
         exclude_patterns: List of patterns to exclude from freezing.
-            Parameters with names containing any of these patterns stay trainable.
+            Module paths matching a pattern or its descendants stay trainable.
             Default: ["classifier", "head", "fc"]
 
     Returns:
@@ -231,7 +242,10 @@ def freeze_backbone(
 
     frozen_count = 0
     for name, param in model.named_parameters():
-        if not any(pattern in name for pattern in exclude_patterns):
+        if not any(
+            name == pattern or name.startswith(pattern + ".")
+            for pattern in exclude_patterns
+        ):
             param.requires_grad = False
             frozen_count += param.numel()
 
@@ -290,29 +304,46 @@ def adapt_input_channels(
     Returns:
         New conv layer with adapted input channels
     """
-    if isinstance(conv_layer, nn.Conv2d):
-        new_conv = nn.Conv2d(
-            new_in_channels,
-            conv_layer.out_channels,
-            kernel_size=conv_layer.kernel_size,
-            stride=conv_layer.stride,
-            padding=conv_layer.padding,
-            # Preserve the full conv geometry for parity with the per-model
-            # adapters; dropping these silently corrupts any non-default stem.
-            dilation=conv_layer.dilation,
-            groups=conv_layer.groups,
-            padding_mode=conv_layer.padding_mode,
-            bias=conv_layer.bias is not None,
-        )
-        if pretrained and conv_layer.in_channels == 3:
-            with torch.no_grad():
-                # Average RGB weights
-                new_conv.weight.copy_(conv_layer.weight.mean(dim=1, keepdim=True))
-                if conv_layer.bias is not None:
-                    new_conv.bias.copy_(conv_layer.bias)
-        return new_conv
-    else:
+    if not isinstance(conv_layer, nn.Conv2d):
         raise NotImplementedError(f"Unsupported layer type: {type(conv_layer)}")
+    if (
+        not isinstance(new_in_channels, Integral)
+        or isinstance(new_in_channels, bool)
+        or new_in_channels <= 0
+    ):
+        raise ValueError("new_in_channels must be a positive integer.")
+    if conv_layer.groups != 1 and new_in_channels != conv_layer.in_channels:
+        raise ValueError(
+            "Changing input channels of a grouped convolution is unsupported."
+        )
+
+    # Preserve subclasses such as timm's Conv2dSame, whose dynamic padding is
+    # implemented in forward(), as well as device, dtype and training mode.
+    new_conv = copy.deepcopy(conv_layer)
+    new_conv.in_channels = int(new_in_channels)
+    new_conv.weight = nn.Parameter(
+        conv_layer.weight.new_empty(
+            conv_layer.out_channels,
+            int(new_in_channels) // conv_layer.groups,
+            *conv_layer.kernel_size,
+        ),
+        requires_grad=conv_layer.weight.requires_grad,
+    )
+    new_conv.reset_parameters()
+    if pretrained:
+        with torch.no_grad():
+            if new_in_channels == conv_layer.in_channels:
+                weight = conv_layer.weight
+            elif new_in_channels == 1:
+                weight = conv_layer.weight.mean(dim=1, keepdim=True)
+            else:
+                repeats = math.ceil(new_in_channels / conv_layer.in_channels)
+                weight = conv_layer.weight.repeat(1, repeats, 1, 1)[:, :new_in_channels]
+                weight = weight * (conv_layer.in_channels / new_in_channels)
+            new_conv.weight.copy_(weight)
+            if conv_layer.bias is not None:
+                new_conv.bias.copy_(conv_layer.bias)
+    return new_conv
 
 
 def adapt_first_conv_for_single_channel(

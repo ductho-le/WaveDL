@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-10-11
+
+### Added
+
+- **Dense 2D regression**: Training, validation, cross-validation, and inference now accept scalar `(N, H, W)` and channels-first multi-property `(N, C, H, W)` targets while preserving the existing `(N, T)` vector workflow
+- **Models**: Added `unet_field`, a dense U-Net head that predicts `(N, C, H_out, W_out)` fields and supports output grids that differ in size from the 2D input grid
+- **Inference**: Dense predictions can be saved to compressed NPZ; field evaluation reports channel-aware metrics and plots target, prediction, and error maps
+
+### Changed
+
+- **Runtime baseline**: Require PyTorch 2.13+, torchvision 0.28+, and ONNX 1.22+ to exclude older dependency versions affected by published advisories; use a dedicated, audited deployment environment
+- **Training/HPO**: Add `--selection_metric loss|mse`; HPO compares normalized MSE across losses, seeds sampling, validates persistent-study signatures, and leases visible GPUs exclusively
+- **Recovery**: `--fresh` archives previous training artifacts; incompatible resume metadata is rejected and completed experiments exit without restarting
+- **Security**: Legacy NPZ object arrays require explicit `--allow_pickle`; checkpoint and cache metadata still require trusted sources
+- **Release quality**: CI checks minimum/latest PyTorch, the full CPU architecture suite, distributed training, source/wheel distributions, and installed entry points before publishing verified artifacts
+
+- **Target scaling**: Dense fields use one mean and standard deviation per property channel, fitted over training samples and both spatial axes; checkpoint metadata preserves the canonical target shape
+- **Validation**: Model/target shape compatibility is checked explicitly to prevent vector architectures from silently broadcasting against dense fields
+- **HPO**: Target-aware sweeps select `unet_field` and smaller batch candidates for dense maps, and reject incompatible explicit model lists before launching trials
+- **Metrics/export**: Public R²/Pearson helpers accept dense fields, and ONNX field exports preserve the requested opset, dynamic batch metadata, and channel-wise de-normalization
+- **Discovery/docs**: CLI model listings identify vector versus dense output contracts; configuration, CV, custom-model, loss, constraint, and data-shape guidance now cover dense fields
+
+### Fixed
+
+- Correct Mamba/Vim selective-scan values and gradients for realistic decay, long sequences, odd chunks, and length-one inputs
+- Preserve frozen backbone evaluation state, exact head parameter selection, and timm convolution padding/device/dtype during channel adaptation
+- Prevent FP16 GRN/log-cosh overflow, `DropPath(1)` NaNs, WaveNet even-kernel shape errors, and default-configuration constructor collisions
+- Weight accumulated gradients by sample count, including partial windows; step OneCycle per optimizer update and epoch schedulers before saving resume state
+- Propagate training interrupts and inference/export failures; publish ONNX files only after successful validation
+- Correct distributed min/max reductions and scalar broadcast precision, unit-invariant correlations, large-value inference metrics, and short multistep schedules
+- Validate finite real data, configuration ranges, constraints, cache completion, sparse MATLAB groups, and bounded preprocessing chunk sizes
+- Make notebook setup repeatable and fail visibly on subprocess errors; align MATLAB R² aggregation with Python metrics
+- Remove the pre-commit hook that recursively deleted cache/environment directories; include tests, configuration, and release tools in source distributions
+
+- Preserve large-offset physical values during dense normalization, constraint evaluation, ONNX de-normalization, and R²/Pearson calculation; use stable streaming validation statistics
+- Validate target values, spatial dimensions, channel weights, and prediction shapes before accepting incompatible data or losses
+- Preserve normalization when resuming, validate it before rebuilding caches, and include scalers in periodic and emergency checkpoints; old experimental dense normalization requires retraining
+- Preserve the published WaveNet optimizer layout while freezing unused parameters. Version Mamba/Vim scan weights and reject legacy unversioned weights rather than silently changing predictions; use the original release for legacy inference/resume or retrain with the corrected scan
+- Detect changes at the end of small cached datasets and rebuild dense caches when the normalization version changes
+- Forward channel weights, Huber delta, and pretrained settings through CV; reject unsupported CV constraints/gradient accumulation, and keep HPO initialization consistent between execution modes
+- Handle singleton U-Net bottlenecks with small channel counts and validate invalid architecture settings before construction
+- Canonicalize scalar-map reporting and prediction files, validate channel names, and make architecture tests independent of pretrained downloads
+- Restore sync-free training steps: non-finite losses are checked with one collective per optimizer update (not per micro-batch); validation is scored once on rank 0 and the loss is broadcast so plateau schedulers stay identical across ranks
+- Score dense test sets in bounded-memory streaming chunks and fit dense target scalers from contiguous reads, avoiding full-size float64 copies and per-sample HDF5/MAT reads
+
+> `unet_field` is a supervised dense inversion model suitable for learned property mapping or FWI initialization. It does not implement full waveform inversion, which still requires a differentiable wave solver and an observed-versus-simulated data-consistency loop.
+
 ## [1.8.1] - 2026-06-18
 
 ### Added
@@ -475,7 +522,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Example configurations and training scripts
 - MIT License and citation file
 
-[Unreleased]: https://github.com/ductho-le/WaveDL/compare/v1.8.1...HEAD
+[Unreleased]: https://github.com/ductho-le/WaveDL/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/ductho-le/WaveDL/compare/v1.8.1...v1.9.0
 [1.8.1]: https://github.com/ductho-le/WaveDL/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/ductho-le/WaveDL/compare/v1.7.1...v1.8.0
 [1.7.1]: https://github.com/ductho-le/WaveDL/compare/v1.7.0...v1.7.1

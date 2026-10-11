@@ -86,6 +86,18 @@ class EfficientViTBase(BaseModel):
         self.pretrained = pretrained
         self.freeze_backbone = freeze_backbone
         self.model_name = model_name
+        self._target_size = None
+        if "m1" in model_name or model_name.startswith("efficientvit_m"):
+            if in_shape != (224, 224):
+                self._target_size = (224, 224)
+                import warnings
+
+                warnings.warn(
+                    f"EfficientViT input {in_shape} will be interpolated to "
+                    f"{self._target_size} for attention window compatibility.",
+                    UserWarning,
+                    stacklevel=3,
+                )
 
         # Load from timm
         try:
@@ -100,7 +112,10 @@ class EfficientViTBase(BaseModel):
             # Get feature dimension (eval mode to preserve pretrained BN stats)
             with torch.no_grad():
                 self.backbone.eval()
-                dummy = torch.zeros(1, 3, *in_shape)
+                dummy_shape = (
+                    self._target_size if self._target_size is not None else in_shape
+                )
+                dummy = torch.zeros(1, 3, *dummy_shape)
                 features = self.backbone(dummy)
                 in_features = features.shape[-1]
                 self.backbone.train()
@@ -141,11 +156,19 @@ class EfficientViTBase(BaseModel):
             )
 
     def _freeze_backbone(self):
-        """Freeze backbone parameters."""
-        for param in self.backbone.parameters():
-            param.requires_grad = False
+        """Freeze feature extraction while retaining the regression head."""
+        self._freeze_backbone_modules()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if getattr(self, "_target_size", None) is not None:
+            _, _, h, w = x.shape
+            if (h, w) != self._target_size:
+                x = torch.nn.functional.interpolate(
+                    x,
+                    size=self._target_size,
+                    mode="bilinear",
+                    align_corners=False,
+                )
         features = self.backbone(x)
         return self.head(features)
 

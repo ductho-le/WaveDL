@@ -172,7 +172,11 @@ def get_scheduler(
     elif name_lower == "multistep":
         if milestones is None:
             # Default milestones at 30%, 60%, 90% of epochs
-            milestones = [int(epochs * 0.3), int(epochs * 0.6), int(epochs * 0.9)]
+            # Short runs must not decay several times during construction
+            # because rounded milestones coincide at epoch zero.
+            milestones = sorted(
+                {max(1, int(epochs * fraction)) for fraction in (0.3, 0.6, 0.9)}
+            )
         step_gamma = gamma if gamma is not None else 0.1
         return MultiStepLR(optimizer, milestones=milestones, gamma=step_gamma, **kwargs)
 
@@ -235,11 +239,17 @@ def get_scheduler_with_warmup(
     # keyed on T_0/step_size rather than `epochs`, so the warmup budget adjustment
     # below would not shorten them.
     name_lower = name.lower().replace("-", "_")
-    if name_lower in {"onecycle", "cosine_restarts"}:
+    if name_lower in {"onecycle", "cosine_restarts", "plateau", "linear_warmup"}:
         raise ValueError(
             f"get_scheduler_with_warmup does not support '{name}'. Use OneCycleLR's "
             "built-in pct_start warmup, or a warmup-compatible scheduler "
             "(cosine, step, multistep, exponential)."
+        )
+    if type(warmup_epochs) is not int or warmup_epochs < 1:
+        raise ValueError("warmup_epochs must be a positive integer.")
+    if "epochs" in kwargs and kwargs["epochs"] <= warmup_epochs:
+        raise ValueError(
+            "epochs must exceed warmup_epochs to leave a main-scheduler phase."
         )
 
     # Create warmup scheduler

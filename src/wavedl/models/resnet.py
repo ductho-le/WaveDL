@@ -478,10 +478,8 @@ class PretrainedResNetBase(BaseModel):
             self._freeze_backbone()
 
     def _freeze_backbone(self):
-        """Freeze all backbone parameters except the fc head."""
-        for name, param in self.backbone.named_parameters():
-            if "fc" not in name:
-                param.requires_grad = False
+        """Freeze feature extraction while retaining the regression head."""
+        self._freeze_backbone_modules(("fc",))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.backbone(x)
