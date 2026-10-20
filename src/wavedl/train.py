@@ -785,6 +785,8 @@ def train_single_trial(
     selection_metric: str = "loss",
     allow_pickle: bool = False,
     timeout_seconds: float | None = None,
+    *,
+    grad_clip: float = 1.0,
 ) -> dict:
     """
     Single-trial training function for in-process HPO.
@@ -809,6 +811,7 @@ def train_single_trial(
         workers: DataLoader workers (0 for main process only)
         huber_delta: Delta for Huber loss
         momentum: Momentum for SGD optimizer
+        grad_clip: Max gradient norm for clipping (0 to disable)
         trial: Optuna trial for pruning callbacks (None for standalone use)
         verbose: Print training progress
 
@@ -818,9 +821,6 @@ def train_single_trial(
             - epochs_trained: Number of epochs completed
             - final_val_loss: Validation loss at last epoch
             - pruned: Whether trial was pruned
-
-    Raises:
-        optuna.TrialPruned: If trial should be pruned (only when trial is provided)
     """
     import tempfile
 
@@ -918,7 +918,7 @@ def train_single_trial(
             optimizer=optimizer,
             epochs=epochs,
             steps_per_epoch=len(train_dl),
-            patience=patience // 2,  # Use half patience for scheduler
+            patience=patience // 2,  # Zero is valid: reduce after the first bad epoch
         )
         scheduler_step_per_batch = scheduler_name == "onecycle"
 
@@ -958,12 +958,17 @@ def train_single_trial(
 
                 if use_amp and precision == "fp16":
                     scaler.scale(loss).backward()
+                    if grad_clip > 0:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                     old_scale = scaler.get_scale()
                     scaler.step(optimizer)
                     scaler.update()
                     optimizer_was_skipped = scaler.get_scale() < old_scale
                 else:
                     loss.backward()
+                    if grad_clip > 0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                     optimizer.step()
                     optimizer_was_skipped = False
 
@@ -1004,6 +1009,13 @@ def train_single_trial(
             avg_val_loss = val_loss_sum / val_samples
             final_val_loss = avg_val_loss
 
+            # === Early Stopping Tracking (update best_val_loss before pruning check) ===
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                patience_ctr = 0
+            else:
+                patience_ctr += 1
+
             # === Optuna Integration ===
             if trial is not None:
                 # Report intermediate result
@@ -1018,16 +1030,10 @@ def train_single_trial(
                         "pruned": True,
                     }
 
-            # === Early Stopping ===
-            if avg_val_loss < best_val_loss:
-                best_val_loss = avg_val_loss
-                patience_ctr = 0
-            else:
-                patience_ctr += 1
-                if patience_ctr >= patience:
-                    if verbose:
-                        print(f"Early stopping at epoch {epoch + 1}")
-                    break
+            if patience_ctr >= patience:
+                if verbose:
+                    print(f"Early stopping at epoch {epoch + 1}")
+                break
 
             # === LR Scheduling ===
             if not scheduler_step_per_batch:

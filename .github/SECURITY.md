@@ -28,7 +28,7 @@ Please **do not** open public GitHub issues for sensitive security vulnerabiliti
 ### 1. Model Checkpoints & Pickle Deserialization
 PyTorch model checkpoints (`.bin`, `.pth`, `.pkl`) and Python pickle files can execute arbitrary bytecode upon deserialization.
 - **Untrusted Weights**: Never load checkpoints or model artifacts from untrusted or unverified third parties.
-- **Safe Serialization**: For model distribution across platforms and edge deployment, export your trained model to ONNX format using `wavedl-test --export_onnx`.
+- **Safe Serialization**: For model distribution across platforms and edge deployment, export your trained model to ONNX format using `wavedl-test --export onnx`.
 - **Training Meta**: Checkpoint directories contain `training_meta.pkl` and `scaler.pkl` used for resuming and normalizing metrics. Maintain standard file system permissions on your checkpoint directories (`--output_dir`).
 
 ### 2. NumPy NPZ & Data Loading

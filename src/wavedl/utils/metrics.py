@@ -958,28 +958,14 @@ def plot_qq(
     _ensure_style_configured()
     from scipy import stats
 
-    num_params = y_true.shape[1] if y_true.ndim > 1 else 1
-
-    # Handle 1D case
-    if y_true.ndim == 1:
-        y_true = y_true.reshape(-1, 1)
-        y_pred = y_pred.reshape(-1, 1)
+    y_true, y_pred, param_names, num_params = _prepare_plot_data(
+        y_true, y_pred, param_names
+    )
 
     # Calculate errors
     errors = y_pred - y_true
 
-    # Calculate grid dimensions
-    cols = min(num_params, 4)
-    rows = (num_params + cols - 1) // cols
-
-    # Calculate figure size
-    subplot_size = FIGURE_WIDTH_INCH / cols
-    fig, axes = plt.subplots(
-        rows,
-        cols,
-        figsize=(FIGURE_WIDTH_INCH, subplot_size * rows),
-    )
-    axes = np.array(axes).flatten() if num_params > 1 else [axes]
+    fig, axes = _create_subplot_grid(num_params)
 
     for i in range(num_params):
         ax = axes[i]
@@ -990,9 +976,7 @@ def plot_qq(
 
         # Guard against zero variance (constant errors)
         if std_err < 1e-10:
-            title = (
-                param_names[i] if param_names and i < len(param_names) else f"Param {i}"
-            )
+            title = param_names[i]
             ax.text(
                 0.5,
                 0.5,
@@ -1029,17 +1013,14 @@ def plot_qq(
         ax.plot(line_x, line_y, "--", color=COLORS["error"], lw=1.2, label="Normal")
 
         # Labels
-        title = param_names[i] if param_names and i < len(param_names) else f"Param {i}"
+        title = param_names[i]
         ax.set_title(f"{title}\n$R^2 = {r**2:.4f}$")
         ax.set_xlabel("Theoretical Quantiles")
         ax.set_ylabel("Sample Quantiles")
         ax.grid(True)
         ax.legend(fontsize=FONT_SIZE_TICKS, loc="best", fancybox=False, framealpha=1.0)
 
-    # Hide unused subplots
-    for i in range(num_params, len(axes)):
-        axes[i].axis("off")
-
+    _hide_unused_subplots(axes, num_params)
     plt.tight_layout()
     return fig
 
@@ -1071,7 +1052,9 @@ def plot_correlation_heatmap(
     from matplotlib.colors import Normalize
     from matplotlib.patches import Rectangle
 
-    num_params = y_true.shape[1] if y_true.ndim > 1 else 1
+    y_true, y_pred, param_names, num_params = _prepare_plot_data(
+        y_true, y_pred, param_names
+    )
 
     if num_params < 2:
         # Need at least 2 params for correlation
@@ -1086,14 +1069,6 @@ def plot_correlation_heatmap(
         )
         ax.axis("off")
         return fig
-
-    # Handle 1D case
-    if y_true.ndim == 1:
-        y_true = y_true.reshape(-1, 1)
-        y_pred = y_pred.reshape(-1, 1)
-
-    if param_names is None or len(param_names) != num_params:
-        param_names = [f"P{i}" for i in range(num_params)]
 
     # Calculate prediction error correlations.
     # Guard zero-variance error columns (a target predicted as a near-constant):
@@ -1279,15 +1254,9 @@ def plot_error_cdf(
         Matplotlib Figure object
     """
     _ensure_style_configured()
-    num_params = y_true.shape[1] if y_true.ndim > 1 else 1
-
-    # Handle 1D case
-    if y_true.ndim == 1:
-        y_true = y_true.reshape(-1, 1)
-        y_pred = y_pred.reshape(-1, 1)
-
-    if param_names is None or len(param_names) != num_params:
-        param_names = [f"P{i}" for i in range(num_params)]
+    y_true, y_pred, param_names, num_params = _prepare_plot_data(
+        y_true, y_pred, param_names
+    )
 
     # Calculate errors
     if use_relative:
@@ -1430,15 +1399,9 @@ def plot_error_boxplot(
         Matplotlib Figure object
     """
     _ensure_style_configured()
-    num_params = y_true.shape[1] if y_true.ndim > 1 else 1
-
-    # Handle 1D case
-    if y_true.ndim == 1:
-        y_true = y_true.reshape(-1, 1)
-        y_pred = y_pred.reshape(-1, 1)
-
-    if param_names is None or len(param_names) != num_params:
-        param_names = [f"P{i}" for i in range(num_params)]
+    y_true, y_pred, param_names, num_params = _prepare_plot_data(
+        y_true, y_pred, param_names
+    )
 
     # Calculate errors
     if use_relative:
@@ -1446,7 +1409,11 @@ def plot_error_boxplot(
             errors = np.abs((y_pred - y_true) / y_true) * 100
             # Keep inf/nan as NaN — exclude from boxplot rather than understating
             errors = np.nan_to_num(errors, nan=np.nan, posinf=np.nan, neginf=np.nan)
-        ylabel = "Relative Error (%)"
+        ylabel = (
+            r"Relative Error (\%)"
+            if plt.rcParams["text.usetex"]
+            else "Relative Error (%)"
+        )
     else:
         errors = y_pred - y_true  # Signed error for box plot
         ylabel = "Prediction Error"

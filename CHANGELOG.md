@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve positional compatibility in `train_single_trial()` while adding keyword-only gradient clipping; record the best validation loss before returning a pruned trial
+- Validate diagnostic plot inputs consistently and support dense-field targets; render relative-error boxplot percent labels correctly with and without LaTeX
+- Export all built-in registered model classes and detect YAML-configured WandB logging in the launcher summary
+- Launch the distributed smoke check with a static IPv4 rendezvous configured before worker startup, including macOS loopback defaults
+
 ## [1.9.0] - 2026-10-11
 
 ### Added
@@ -39,7 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Correct distributed min/max reductions and scalar broadcast precision, unit-invariant correlations, large-value inference metrics, and short multistep schedules
 - Validate finite real data, configuration ranges, constraints, cache completion, sparse MATLAB groups, and bounded preprocessing chunk sizes
 - Make notebook setup repeatable and fail visibly on subprocess errors; align MATLAB R² aggregation with Python metrics
-- Remove the pre-commit hook that recursively deleted cache/environment directories; include tests, configuration, and release tools in source distributions
+- Expand pre-commit cache cleanup to include `.mypy_cache`; include tests, configuration, and release tools in source distributions
 
 - Preserve large-offset physical values during dense normalization, constraint evaluation, ONNX de-normalization, and R²/Pearson calculation; use stable streaming validation statistics
 - Validate target values, spatial dimensions, channel weights, and prediction shapes before accepting incompatible data or losses

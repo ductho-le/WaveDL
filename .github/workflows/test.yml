@@ -76,7 +76,7 @@ jobs:
       - run: ruff check src/ unit_tests/ tools/
       - run: ruff format --check src/ unit_tests/ tools/
       - run: pytest unit_tests/test_architecture.py -v
-      - run: python -m torch.distributed.run --standalone --nproc_per_node=2 tools/check_distributed.py --work-dir "${{ runner.temp }}/wavedl-ddp"
+      - run: python tools/check_distributed.py --work-dir "${{ runner.temp }}/wavedl-ddp"
 
   distribution:
     runs-on: ubuntu-latest

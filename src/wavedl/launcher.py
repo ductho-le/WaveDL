@@ -416,7 +416,7 @@ def main() -> int:
         exit_code = 1
 
     # Print summary
-    wandb_enabled = "--wandb" in train_args
+    wandb_enabled = "--wandb" in train_args or bool(launcher_config.get("wandb", False))
     print_summary(
         exit_code,
         wandb_enabled,

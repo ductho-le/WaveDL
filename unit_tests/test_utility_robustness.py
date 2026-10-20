@@ -306,3 +306,75 @@ def test_zero_weight_disables_constraint_evaluation():
         torch.nn.MSELoss(), [ExpressionConstraint("y0 / 0")], weights=[0.0]
     )
     assert criterion(torch.ones(1, 1), torch.ones(1, 1)).item() == 0
+
+
+def test_all_registered_model_classes_are_exported_in_models_all():
+    import wavedl.models as models_pkg
+
+    exported_classes = {
+        obj
+        for name in models_pkg.__all__
+        if isinstance(obj := getattr(models_pkg, name), type)
+    }
+    for reg_name, cls in models_pkg.MODEL_REGISTRY.items():
+        assert cls in exported_classes, (
+            f"Registered model '{reg_name}' ({cls.__name__}) is not exported in wavedl.models.__all__"
+        )
+
+
+def test_diagnostic_plots_validate_inputs_and_support_dense_fields():
+    from wavedl.utils.metrics import (
+        plot_correlation_heatmap,
+        plot_error_boxplot,
+        plot_error_cdf,
+        plot_qq,
+    )
+
+    bad = np.array([[0.0], [np.nan], [1.0]])
+    for plot_fn in (
+        plot_qq,
+        plot_correlation_heatmap,
+        plot_error_cdf,
+        plot_error_boxplot,
+    ):
+        with pytest.raises(ValueError, match="finite real"):
+            plot_fn(bad, bad)
+
+    rng = np.random.default_rng(7)
+    y_true = rng.normal(size=(4, 2, 3, 5))
+    y_pred = y_true + rng.normal(scale=0.1, size=y_true.shape)
+    for plot_fn in (
+        plot_qq,
+        plot_correlation_heatmap,
+        plot_error_cdf,
+        plot_error_boxplot,
+    ):
+        fig = plot_fn(y_true, y_pred, param_names=["C0", "C1"])
+        plt.close(fig)
+
+
+@pytest.mark.parametrize("use_tex", [False, True])
+def test_relative_boxplot_percent_label_matches_renderer(monkeypatch, use_tex):
+    import io
+
+    from wavedl.utils import metrics
+
+    monkeypatch.setattr(metrics, "_style_configured", True)
+    # Inspect the TeX label without requiring a system TeX installation.
+    # The non-TeX branch also renders an SVG to verify the actual output.
+    if use_tex:
+        monkeypatch.setattr(plt, "tight_layout", lambda: None)
+    with plt.rc_context({"text.usetex": use_tex, "svg.fonttype": "none"}):
+        fig = metrics.plot_error_boxplot(
+            np.ones((3, 1)), np.array([[1.1], [1.2], [1.3]]), use_relative=True
+        )
+        try:
+            expected = r"Relative Error (\%)" if use_tex else "Relative Error (%)"
+            assert fig.axes[0].get_ylabel() == expected
+            if not use_tex:
+                output = io.StringIO()
+                fig.savefig(output, format="svg")
+                assert "Relative Error (%)" in output.getvalue()
+                assert r"Relative Error (\%)" not in output.getvalue()
+        finally:
+            plt.close(fig)

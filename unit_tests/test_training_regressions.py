@@ -768,3 +768,96 @@ def test_epoch_scheduler_emergency_recovery_remains_usable_with_warning(
     assert "This recovery is not exact" in caplog.text
     assert (tmp_path / "training_complete.flag").is_file()
     assert (tmp_path / "epoch_2_checkpoint").is_dir()
+
+
+@pytest.mark.parametrize("positional", [False, True])
+def test_inprocess_pruned_trial_records_best_val_loss_and_supports_patience_one(
+    tmp_path, monkeypatch, positional
+):
+    from wavedl import train
+
+    path = tmp_path / "dense.npz"
+    np.savez(
+        path,
+        input_train=np.zeros((6, 16, 16), dtype=np.float32),
+        output_train=np.ones((6, 2, 3, 4), dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        train,
+        "_build_model_for_targets",
+        lambda *a, **k: (_SmallFieldModel(), (2, 3, 4)),
+    )
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    class _PruneFirstEpochTrial:
+        def report(self, value, step):
+            self.reported = (value, step)
+
+        def should_prune(self):
+            return True
+
+    trial = _PruneFirstEpochTrial()
+    if positional:
+        # Preserve every positional parameter in the pre-grad_clip public API.
+        result = train.train_single_trial(
+            str(path),
+            "cnn",
+            1e-3,
+            32,
+            2,
+            1,
+            "adamw",
+            "plateau",
+            "mse",
+            1e-4,
+            2025,
+            "no",
+            0,
+            1.0,
+            0.9,
+            trial,
+            False,
+            "mse",
+            False,
+            None,
+            grad_clip=0.0,
+        )
+    else:
+        result = train.train_single_trial(
+            str(path),
+            epochs=2,
+            patience=1,
+            scheduler_name="plateau",
+            trial=trial,
+        )
+    assert result["pruned"] is True
+    assert result["epochs_trained"] == 1
+    assert np.isfinite(result["best_val_loss"])
+    assert result["best_val_loss"] == pytest.approx(result["final_val_loss"])
+    assert trial.reported == (result["final_val_loss"], 0)
+
+
+def test_launcher_detects_wandb_from_yaml_config(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from wavedl import launcher
+
+    config = tmp_path / "config.yaml"
+    config.write_text("wandb: true\n")
+    summary_calls = []
+    monkeypatch.setattr(
+        sys, "argv", ["train", "--config", str(config), "--num_gpus", "1"]
+    )
+    monkeypatch.setattr(launcher, "setup_environment", lambda: None)
+    monkeypatch.setattr(
+        launcher.subprocess,
+        "run",
+        lambda cmd, **kwargs: SimpleNamespace(returncode=0),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "print_summary",
+        lambda code, wandb_enabled, *a: summary_calls.append((code, wandb_enabled)),
+    )
+    assert launcher.main() == 0
+    assert summary_calls == [(0, True)]

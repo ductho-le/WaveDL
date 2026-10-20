@@ -91,11 +91,17 @@ Also validate the shipped distribution and real distributed execution:
 ```bash
 python -m build
 python -m twine check --strict dist/*
-python -m torch.distributed.run --standalone --nproc_per_node=2 tools/check_distributed.py --work-dir /tmp/wavedl-ddp-check
+python tools/check_distributed.py --work-dir /tmp/wavedl-ddp-check
 ```
 
-Use a new directory for each distributed smoke invocation. CI installs the wheel
-and runs `tools/smoke_installed.py` outside the checkout, then exercises CLI entry
+Use a new directory for each distributed smoke invocation. The script launches
+two CPU workers with a static IPv4 rendezvous and a locally selected free port.
+On macOS it defaults Gloo to the loopback interface before launching workers.
+When invoked under an existing `torchrun`, it uses that launcher's rendezvous;
+the caller must configure networking before starting `torchrun`.
+
+CI installs the wheel and runs `tools/smoke_installed.py` outside the checkout,
+then exercises CLI entry
 points. The test matrix covers Python 3.11–3.13, minimum/latest PyTorch, and Linux,
 Windows, and macOS; the full architecture suite runs separately on Linux.
 
