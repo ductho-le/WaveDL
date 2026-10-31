@@ -1,0 +1,3 @@
+# Generated assets and their hash inventories must keep identical bytes on every
+# checkout, including Windows with core.autocrlf enabled.
+src/wavedl_daemon/web_assets/** -text

@@ -1,0 +1,171 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import './theme.css';
+@custom-variant dark (&:is(.dark *));
+@source '../..';
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-surface: var(--surface);
+  --color-surface-foreground: var(--surface-foreground);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  /* Typography: one UI family, one optional reading family */
+  --font-sans: 'Manrope', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Manrope', ui-sans-serif, system-ui, sans-serif;
+  --font-reader: 'Source Serif 4', ui-serif, Georgia, Cambria, 'Times New Roman', serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+
+  /* Shape */
+  --radius-xs: calc(var(--radius) - 8px);
+  --radius-sm: calc(var(--radius) - 6px);
+  --radius-md: calc(var(--radius) - 4px);
+  --radius-lg: calc(var(--radius) - 2px);
+  --radius-xl: var(--radius);
+  --radius-2xl: calc(var(--radius) + 4px);
+  --radius-3xl: calc(var(--radius) + 8px);
+  --radius-4xl: calc(var(--radius) + 12px);
+
+  /* Motion */
+  --ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-accordion-down: accordion-down 180ms var(--ease-standard);
+  --animate-accordion-up: accordion-up 180ms var(--ease-standard);
+  --animate-aurora: aurora 60s linear infinite;
+  --animate-fade-up: fade-up 420ms var(--ease-emphasized) both;
+  --animate-scale-in: scale-in 220ms var(--ease-emphasized) both;
+  --animate-indeterminate: indeterminate 1.5s ease-in-out infinite;
+
+  /* Elevation */
+  --shadow-2xs: 0 1px 2px 0 var(--shadow-soft);
+  --shadow-xs: 0 1px 2px 0 var(--shadow-soft), 0 2px 6px -4px var(--shadow-strong);
+  --shadow-sm: 0 1px 2px 0 var(--shadow-soft), 0 8px 22px -16px var(--shadow-strong);
+  --shadow: 0 1px 2px 0 var(--shadow-soft), 0 12px 30px -18px var(--shadow-strong);
+  --shadow-md: 0 2px 4px -1px var(--shadow-soft), 0 18px 40px -22px var(--shadow-strong);
+  --shadow-lg: 0 4px 8px -2px var(--shadow-soft), 0 26px 56px -28px var(--shadow-strong);
+  --shadow-xl: 0 8px 16px -6px var(--shadow-soft), 0 34px 72px -30px var(--shadow-strong);
+  --shadow-2xl: 0 14px 34px -12px var(--shadow-soft), 0 44px 90px -34px var(--shadow-strong);
+  --shadow-card: 0 1px 2px 0 var(--shadow-soft), 0 14px 34px -24px var(--shadow-strong);
+  --shadow-float: 0 8px 22px -12px var(--shadow-soft), 0 30px 70px -30px var(--shadow-strong);
+}
+
+html {
+  font-family: 'Manrope', ui-sans-serif, system-ui, sans-serif;
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+}
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+button:focus-visible,
+a:focus-visible {
+  outline: 3px solid var(--primary);
+  outline-offset: 3px;
+}
+button:disabled {
+  cursor: not-allowed;
+}
+* {
+  box-sizing: border-box;
+  border-color: var(--border);
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Grouped inset lists (System Settings style) used by the run builder. */
+@utility surface-group {
+  border-radius: 1rem;
+  background: var(--surface);
+  box-shadow:
+    0 0 0 0.5px color-mix(in srgb, var(--foreground) 13%, transparent),
+    0 1px 2px rgb(0 0 0 / 0.04),
+    0 14px 32px -24px rgb(0 0 0 / 0.3);
+}
+@utility surface-row {
+  display: flex;
+  min-height: 3.25rem;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.65rem 1rem;
+}
+@utility collapsible-motion {
+  overflow: hidden;
+  &[data-state='open'] {
+    animation: collapsible-down 280ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  &[data-state='closed'] {
+    animation: collapsible-up 200ms ease-in;
+  }
+  /* Closed content stays mounted (unmount-on-hide=false) for form fields; until-found
+     would otherwise leave its margins behind in engines that support it. */
+  &[hidden] {
+    display: none;
+  }
+}
+@keyframes collapsible-down {
+  from {
+    height: 0;
+    opacity: 0;
+  }
+  to {
+    height: var(--reka-collapsible-content-height);
+    opacity: 1;
+  }
+}
+@keyframes collapsible-up {
+  from {
+    height: var(--reka-collapsible-content-height);
+  }
+  to {
+    height: 0;
+    opacity: 0;
+  }
+}

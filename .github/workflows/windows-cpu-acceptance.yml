@@ -1,0 +1,178 @@
+name: Windows installed CPU acceptance
+
+on:
+  push:
+    branches: [main, "review/daemon-browser-ci-*"]
+    paths:
+      - "src/wavedl/**"
+      - "src/wavedl_daemon/**"
+      - "src/wavedl_daemon/web/**"
+      - "pyproject.toml"
+      - "MANIFEST.in"
+      - "tools/run_user_owned_pytest.py"
+      - "tools/vendor_web_assets.py"
+      - "unit_tests/daemon/test_installed_cli.py"
+      - "unit_tests/daemon/test_installed_cli_native_helpers.py"
+      - "unit_tests/test_ci_required_gates.py"
+      - "unit_tests/test_launcher_stdio.py"
+      - ".github/workflows/windows-cpu-acceptance.yml"
+  pull_request:
+    paths:
+      - "src/wavedl/**"
+      - "src/wavedl_daemon/**"
+      - "src/wavedl_daemon/web/**"
+      - "pyproject.toml"
+      - "MANIFEST.in"
+      - "tools/run_user_owned_pytest.py"
+      - "tools/vendor_web_assets.py"
+      - "unit_tests/daemon/test_installed_cli.py"
+      - "unit_tests/daemon/test_installed_cli_native_helpers.py"
+      - "unit_tests/test_ci_required_gates.py"
+      - "unit_tests/test_launcher_stdio.py"
+      - ".github/workflows/windows-cpu-acceptance.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-cpu-acceptance-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  installed-cpu:
+    name: Windows CPU / Python ${{ matrix.python-version }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    defaults:
+      run:
+        shell: bash
+    env:
+      CUDA_VISIBLE_DEVICES: ""
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MPLBACKEND: Agg
+      WANDB_MODE: disabled
+      WAVEDL_ACCEPTANCE_TIMEOUT: "180"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: src/wavedl_daemon/web/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: src/wavedl_daemon/web/pnpm-lock.yaml
+      - name: Install official CPU PyTorch before project dependencies
+        if: ${{ success() && !cancelled() }}
+        run: python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+      - name: Install declared daemon and acceptance dependencies
+        if: ${{ success() && !cancelled() }}
+        run: |
+          python -m pip install -e "." pytest httpx build
+          python - <<'PY'
+          import subprocess, sys, tomllib
+          from pathlib import Path
+          requirements = tomllib.loads(Path("pyproject.toml").read_text())["build-system"]["requires"]
+          subprocess.run([sys.executable, "-m", "pip", "install", *requirements], check=True)
+          PY
+          python -m pip check
+      - name: Test native installed CLI helpers and launcher
+        if: ${{ success() && !cancelled() }}
+        run: python -m pytest --noconftest unit_tests/daemon/test_installed_cli_native_helpers.py unit_tests/test_launcher_stdio.py -q
+      - name: Generate locked browser assets
+        if: ${{ success() && !cancelled() }}
+        working-directory: src/wavedl_daemon/web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run generate
+      - name: Vendor verified current browser assets
+        if: ${{ success() && !cancelled() }}
+        run: python tools/vendor_web_assets.py
+      # CPU only. This lane does not certify CUDA/GPU, browser automation,
+      # Slurm sites, remote filesystems, tagging or publishing.
+      - name: Build exact wheel in clean tracked-source staging
+        if: ${{ success() && !cancelled() }}
+        run: |
+          python - <<'PY'
+          import hashlib, json, os, shutil, subprocess, sys, tempfile, zipfile
+          from pathlib import Path, PurePosixPath
+          import torch
+          from tools.vendor_web_assets import inventory
+          assert torch.version.cuda is None and not torch.cuda.is_available(), "CPU PyTorch required"
+          checkout = Path.cwd()
+          owned = Path(tempfile.mkdtemp(prefix="wavedl-windows-cpu-", dir=os.environ["RUNNER_TEMP"]))
+          stage, dist = owned / "source", owned / "dist"
+          stage.mkdir()
+          archive = owned / "source.zip"
+          subprocess.run(["git", "archive", "--format=zip", "HEAD", "-o", str(archive)], check=True)
+          with zipfile.ZipFile(archive) as source:
+              for member in source.infolist():
+                  name = PurePosixPath(member.filename)
+                  assert not name.is_absolute() and ".." not in name.parts
+              source.extractall(stage)
+          assets = checkout / "src/wavedl_daemon/web_assets"
+          expected = {path.relative_to(assets).as_posix(): path.read_bytes() for path in assets.rglob("*") if path.is_file()}
+          assert inventory(assets, managed=True) == json.loads(expected[".wavedl-assets.json"])
+          assert {"index.html", ".wavedl-assets.json"} <= expected.keys()
+          target = stage / "src/wavedl_daemon/web_assets"
+          if target.exists():
+              shutil.rmtree(target)
+          shutil.copytree(assets, target)
+          assert not (stage / "build").exists(), "Clean staging must not reuse build/lib"
+          subprocess.run([sys.executable, "-m", "build", "--wheel", "--no-isolation", "--outdir", str(dist), str(stage)], check=True)
+          wheels = list(dist.glob("*.whl"))
+          assert len(wheels) == 1
+          wheel = wheels[0]
+          with zipfile.ZipFile(wheel) as built:
+              names = built.namelist()
+              assert not any(name.startswith("wavedl_gui/") for name in names)
+              assert not any(token in name.lower() for name in names for token in ("pyqt", "pyside", "qfluent"))
+              prefix = "wavedl_daemon/web_assets/"
+              actual = {name[len(prefix):]: built.read(name) for name in names if name.startswith(prefix) and not name.endswith("/")}
+              assert actual == expected, "Wheel must preserve every current vendored asset byte"
+          proof = {"scope": "native Windows installed CPU only", "source_commit": os.environ["GITHUB_SHA"], "python": sys.version, "torch": torch.__version__, "wheel": wheel.name, "wheel_sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(), "assets": {name: hashlib.sha256(data).hexdigest() for name, data in expected.items()}}
+          Path("windows-cpu-artifact.json").write_text(json.dumps(proof, sort_keys=True))
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              output.write(f"WAVEDL_ACCEPTANCE_WHEEL={wheel.as_posix()}\nWAVEDL_ACCEPTANCE_WHEELHOUSE={(owned / 'wheelhouse').as_posix()}\n")
+          PY
+      - name: Resolve complete offline wheelhouse from exact installed constraints
+        if: ${{ success() && !cancelled() }}
+        run: |
+          python -m pip freeze --exclude-editable > "$RUNNER_TEMP/windows-cpu-constraints.txt"
+          python -m pip wheel "$WAVEDL_ACCEPTANCE_WHEEL" --only-binary=:all: --wheel-dir "$WAVEDL_ACCEPTANCE_WHEELHOUSE" --constraint "$RUNNER_TEMP/windows-cpu-constraints.txt" --extra-index-url https://download.pytorch.org/whl/cpu
+      - name: Run native installed CPU acceptance outside checkout
+        if: ${{ success() && !cancelled() }}
+        run: python tools/run_user_owned_pytest.py unit_tests/daemon/test_installed_cli.py --confcutdir=unit_tests/daemon -k isolated_resolved --junitxml=windows-cpu-installed.xml -q
+      - name: Require exactly one successful native installed CPU case
+        if: always()
+        run: |
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          root = ET.parse("windows-cpu-installed.xml").getroot()
+          cases = list(root.iter("testcase"))
+          assert len(cases) == 1
+          assert cases[0].get("classname") == "unit_tests.daemon.test_installed_cli"
+          assert cases[0].get("name") == "test_isolated_resolved_wheelhouse_console_scripts_and_assets"
+          assert not any(list(root.iter(kind)) for kind in ("skipped", "failure", "error"))
+          PY
+      - name: Upload nonsecret Windows CPU acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-cpu-py${{ matrix.python-version }}
+          path: |
+            windows-cpu-installed.xml
+            windows-cpu-artifact.json
+          if-no-files-found: warn

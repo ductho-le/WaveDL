@@ -31,11 +31,304 @@ Author: Ductho Le (ductho.le@outlook.com)
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
+import select
+import selectors
 import shutil
+import signal
 import subprocess
 import sys
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
+
+from wavedl.core.stdio import (
+    configure_utf8_stdio as _configure_cli_stdio,
+    utf8_stdio_environment as _training_stdio_environment,
+)
+
+
+_GRACE_SECONDS = 30.0
+# A supervisor owns the inherited POSIX group (or Windows Job Object). This is
+# an internal ownership handshake, not authentication: callers falsely setting
+# it to "1" also take responsibility for whole-tree cleanup. Other values are
+# standalone mode.
+_SUPERVISED_ENV = "WAVEDL_SUPERVISED"
+
+
+class _ChildExitObserver:
+    """Observe our unreaped child; its PID reserves the owned group identity."""
+
+    def __init__(self, proc: subprocess.Popen):
+        self.proc = proc
+        self.exited = False
+        self.queue = None
+        if not hasattr(os, "waitid"):
+            self.queue = select.kqueue()
+            try:
+                self.queue.control(
+                    [
+                        select.kevent(
+                            proc.pid,
+                            filter=select.KQ_FILTER_PROC,
+                            flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                            fflags=select.KQ_NOTE_EXIT,
+                        )
+                    ],
+                    0,
+                    0,
+                )
+            except ProcessLookupError:
+                # A fast exit can precede kqueue registration. Never use poll:
+                # it would release the leader while descendants need signals.
+                try:
+                    if not self.leader_is_zombie():
+                        raise
+                except BaseException:
+                    self.close()
+                    raise
+                self.exited = True
+            except BaseException:
+                self.close()
+                raise
+
+    def snapshot(self, timeout: float = 1) -> list[tuple[int, str]]:
+        """Bounded Darwin snapshot of this still-reserved process group."""
+        probe = subprocess.Popen(
+            ["/bin/ps", "-g", str(self.proc.pid), "-o", "pid=,pgid=,stat="],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            env={"LC_ALL": "C", "PATH": "/usr/bin:/bin"},
+        )
+        captured = bytearray()
+        deadline = time.monotonic() + timeout
+        try:
+            with selectors.DefaultSelector() as selector:
+                os.set_blocking(probe.stdout.fileno(), False)
+                selector.register(probe.stdout, selectors.EVENT_READ)
+                while selector.get_map():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("owned process-group snapshot timed out")
+                    for key, _ in selector.select(remaining):
+                        chunk = os.read(key.fd, 65537 - len(captured))
+                        captured.extend(chunk)
+                        if len(captured) > 65536:
+                            raise OSError("owned process-group snapshot too large")
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                if probe.wait(max(0, deadline - time.monotonic())) != 0:
+                    raise OSError("owned process-group snapshot failed")
+        finally:
+            if probe.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    probe.kill()
+                probe.wait()
+            probe.stdout.close()
+        members = []
+        for line in captured.decode("ascii").splitlines():
+            fields = line.split()
+            if len(fields) != 3 or int(fields[1]) != self.proc.pid:
+                raise OSError("invalid owned process-group snapshot")
+            members.append((int(fields[0]), fields[2]))
+        return members
+
+    def leader_is_zombie(self) -> bool:
+        return any(
+            pid == self.proc.pid and state.startswith("Z")
+            for pid, state in self.snapshot()
+        )
+
+    def group_is_dead(self) -> bool:
+        if sys.platform != "darwin" or not self.exited:
+            return False
+        members = self.snapshot()
+        return any(pid == self.proc.pid for pid, _ in members) and all(
+            state.startswith("Z") for _, state in members
+        )
+
+    def confirm_group_is_dead(self) -> bool:
+        """Resolve Darwin's exit/EPERM race without releasing group identity.
+
+        killpg can reject a dying group before NOTE_EXIT or ps reports zombies.
+        Only a nonempty zombie-only snapshot containing our unreaped leader is
+        evidence of completion; an inaccessible live member must still fail.
+        """
+        if sys.platform != "darwin":
+            return False
+        deadline = time.monotonic() + 0.1
+        while True:
+            self.observe()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            try:
+                members = self.snapshot(timeout=remaining)
+            except (TimeoutError, subprocess.TimeoutExpired):
+                return False
+            leader_is_zombie = any(
+                pid == self.proc.pid and state.startswith("Z") for pid, state in members
+            )
+            if leader_is_zombie:
+                # The same owned-leader evidence is authoritative when kqueue
+                # delivery lags, just as during fast-exit registration fallback.
+                self.exited = True
+                if all(state.startswith("Z") for _, state in members):
+                    return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.01, remaining))
+
+    def observe(self) -> bool:
+        if not self.exited:
+            if self.queue is None:
+                status = os.waitid(
+                    os.P_PID, self.proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT
+                )
+                self.exited = status is not None and status.si_pid == self.proc.pid
+            else:
+                for event in self.queue.control(None, 1, 0):
+                    if event.flags & select.KQ_EV_ERROR:
+                        raise OSError(event.data, "child exit observation failed")
+                    if event.fflags & select.KQ_NOTE_EXIT:
+                        self.exited = True
+        return self.exited
+
+    def close(self) -> None:
+        if self.queue is not None:
+            self.queue.close()
+
+
+def _signal_child(proc, signum: int, process_group: int | None = None) -> None:
+    """Signal without waiting; owned groups require a still-unreaped leader."""
+    try:
+        if process_group is not None:
+            os.killpg(process_group, signum)
+        elif os.name == "nt" and signum == signal.SIGINT:
+            # No console-group guarantee here: the Windows supervisor owns
+            # graceful control events and whole-tree cleanup through its Job.
+            proc.terminate()
+        else:
+            proc.send_signal(signum)
+    except ProcessLookupError:
+        pass
+
+
+@dataclass
+class _SignalForwarder:
+    process: subprocess.Popen | None
+    process_group: int | None = None
+    received_signal: int | None = None
+    previous_handlers: dict = field(default_factory=dict)
+
+    def forward(self, signum, _frame) -> None:
+        # Repeated delivery must not reset the grace deadline or interrupt reap.
+        if self.received_signal is not None:
+            return
+        self.received_signal = signum
+        if self.process is not None:
+            try:
+                _signal_child(self.process, signum, self.process_group)
+            except PermissionError:
+                if self.process_group is None:
+                    raise
+                # Darwin rejects zombie-only groups. Normal control flow must
+                # verify this with the still-owned leader before suppressing it.
+
+    def restore(self) -> None:
+        for signum, handler in self.previous_handlers.items():
+            signal.signal(signum, handler)
+
+    def disarm(self) -> None:
+        # Clear process first: a pending Python signal cannot target a group
+        # after its leader's PID is released by wait(). Keep recording signals.
+        self.process = None
+        self.process_group = None
+
+
+def _install_sigterm_handler(
+    proc: subprocess.Popen | None, process_group: int | None = None
+) -> _SignalForwarder:
+    """Install nonblocking SIGTERM/SIGINT forwarding; caller must restore it."""
+    forwarder = _SignalForwarder(proc, process_group)
+    try:
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            forwarder.previous_handlers[signum] = signal.getsignal(signum)
+            signal.signal(signum, forwarder.forward)
+    except BaseException:
+        forwarder.restore()
+        raise
+    return forwarder
+
+
+def _terminate_child(
+    proc: subprocess.Popen,
+    timeout: float = _GRACE_SECONDS,
+    *,
+    signum: int = signal.SIGTERM,
+    process_group: int | None = None,
+    forwarder: _SignalForwarder | None = None,
+    observer: _ChildExitObserver | None = None,
+) -> None:
+    """Gracefully stop, escalate, and reap, only from normal control flow.
+
+    Standalone POSIX launches own a child group. Under a supervisor children
+    inherit its group instead: the supervisor, not this helper, kills the tree.
+    Windows standalone fallback terminates/reaps the child only; whole-tree
+    ownership requires the Windows supervisor's Job Object.
+    """
+    if process_group is not None:
+        owned_observer = observer or _ChildExitObserver(proc)
+        try:
+            try:
+                _signal_child(proc, signum, process_group)
+            except PermissionError:
+                if not owned_observer.confirm_group_is_dead():
+                    raise
+            deadline = time.monotonic() + max(0.0, timeout)
+            while not owned_observer.observe():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(0.05, remaining))
+            # A dead leader cannot prove that descendants are gone, even when
+            # they closed their inherited pipes. Its unreaped PID remains ours
+            # throughout grace and the last group signal.
+            while time.monotonic() < deadline:
+                if owned_observer.group_is_dead():
+                    break
+                time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+            try:
+                _signal_child(proc, signal.SIGKILL, process_group)
+            except PermissionError:
+                if not owned_observer.confirm_group_is_dead():
+                    raise
+            if forwarder is not None:
+                forwarder.disarm()
+            proc.wait()
+        finally:
+            if observer is None:
+                owned_observer.close()
+        return
+
+    _signal_child(proc, signum)
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        child_done = proc.poll() is not None
+        if child_done:
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        # poll/wait and monotonic deadlines belong here, never in the handler.
+        time.sleep(min(0.05, remaining))
+    if proc.poll() is None:
+        proc.kill()
+    proc.wait()
 
 
 def detect_gpus() -> int:
@@ -221,10 +514,13 @@ For full training options, see: python -m wavedl.train --help
 
     # HPC-specific arguments
     parser.add_argument(
+        "--cpu", action="store_true", help="Run training processes on CPU"
+    )
+    parser.add_argument(
         "--num_gpus",
         type=int,
         default=None,
-        help="Number of GPUs to use (default: auto-detect)",
+        help="Number of GPUs, or CPU processes with --cpu (default: auto-detect)",
     )
     parser.add_argument(
         "--num_machines",
@@ -264,11 +560,15 @@ For full training options, see: python -m wavedl.train --help
         default="no",
         help="PyTorch dynamo backend (default: no)",
     )
+    parser.add_argument(
+        "--launch_id", help="Fresh shared UUID for standalone multi-node execution"
+    )
 
     # Parse known args, pass rest to wavedl.train
     args, remaining = parser.parse_known_args()
+    args.original_argv = tuple(sys.argv[1:])
     if args.num_gpus is not None and args.num_gpus < 1:
-        parser.error("--num_gpus must be >= 1.")
+        parser.error("--num_gpus must be positive")
     if args.num_machines < 1 or not 0 <= args.machine_rank < args.num_machines:
         parser.error(
             "--num_machines must be positive and --machine_rank must be within its range."
@@ -277,6 +577,10 @@ For full training options, see: python -m wavedl.train --help
         parser.error("--main_process_ip is required for multi-node training.")
     if args.main_process_port is not None and not 1 <= args.main_process_port <= 65535:
         parser.error("--main_process_port must be between 1 and 65535.")
+    if args.cpu and args.num_gpus is not None and args.num_gpus > 64:
+        parser.error("--cpu supports at most 64 processes")
+    if args.cpu and (args.num_machines != 1 or args.machine_rank != 0):
+        parser.error("--cpu supports only one machine with rank 0")
     return args, remaining
 
 
@@ -315,6 +619,7 @@ def print_summary(
 
 def main() -> int:
     """Main entry point for wavedl-train command."""
+    _configure_cli_stdio()
     # Fast path for utility flags (avoid accelerate launch overhead)
     exit_code = handle_fast_path_args()
     if exit_code is not None:
@@ -334,7 +639,10 @@ def main() -> int:
         return 1
 
     # Auto-detect GPUs if not specified
-    if args.num_gpus is not None:
+    if args.cpu:
+        num_gpus = args.num_gpus or 1
+        print(f"Using CPU training ({num_gpus} process(es))")
+    elif args.num_gpus is not None:
         num_gpus = args.num_gpus
         print(f"Using NUM_GPUS={num_gpus} (set via command line)")
     else:
@@ -351,25 +659,20 @@ def main() -> int:
 
         launcher_config = load_config(cv_args.config)
     cv_folds = cv_args.cv if cv_args.cv is not None else launcher_config.get("cv", 0)
-    explicit_precision = any(
-        argument.split("=", 1)[0] in {"--precision", "--mixed_precision"}
-        for argument in sys.argv[1:]
-    )
-    if not explicit_precision:
-        args.mixed_precision = launcher_config.get(
-            "precision", launcher_config.get("mixed_precision", args.mixed_precision)
-        )
-    if args.mixed_precision not in {"no", "fp16", "bf16"}:
-        print("Error: precision must be 'no', 'fp16', or 'bf16'.", file=sys.stderr)
-        return 2
     if cv_folds and cv_folds > 0:
         if args.num_machines > 1:
             print("Error: Cross-validation requires one machine.", file=sys.stderr)
             return 2
         num_gpus = 1
 
-    # Keep Accelerate and training precision consistent (both accept the aliases).
-    train_args += ["--precision", args.mixed_precision]
+    from wavedl.launch_runtime import prepare_runtime
+
+    train_args, child_environment = prepare_runtime(
+        train_args,
+        args,
+        python=sys.executable,
+        environment=_training_stdio_environment(dict(os.environ)),
+    )
 
     # Build accelerate launch command
     cmd = [
@@ -383,6 +686,9 @@ def main() -> int:
         f"--dynamo_backend={args.dynamo_backend}",
     ]
 
+    if args.cpu:
+        cmd.append("--cpu")
+
     # Explicitly set multi_gpu to suppress accelerate auto-detection warning
     if num_gpus * args.num_machines > 1:
         cmd.append("--multi_gpu")
@@ -395,6 +701,31 @@ def main() -> int:
 
     cmd += ["-m", "wavedl.train"] + train_args
 
+    if not args.cpu and num_gpus > 1:
+        # Accelerate's binary torchrun workers create their own POSIX sessions.
+        # Keep its configuration/environment handling, but use callable workers
+        # so every rank remains inside the launcher's cancellation group.
+        cmd[2] = "wavedl.distributed_launch"
+
+    if args.cpu and num_gpus > 1:
+        # Accelerate's --cpu launcher executes only one process. Native torchrun
+        # supplies the real Gloo rank topology while retaining our pre-spawn
+        # runtime identity and the supervising launcher's process tree.
+        child_environment["ACCELERATE_USE_CPU"] = "true"
+        child_environment["CUDA_VISIBLE_DEVICES"] = ""
+        cmd = [
+            sys.executable,
+            "-m",
+            "torch.distributed.run",
+            "--standalone",
+            f"--nproc_per_node={num_gpus}",
+            "--local_addr=127.0.0.1",
+            "--run-path",
+            "--start-method=spawn",
+            str(Path(__file__).with_name("train.py").resolve()),
+            *train_args,
+        ]
+
     # Create output directory if specified
     for i, arg in enumerate(train_args):
         if arg == "--output_dir" and i + 1 < len(train_args):
@@ -404,16 +735,77 @@ def main() -> int:
             Path(arg.split("=", 1)[1]).mkdir(parents=True, exist_ok=True)
             break
 
-    # Launch training
+    # Install before spawning so a signal during Popen is not lost. A standalone
+    # POSIX child owns a session; supervised children MUST inherit the owner's
+    # group so no training worker escapes the supervisor's cancellation scope.
+    forwarder = _install_sigterm_handler(None)
+    proc = None
+    observer = None
     try:
-        result = subprocess.run(cmd, check=False)
-        exit_code = result.returncode
-    except KeyboardInterrupt:
-        print("\n\n⚠️  Training interrupted by user")
-        exit_code = 130
-    except OSError as error:
-        print(f"Error: Could not launch training: {error}", file=sys.stderr)
-        exit_code = 1
+        owns_group = os.name == "posix" and os.environ.get(_SUPERVISED_ENV) != "1"
+        proc = subprocess.Popen(
+            cmd, start_new_session=owns_group, env=child_environment
+        )
+        forwarder.process_group = proc.pid if owns_group else None
+        forwarder.process = proc
+        if owns_group:
+            observer = _ChildExitObserver(proc)
+        while forwarder.received_signal is None:
+            if observer is not None:
+                if observer.observe():
+                    # Natural leader exit also leaves descendants behind. Close
+                    # their group before releasing its identity; preserve status.
+                    _terminate_child(
+                        proc,
+                        timeout=min(_GRACE_SECONDS, 0.2),
+                        process_group=forwarder.process_group,
+                        forwarder=forwarder,
+                        observer=observer,
+                    )
+                    exit_code = proc.returncode
+                    break
+                time.sleep(0.05)
+                continue
+            try:
+                exit_code = proc.wait(timeout=0.05)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        if forwarder.received_signal is not None:
+            _terminate_child(
+                proc,
+                timeout=_GRACE_SECONDS,
+                signum=forwarder.received_signal,
+                process_group=forwarder.process_group,
+                forwarder=forwarder,
+                observer=observer,
+            )
+            exit_code = 128 + forwarder.received_signal
+        elif exit_code < 0:
+            exit_code = 128 - exit_code
+    except BaseException as error:
+        if proc is not None:
+            # Observation itself may have failed. We still own the unreaped
+            # leader: immediately finish group signalling without retrying the
+            # broken observer, then disarm before the only bounded reap. Never
+            # mask the original failure with a cleanup/probe failure.
+            try:
+                _signal_child(proc, signal.SIGKILL, forwarder.process_group)
+            except Exception as cleanup_error:
+                error.add_note(f"launcher signal cleanup failed: {cleanup_error}")
+            forwarder.disarm()
+            try:
+                proc.wait(timeout=1)
+            except Exception as cleanup_error:
+                error.add_note(f"launcher reap cleanup failed: {cleanup_error}")
+        raise
+    finally:
+        forwarder.disarm()
+        forwarder.restore()
+        if observer is not None:
+            observer.close()
+    if forwarder.received_signal is not None:
+        exit_code = 128 + forwarder.received_signal
 
     # Print summary
     wandb_enabled = "--wandb" in train_args or bool(launcher_config.get("wandb", False))

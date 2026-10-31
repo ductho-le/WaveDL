@@ -1,0 +1,2673 @@
+{
+  "categories": {
+    "Classic CNNs": {
+      "short_description": "Foundational convolutional architectures — reliable, well-understood",
+      "models": [
+        "cnn",
+        "resnet18",
+        "resnet34",
+        "resnet50",
+        "resnet18_pretrained",
+        "resnet50_pretrained",
+        "densenet121",
+        "densenet169",
+        "densenet121_pretrained"
+      ]
+    },
+    "Efficient CNNs": {
+      "short_description": "Lightweight models optimized for speed and mobile deployment",
+      "models": [
+        "mobilenet_v3_small",
+        "mobilenet_v3_large",
+        "efficientnet_b0",
+        "efficientnet_b2",
+        "efficientnet_b4",
+        "efficientnet_b7",
+        "efficientnet_v2_s",
+        "efficientnet_v2_m",
+        "efficientnet_v2_l",
+        "regnet_y_400mf",
+        "regnet_y_800mf",
+        "regnet_y_1_6gf",
+        "regnet_y_3_2gf",
+        "regnet_y_8gf"
+      ]
+    },
+    "Modern CNNs": {
+      "short_description": "State-of-the-art convolutional designs with large receptive fields",
+      "models": [
+        "convnext_tiny",
+        "convnext_small",
+        "convnext_base",
+        "convnext_tiny_pretrained",
+        "convnext_v2_tiny",
+        "convnext_v2_small",
+        "convnext_v2_base",
+        "convnext_v2_tiny_pretrained",
+        "unireplknet_tiny",
+        "unireplknet_small",
+        "unireplknet_base"
+      ]
+    },
+    "Vision Transformers": {
+      "short_description": "Self-attention architectures adapted from NLP to vision",
+      "models": [
+        "vit_tiny",
+        "vit_small",
+        "vit_base",
+        "swin_t",
+        "swin_s",
+        "swin_b",
+        "maxvit_tiny",
+        "maxvit_small",
+        "maxvit_base"
+      ]
+    },
+    "Hybrid Architectures": {
+      "short_description": "Combining CNN efficiency with Transformer expressiveness",
+      "models": [
+        "fastvit_t8",
+        "fastvit_t12",
+        "fastvit_s12",
+        "fastvit_sa12",
+        "caformer_s18",
+        "caformer_s36",
+        "caformer_m36",
+        "poolformer_s12",
+        "efficientvit_m1",
+        "efficientvit_b1",
+        "efficientvit_b2",
+        "efficientvit_l2"
+      ]
+    },
+    "State Space Models": {
+      "short_description": "Sequence models with linear complexity for long-range data",
+      "models": [
+        "mamba_1d",
+        "s4d_small",
+        "s4d",
+        "s4d_large",
+        "vim_tiny",
+        "vim_small",
+        "vim_base"
+      ]
+    },
+    "Temporal Networks": {
+      "short_description": "Specialized architectures for 1D temporal / sequential data",
+      "models": [
+        "tcn_small",
+        "tcn",
+        "tcn_large",
+        "wavenet_small",
+        "wavenet",
+        "wavenet_large"
+      ]
+    },
+    "3D & Specialized": {
+      "short_description": "Architectures for volumetric data and specialized regression",
+      "models": [
+        "resnet3d_18",
+        "mc3_18",
+        "unet_regression",
+        "unet_field"
+      ]
+    }
+  },
+  "models": [
+    {
+      "id": "cnn",
+      "display_name": "CNN",
+      "architecture_family": "CNN",
+      "author_institution": "Generic / Textbook Architecture",
+      "year_published": 1989,
+      "params_m": 1.6,
+      "size_mb": 6.0,
+      "supported_dims": [
+        1,
+        2,
+        3
+      ],
+      "is_pretrained": false,
+      "short_description": "Simple convolutional network, fast and flexible",
+      "description": "A vanilla convolutional neural network stacking Conv-BN-ReLU blocks with max-pooling for spatial reduction. Originating from LeCun's foundational work on gradient-based learning (1989), this architecture serves as the simplest deep learning baseline. It lacks modern enhancements like skip connections or attention, trading representational power for minimal complexity and fast iteration.",
+      "best_for": "Quick baselines and prototyping across all data types",
+      "pros": [
+        "Extremely fast training and inference",
+        "Very low memory footprint",
+        "Supports 1D, 2D, and 3D out of the box",
+        "Easy to understand and debug"
+      ],
+      "cons": [
+        "Limited representational capacity for complex tasks",
+        "No skip connections — prone to vanishing gradients at depth",
+        "Significantly outperformed by modern alternatives"
+      ],
+      "compute_tier": "Edge",
+      "tags": [
+        "vision",
+        "baseline",
+        "lightweight",
+        "prototyping",
+        "multi-dimensional"
+      ]
+    },
+    {
+      "id": "resnet18",
+      "display_name": "ResNet-18",
+      "architecture_family": "CNN",
+      "author_institution": "Microsoft Research (Kaiming He et al.)",
+      "year_published": 2015,
+      "params_m": 11.2,
+      "size_mb": 45.0,
+      "supported_dims": [
+        1,
+        2,
+        3
+      ],
+      "is_pretrained": false,
+      "short_description": "Residual network with skip connections (18 layers)",
+      "description": "ResNet-18 introduced identity shortcut connections that allow gradients to flow directly through the network, solving the degradation problem in deep networks. With 18 layers organized into 4 residual stages using BasicBlock (two 3*3 convolutions per block), it demonstrated that deeper networks could be trained reliably. This landmark 2015 architecture won the ImageNet challenge and remains one of the most widely used backbones in computer vision.",
+      "best_for": "General-purpose feature extraction for medium datasets",
+      "pros": [
+        "Proven reliability across thousands of applications",
+        "Skip connections enable stable deep training",
+        "Good accuracy-to-compute ratio",
+        "Supports all dimensionalities"
+      ],
+      "cons": [
+        "BasicBlock is less parameter-efficient than Bottleneck",
+        "Limited receptive field compared to modern architectures",
+        "No attention mechanism for long-range dependencies"
+      ],
+      "compute_tier": "Low",
+      "tags": [
+        "vision",
+        "residual",
+        "classic",
+        "versatile",
+        "skip-connections"
+      ]
+    },
+    {
+      "id": "resnet34",
+      "display_name": "ResNet-34",
+      "architecture_family": "CNN",
+      "author_institution": "Microsoft Research (Kaiming He et al.)",
+      "year_published": 2015,
+      "params_m": 21.3,
+      "size_mb": 85.0,
+      "supported_dims": [
+        1,
+        2,
+        3
+      ],
+      "is_pretrained": false,
+      "short_description": "Deeper residual network (34 layers)",
+      "description": "ResNet-34 extends the ResNet family to 34 layers while still using BasicBlock residual units. The additional depth provides greater modeling capacity through more non-linear transformations, enabling the network to learn finer-grained feature hierarchies. It occupies a sweet spot between the lightweight ResNet-18 and the bottleneck-based ResNet-50, offering more capacity without the architectural complexity of 1*1 projection convolutions.",
+      "best_for": "Larger datasets needing more model capacity",
+      "pros": [
+        "More capacity than ResNet-18 with same block type",
+        "Straightforward scaling of a proven architecture",
+        "Good balance of depth and training speed",
+        "Supports all dimensionalities"
+      ],
+      "cons": [
+        "Nearly double the parameters of ResNet-18",
+        "BasicBlock still less efficient than Bottleneck design",
+        "Outperformed by modern CNNs at similar compute"
+      ],
+      "compute_tier": "Low",
+      "tags": [
+        "vision",
+        "residual",
+        "classic",
+        "deep",
+        "general-purpose"
+      ]
+    },
+    {
+      "id": "resnet50",
+      "display_name": "ResNet-50",
+      "architecture_family": "CNN",
+      "author_institution": "Microsoft Research (Kaiming He et al.)",
+      "year_published": 2015,
+      "params_m": 23.5,
+      "size_mb": 95.0,
+      "supported_dims": [
+        1,
+        2,
+        3
+      ],
+      "is_pretrained": false,
+      "short_description": "Bottleneck residual network (50 layers)",
+      "description": "ResNet-50 introduces the Bottleneck block design — a 1*1→3*3→1*1 convolution sequence that reduces and then restores channel dimensions, enabling 50 layers with only slightly more parameters than ResNet-34. This architectural innovation makes deep networks computationally feasible while dramatically increasing representational power. ResNet-50 remains the de facto standard backbone for transfer learning and is one of the most benchmarked models in deep learning history.",
+      "best_for": "Complex feature hierarchies and large-scale tasks",
+      "pros": [
+        "Bottleneck design is highly parameter-efficient",
+        "Industry-standard backbone for benchmarking",
+        "Excellent feature hierarchies for downstream tasks",
+        "Supports all dimensionalities"
+      ],
+      "cons": [
+        "Heavier than ResNet-18/34 for simple tasks",
+        "No modern normalization or attention mechanisms",
+        "Receptive field limited by 3*3 kernel stacking"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "vision",
+        "residual",
+        "bottleneck",
+        "benchmark",
+        "backbone"
+      ]
+    },
+    {
+      "id": "resnet18_pretrained",
+      "display_name": "ResNet-18 (Pretrained)",
+      "architecture_family": "CNN",
+      "author_institution": "Microsoft Research (Kaiming He et al.)",
+      "year_published": 2015,
+      "params_m": 11.2,
+      "size_mb": 45.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "ResNet-18 initialized with ImageNet weights",
+      "description": "This variant of ResNet-18 comes pre-initialized with weights learned on the ImageNet-1K dataset (1.28M images, 1000 classes). Transfer learning from these pretrained features dramatically reduces the amount of labeled data needed for new tasks, as the early layers already encode universal visual primitives like edges, textures, and shapes. Fine-tuning is typically done by replacing the classification head and training with a lower learning rate.",
+      "best_for": "2D image data with limited training samples",
+      "pros": [
+        "Dramatically reduces data requirements via transfer learning",
+        "Converges much faster than training from scratch",
+        "Proven ImageNet features generalize broadly",
+        "Low computational overhead"
+      ],
+      "cons": [
+        "Restricted to 2D input only",
+        "ImageNet biases may not suit all domains",
+        "BasicBlock limits capacity for very complex tasks"
+      ],
+      "compute_tier": "Low",
+      "tags": [
+        "vision",
+        "transfer-learning",
+        "pretrained",
+        "imagenet",
+        "fine-tuning"
+      ]
+    },
+    {
+      "id": "resnet50_pretrained",
+      "display_name": "ResNet-50 (Pretrained)",
+      "architecture_family": "CNN",
+      "author_institution": "Microsoft Research (Kaiming He et al.)",
+      "year_published": 2015,
+      "params_m": 23.5,
+      "size_mb": 95.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "ResNet-50 initialized with ImageNet weights",
+      "description": "ResNet-50 pretrained on ImageNet-1K combines the powerful Bottleneck architecture with rich learned representations. The pretrained features capture complex visual hierarchies from millions of natural images, making it one of the most effective starting points for transfer learning in 2D vision tasks. Its deeper bottleneck structure extracts more discriminative features than ResNet-18, leading to higher accuracy when fine-tuned on downstream tasks.",
+      "best_for": "High-accuracy 2D tasks with transfer learning",
+      "pros": [
+        "Rich pretrained features from deep bottleneck design",
+        "Best-in-class transfer learning baseline",
+        "Well-supported across all deep learning frameworks",
+        "Strong accuracy on diverse 2D domains"
+      ],
+      "cons": [
+        "Restricted to 2D input only",
+        "Larger memory footprint than ResNet-18 pretrained",
+        "May be overkill for very simple classification tasks"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "vision",
+        "transfer-learning",
+        "pretrained",
+        "bottleneck",
+        "high-accuracy"
+      ]
+    },
+    {
+      "id": "densenet121",
+      "display_name": "DenseNet-121",
+      "architecture_family": "CNN",
+      "author_institution": "Cornell University / Tsinghua University (Gao Huang et al.)",
+      "year_published": 2017,
+      "params_m": 7.0,
+      "size_mb": 30.0,
+      "supported_dims": [
+        1,
+        2,
+        3
+      ],
+      "is_pretrained": false,
+      "short_description": "Densely connected network — strong feature reuse",
+      "description": "DenseNet-121 connects each layer to every subsequent layer within a dense block, enabling maximum feature reuse and gradient flow. Unlike ResNets which add skip connections, DenseNet concatenates feature maps, allowing the network to learn compact representations with fewer parameters. Transition layers between dense blocks use 1*1 convolutions and average pooling for dimensionality reduction, making the architecture highly parameter-efficient.",
+      "best_for": "Parameter-efficient training with dense connectivity",
+      "pros": [
+        "Superior parameter efficiency through feature reuse",
+        "Strong gradient flow via dense connections",
+        "Fewer parameters than ResNets for comparable accuracy",
+        "Supports all dimensionalities"
+      ],
+      "cons": [
+        "High memory consumption due to feature concatenation",
+        "Slower inference than ResNets despite fewer parameters",
+        "Memory cost grows quadratically with depth"
+      ],
+      "compute_tier": "Low",
+      "tags": [
+        "vision",
+        "dense-connectivity",
+        "feature-reuse",
+        "parameter-efficient",
+        "multi-dimensional"
+      ]
+    },
+    {
+      "id": "densenet169",
+      "display_name": "DenseNet-169",
+      "architecture_family": "CNN",
+      "author_institution": "Cornell University / Tsinghua University (Gao Huang et al.)",
+      "year_published": 2017,
+      "params_m": 12.5,
+      "size_mb": 50.0,
+      "supported_dims": [
+        1,
+        2,
+        3
+      ],
+      "is_pretrained": false,
+      "short_description": "Larger DenseNet with 169 layers",
+      "description": "DenseNet-169 extends the DenseNet architecture to 169 layers with more dense blocks and layers per block, providing greater modeling capacity while maintaining the core dense connectivity pattern. The deeper architecture can capture more complex feature interactions through its extended chain of concatenated feature maps. It offers a meaningful step up from DenseNet-121 for tasks where the smaller variant lacks sufficient capacity.",
+      "best_for": "When DenseNet-121 capacity is insufficient",
+      "pros": [
+        "More capacity than DenseNet-121 with same design philosophy",
+        "Efficient parameter utilization via dense connections",
+        "Stronger feature hierarchies from increased depth",
+        "Supports all dimensionalities"
+      ],
+      "cons": [
+        "Higher memory consumption than DenseNet-121",
+        "Feature concatenation memory overhead compounds with depth",
+        "Slower training than comparably-sized ResNets"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "vision",
+        "dense-connectivity",
+        "deep",
+        "feature-reuse",
+        "scalable"
+      ]
+    },
+    {
+      "id": "densenet121_pretrained",
+      "display_name": "DenseNet-121 (Pretrained)",
+      "architecture_family": "CNN",
+      "author_institution": "Cornell University / Tsinghua University (Gao Huang et al.)",
+      "year_published": 2017,
+      "params_m": 7.0,
+      "size_mb": 30.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "DenseNet-121 with ImageNet initialization",
+      "description": "DenseNet-121 pretrained on ImageNet-1K leverages dense connectivity's feature reuse with rich learned visual representations. The densely connected pattern means that pretrained features from all preceding layers are available to every subsequent layer, creating an exceptionally rich feature space for transfer learning. With only 7M parameters, it offers one of the best accuracy-per-parameter ratios among pretrained models.",
+      "best_for": "Efficient transfer learning for 2D image tasks",
+      "pros": [
+        "Excellent accuracy-per-parameter for transfer learning",
+        "Rich multi-scale pretrained features via dense connections",
+        "Lightweight compared to pretrained ResNet-50",
+        "Well-suited for medical imaging and fine-grained tasks"
+      ],
+      "cons": [
+        "Restricted to 2D input only",
+        "Higher memory usage than parameter count suggests",
+        "Slower inference than pretrained MobileNets"
+      ],
+      "compute_tier": "Low",
+      "tags": [
+        "vision",
+        "transfer-learning",
+        "pretrained",
+        "parameter-efficient",
+        "medical-imaging"
+      ]
+    },
+    {
+      "id": "mobilenet_v3_small",
+      "display_name": "MobileNet V3 Small",
+      "architecture_family": "CNN",
+      "author_institution": "Google (Andrew Howard et al.)",
+      "year_published": 2019,
+      "params_m": 0.9,
+      "size_mb": 4.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Ultra-lightweight mobile architecture",
+      "description": "MobileNetV3-Small was designed using a combination of hardware-aware neural architecture search (NAS) and the NetAdapt algorithm to optimize for mobile CPUs. It employs inverted residual blocks with lightweight depthwise separable convolutions, squeeze-and-excitation attention, and hard-swish activations. This architecture delivers remarkable accuracy for its minuscule parameter count, making it ideal for on-device inference.",
+      "best_for": "Edge deployment, very small 2D datasets, fast inference",
+      "pros": [
+        "Extremely small model size suitable for mobile/edge",
+        "Hardware-optimized via NAS",
+        "Squeeze-and-excitation provides channel attention",
+        "Very fast inference on CPUs and mobile GPUs"
+      ],
+      "cons": [
+        "Limited capacity for complex visual tasks",
+        "2D only — no multi-dimensional support",
+        "Accuracy gap compared to larger models"
+      ],
+      "compute_tier": "Edge",
+      "tags": [
+        "mobile",
+        "edge",
+        "lightweight",
+        "nas",
+        "real-time"
+      ]
+    },
+    {
+      "id": "mobilenet_v3_large",
+      "display_name": "MobileNet V3 Large",
+      "architecture_family": "CNN",
+      "author_institution": "Google (Andrew Howard et al.)",
+      "year_published": 2019,
+      "params_m": 3.0,
+      "size_mb": 12.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Efficient mobile architecture with higher capacity",
+      "description": "MobileNetV3-Large scales up the NAS-discovered architecture with wider layers and more inverted residual blocks, providing significantly better accuracy while maintaining mobile-friendly inference speeds. It incorporates h-swish activations in later layers and squeeze-and-excitation modules for channel recalibration. The architecture strikes an optimal balance between accuracy and latency for mobile deployment scenarios.",
+      "best_for": "Mobile deployment with better accuracy than Small variant",
+      "pros": [
+        "Strong accuracy for a mobile-class model",
+        "Well-optimized for mobile GPU and CPU inference",
+        "Pretrained ImageNet weights available",
+        "Good accuracy-latency trade-off"
+      ],
+      "cons": [
+        "Still limited compared to full-size models",
+        "2D only — no multi-dimensional support",
+        "Depthwise convolutions can be memory-bandwidth bound"
+      ],
+      "compute_tier": "Edge",
+      "tags": [
+        "mobile",
+        "edge",
+        "efficient",
+        "nas",
+        "deployment"
+      ]
+    },
+    {
+      "id": "efficientnet_b0",
+      "display_name": "EfficientNet-B0",
+      "architecture_family": "CNN",
+      "author_institution": "Google (Mingxing Tan & Quoc V. Le)",
+      "year_published": 2019,
+      "params_m": 5.3,
+      "size_mb": 21.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Compound-scaled CNN — balanced width, depth, resolution",
+      "description": "EfficientNet-B0 is the baseline model discovered by neural architecture search that introduced compound scaling — simultaneously scaling network width, depth, and input resolution using fixed ratios. Built on mobile inverted bottleneck convolution (MBConv) blocks with squeeze-and-excitation, it achieved state-of-the-art accuracy with 8.4* fewer parameters than previous best models. This 2019 architecture fundamentally changed how the community thinks about model scaling.",
+      "best_for": "Small-to-medium 2D datasets with efficient compute",
+      "pros": [
+        "Excellent accuracy-per-FLOP through compound scaling",
+        "Foundational NAS-discovered architecture",
+        "Squeeze-and-excitation enhances channel attention",
+        "Lightweight enough for consumer GPUs"
+      ],
+      "cons": [
+        "Training can be slower due to SE blocks and swish",
+        "2D only — no multi-dimensional support",
+        "Superseded by EfficientNetV2 for training speed"
+      ],
+      "compute_tier": "Low",
+      "tags": [
+        "vision",
+        "compound-scaling",
+        "nas",
+        "efficient",
+        "mbconv"
+      ]
+    },
+    {
+      "id": "efficientnet_b2",
+      "display_name": "EfficientNet-B2",
+      "architecture_family": "CNN",
+      "author_institution": "Google (Mingxing Tan & Quoc V. Le)",
+      "year_published": 2019,
+      "params_m": 9.1,
+      "size_mb": 36.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Scaled-up EfficientNet with more capacity",
+      "description": "EfficientNet-B2 applies the compound scaling coefficients to uniformly increase width, depth, and resolution from the B0 baseline. With approximately 1.7* more parameters than B0, it processes larger input resolutions (260*260 vs 224*224) and uses wider/deeper MBConv blocks. This balanced scaling provides meaningfully better accuracy while maintaining the efficiency principles of the EfficientNet family.",
+      "best_for": "Medium 2D datasets needing more expressiveness",
+      "pros": [
+        "Balanced scaling provides smooth accuracy improvement",
+        "Still relatively lightweight and efficient",
+        "Higher resolution input captures finer details",
+        "Good middle-ground in the EfficientNet family"
+      ],
+      "cons": [
+        "Higher memory usage than B0 due to larger resolution",
+        "2D only",
+        "Training slower than comparably-sized ConvNeXt models"
+      ],
+      "compute_tier": "Low",
+      "tags": [
+        "vision",
+        "compound-scaling",
+        "efficient",
+        "balanced",
+        "scalable"
+      ]
+    },
+    {
+      "id": "efficientnet_b4",
+      "display_name": "EfficientNet-B4",
+      "architecture_family": "CNN",
+      "author_institution": "Google (Mingxing Tan & Quoc V. Le)",
+      "year_published": 2019,
+      "params_m": 19.0,
+      "size_mb": 76.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Higher-capacity EfficientNet variant",
+      "description": "EfficientNet-B4 scales the architecture further with 380*380 input resolution, providing significantly higher accuracy at the cost of increased compute. It represents the point in the EfficientNet family where accuracy begins to rival much larger models like ResNet-152, while using far fewer parameters. The compound scaling ensures that the increased capacity is distributed evenly across width, depth, and resolution dimensions.",
+      "best_for": "Larger 2D datasets where accuracy is a priority",
+      "pros": [
+        "High accuracy rivaling much larger models",
+        "Efficient parameter utilization via compound scaling",
+        "Large input resolution for fine-grained recognition",
+        "Strong pretrained features for transfer learning"
+      ],
+      "cons": [
+        "Significantly higher memory than B0-B2",
+        "2D only",
+        "Training time increases substantially with resolution"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "vision",
+        "high-accuracy",
+        "compound-scaling",
+        "fine-grained",
+        "efficient"
+      ]
+    },
+    {
+      "id": "efficientnet_b7",
+      "display_name": "EfficientNet-B7",
+      "architecture_family": "CNN",
+      "author_institution": "Google (Mingxing Tan & Quoc V. Le)",
+      "year_published": 2019,
+      "params_m": 66.0,
+      "size_mb": 265.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Largest EfficientNet — maximum accuracy",
+      "description": "EfficientNet-B7 pushes compound scaling to its practical limit with 600*600 input resolution, 66M parameters, and the deepest/widest MBConv configuration. It achieved 84.3% top-1 accuracy on ImageNet — state-of-the-art at its release — while being 8.4* smaller than the previous best GPipe model. However, the extreme resolution and depth make it one of the most resource-demanding models in the EfficientNet family.",
+      "best_for": "Large 2D datasets with ample GPU memory",
+      "pros": [
+        "Maximum accuracy in the EfficientNet family",
+        "State-of-the-art ImageNet accuracy at release",
+        "Still more efficient than brute-force large models",
+        "Exceptional pretrained features for transfer learning"
+      ],
+      "cons": [
+        "Very high GPU memory requirements (600*600 input)",
+        "Slow training and inference",
+        "Overkill for most practical applications"
+      ],
+      "compute_tier": "High",
+      "tags": [
+        "vision",
+        "high-accuracy",
+        "large-scale",
+        "compound-scaling",
+        "state-of-the-art"
+      ]
+    },
+    {
+      "id": "efficientnet_v2_s",
+      "display_name": "EfficientNetV2-S",
+      "architecture_family": "CNN",
+      "author_institution": "Google (Mingxing Tan & Quoc V. Le)",
+      "year_published": 2021,
+      "params_m": 20.2,
+      "size_mb": 85.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Progressive learning + fused MBConv for faster training",
+      "description": "EfficientNetV2-S introduces Fused-MBConv blocks that replace the depthwise+pointwise pattern with a single fused convolution in early stages, dramatically improving training speed on modern accelerators. Combined with progressive learning — gradually increasing image resolution and regularization during training — it trains 5-11* faster than EfficientNetV1 while achieving better accuracy. This 2021 architecture represents a significant evolution in efficient model design.",
+      "best_for": "Fast, accurate training on medium 2D datasets",
+      "pros": [
+        "5-11* faster training than EfficientNetV1",
+        "Fused-MBConv improves hardware utilization",
+        "Progressive learning improves regularization",
+        "Better accuracy than V1 with faster convergence"
+      ],
+      "cons": [
+        "2D only — no multi-dimensional support",
+        "More complex training recipe than standard models",
+        "Fused convolutions increase early-stage compute"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "vision",
+        "efficient",
+        "progressive-learning",
+        "fused-mbconv",
+        "fast-training"
+      ]
+    },
+    {
+      "id": "efficientnet_v2_m",
+      "display_name": "EfficientNetV2-M",
+      "architecture_family": "CNN",
+      "author_institution": "Google (Mingxing Tan & Quoc V. Le)",
+      "year_published": 2021,
+      "params_m": 52.9,
+      "size_mb": 215.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Medium EfficientNetV2 — improved training speed",
+      "description": "EfficientNetV2-M scales up the V2 architecture with more Fused-MBConv and MBConv blocks, providing substantially higher accuracy while retaining the training speed advantages of progressive learning. It uses a mix of fused convolutions in early stages and depthwise separable convolutions in later stages, optimizing for both training throughput and model quality. This mid-range variant offers an excellent trade-off for serious production workloads.",
+      "best_for": "High-accuracy 2D tasks with good training efficiency",
+      "pros": [
+        "Excellent accuracy-training speed trade-off",
+        "Progressive learning enables effective regularization",
+        "Hybrid fused/depthwise design optimizes throughput",
+        "Strong pretrained weights for downstream tasks"
+      ],
+      "cons": [
+        "Significant GPU memory requirements",
+        "2D only",
+        "Complex training schedule with progressive resizing"
+      ],
+      "compute_tier": "High",
+      "tags": [
+        "vision",
+        "high-accuracy",
+        "efficient",
+        "progressive-learning",
+        "production"
+      ]
+    },
+    {
+      "id": "efficientnet_v2_l",
+      "display_name": "EfficientNetV2-L",
+      "architecture_family": "CNN",
+      "author_institution": "Google (Mingxing Tan & Quoc V. Le)",
+      "year_published": 2021,
+      "params_m": 117.2,
+      "size_mb": 470.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Large EfficientNetV2 — state-of-the-art efficiency",
+      "description": "EfficientNetV2-L is the largest variant in the V2 family, pushing the Fused-MBConv architecture to maximum scale with 117M parameters. Despite its size, it trains significantly faster than comparably accurate models from the V1 family due to progressive learning and optimized block design. It achieves near state-of-the-art ImageNet accuracy while maintaining the efficiency principles that define the EfficientNet lineage.",
+      "best_for": "Maximum accuracy on large 2D datasets",
+      "pros": [
+        "Near state-of-the-art accuracy",
+        "Much faster training than equivalently accurate V1 models",
+        "Progressive learning prevents overfitting",
+        "Best-in-class EfficientNet for production deployment"
+      ],
+      "cons": [
+        "Very high GPU memory and compute requirements",
+        "2D only",
+        "Diminishing returns compared to V2-M for most tasks"
+      ],
+      "compute_tier": "High",
+      "tags": [
+        "vision",
+        "large-scale",
+        "state-of-the-art",
+        "progressive-learning",
+        "high-accuracy"
+      ]
+    },
+    {
+      "id": "regnet_y_400mf",
+      "display_name": "RegNet-Y 400MF",
+      "architecture_family": "CNN",
+      "author_institution": "Facebook AI Research (Ilija Radosavovic et al.)",
+      "year_published": 2020,
+      "params_m": 3.9,
+      "size_mb": 16.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Regularized network — 400M FLOPs budget",
+      "description": "RegNet-Y 400MF belongs to the RegNet design space — a family of networks discovered by systematically exploring network width, depth, and group width patterns. The 'Y' variant adds squeeze-and-excitation modules for channel attention. Operating at a 400M FLOPs budget, it delivers strong accuracy for its compute class. The RegNet philosophy emphasizes simple, regular network structures that scale predictably, discovered through population-level analysis of network design spaces.",
+      "best_for": "Lightweight 2D inference with consistent performance",
+      "pros": [
+        "Predictable scaling behavior from design space analysis",
+        "Squeeze-and-excitation adds channel attention",
+        "Simple, regular structure is hardware-friendly",
+        "Very efficient at its FLOP budget"
+      ],
+      "cons": [
+        "2D only — no multi-dimensional support",
+        "Less flexible than manually designed architectures",
+        "Limited capacity at 400MF budget"
+      ],
+      "compute_tier": "Edge",
+      "tags": [
+        "vision",
+        "design-space",
+        "efficient",
+        "regular",
+        "se-attention"
+      ]
+    },
+    {
+      "id": "regnet_y_800mf",
+      "display_name": "RegNet-Y 800MF",
+      "architecture_family": "CNN",
+      "author_institution": "Facebook AI Research (Ilija Radosavovic et al.)",
+      "year_published": 2020,
+      "params_m": 5.7,
+      "size_mb": 24.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Regularized network — 800M FLOPs budget",
+      "description": "RegNet-Y 800MF doubles the compute budget of the 400MF variant, providing wider layers and more groups for increased representational capacity. The design space methodology ensures that this scaling is optimal — each additional FLOP is allocated to maximize accuracy. With squeeze-and-excitation attention and well-tuned group convolutions, it represents one of the most efficient models at its compute level.",
+      "best_for": "Balanced speed and accuracy for 2D tasks",
+      "pros": [
+        "Excellent accuracy at 800MF compute budget",
+        "Optimal FLOP allocation from design space search",
+        "Fast and predictable inference",
+        "Good balance of speed and quality"
+      ],
+      "cons": [
+        "2D only",
+        "Slightly less popular than EfficientNet family",
+        "Limited architectural innovation beyond scaling"
+      ],
+      "compute_tier": "Low",
+      "tags": [
+        "vision",
+        "design-space",
+        "balanced",
+        "group-convolution",
+        "se-attention"
+      ]
+    },
+    {
+      "id": "regnet_y_1_6gf",
+      "display_name": "RegNet-Y 1.6GF",
+      "architecture_family": "CNN",
+      "author_institution": "Facebook AI Research (Ilija Radosavovic et al.)",
+      "year_published": 2020,
+      "params_m": 10.3,
+      "size_mb": 42.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Regularized network — 1.6G FLOPs budget",
+      "description": "RegNet-Y 1.6GF operates at a mid-range compute budget, providing substantial modeling capacity with predictable performance characteristics. The regular network structure — with linearly increasing widths and constant group widths — makes it particularly well-suited for hardware optimization and batch inference. At 10.3M parameters, it offers a compelling alternative to EfficientNet-B0/B2 with more predictable latency profiles.",
+      "best_for": "Mid-range 2D tasks with predictable scaling",
+      "pros": [
+        "Predictable latency makes deployment planning easier",
+        "Strong accuracy at mid-range compute",
+        "Regular structure optimizes well on diverse hardware",
+        "Good alternative to EfficientNet at this scale"
+      ],
+      "cons": [
+        "2D only",
+        "Less widely adopted than EfficientNet",
+        "No modern attention beyond SE modules"
+      ],
+      "compute_tier": "Low",
+      "tags": [
+        "vision",
+        "design-space",
+        "mid-range",
+        "predictable",
+        "deployment"
+      ]
+    },
+    {
+      "id": "regnet_y_3_2gf",
+      "display_name": "RegNet-Y 3.2GF",
+      "architecture_family": "CNN",
+      "author_institution": "Facebook AI Research (Ilija Radosavovic et al.)",
+      "year_published": 2020,
+      "params_m": 17.9,
+      "size_mb": 72.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Regularized network — 3.2G FLOPs budget",
+      "description": "RegNet-Y 3.2GF scales into the higher-compute regime with 17.9M parameters, providing strong feature extraction capabilities for demanding 2D tasks. The systematic design space approach ensures that the architecture avoids common scaling pitfalls — each stage's width and depth are optimally balanced. Combined with SE attention, it delivers competitive accuracy against hand-designed architectures like ResNet-50 at a similar compute budget.",
+      "best_for": "Higher-capacity 2D feature extraction",
+      "pros": [
+        "Competitive with ResNet-50 at similar compute",
+        "Optimal architecture from systematic design space exploration",
+        "Strong SE-enhanced feature representations",
+        "Scales predictably from smaller RegNet variants"
+      ],
+      "cons": [
+        "2D only",
+        "Higher memory than smaller RegNet variants",
+        "Community and ecosystem smaller than ResNet/EfficientNet"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "vision",
+        "design-space",
+        "high-capacity",
+        "se-attention",
+        "scalable"
+      ]
+    },
+    {
+      "id": "regnet_y_8gf",
+      "display_name": "RegNet-Y 8GF",
+      "architecture_family": "CNN",
+      "author_institution": "Facebook AI Research (Ilija Radosavovic et al.)",
+      "year_published": 2020,
+      "params_m": 37.4,
+      "size_mb": 150.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Regularized network — 8G FLOPs budget",
+      "description": "RegNet-Y 8GF is the largest RegNet-Y variant in this collection, operating at 8 billion FLOPs with 37.4M parameters. At this scale, it competes directly with large ConvNets and even some Transformer-based models in terms of accuracy. The regular structure and group convolutions enable efficient distributed training, while the 8GF compute budget allows for rich, deep feature hierarchies suitable for large-scale visual recognition tasks.",
+      "best_for": "Large-scale 2D tasks needing strong representations",
+      "pros": [
+        "Competes with larger ConvNets and some ViTs",
+        "Efficient distributed training via regular structure",
+        "Strong learned representations at 8GF budget",
+        "Predictable scaling from smaller RegNet variants"
+      ],
+      "cons": [
+        "High GPU memory requirements",
+        "2D only",
+        "Diminishing returns vs. mid-range RegNets for many tasks"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "vision",
+        "design-space",
+        "large-scale",
+        "high-capacity",
+        "distributed-training"
+      ]
+    },
+    {
+      "id": "convnext_tiny",
+      "display_name": "ConvNeXt Tiny",
+      "architecture_family": "CNN",
+      "author_institution": "Meta AI Research (Zhuang Liu et al.)",
+      "year_published": 2022,
+      "params_m": 27.8,
+      "size_mb": 112.0,
+      "supported_dims": [
+        1,
+        2,
+        3
+      ],
+      "is_pretrained": false,
+      "short_description": "Modernized pure-ConvNet inspired by Transformers",
+      "description": "ConvNeXt systematically modernizes a standard ResNet by adopting Transformer design principles: patchify stem, inverted bottleneck blocks, depthwise separable 7*7 convolutions, fewer activation functions, LayerNorm instead of BatchNorm, and GELU activations. This 2022 architecture from Meta AI demonstrated that pure convolutional networks can match or exceed Swin Transformer accuracy when trained with modern recipes, challenging the assumed superiority of attention-based models.",
+      "best_for": "Strong alternative to ViT on any-dimensional data",
+      "pros": [
+        "Competitive with Swin Transformer using pure convolutions",
+        "Modern training recipe with strong regularization",
+        "Simple, clean architecture — easy to implement",
+        "Supports 1D, 2D, and 3D data"
+      ],
+      "cons": [
+        "Requires modern training augmentations for best results",
+        "Larger than classic CNNs at comparable depth",
+        "7*7 depthwise convolutions slower on some hardware"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "vision",
+        "modern-cnn",
+        "transformer-inspired",
+        "depthwise",
+        "multi-dimensional"
+      ]
+    },
+    {
+      "id": "convnext_small",
+      "display_name": "ConvNeXt Small",
+      "architecture_family": "CNN",
+      "author_institution": "Meta AI Research (Zhuang Liu et al.)",
+      "year_published": 2022,
+      "params_m": 49.5,
+      "size_mb": 200.0,
+      "supported_dims": [
+        1,
+        2,
+        3
+      ],
+      "is_pretrained": false,
+      "short_description": "Larger ConvNeXt with wider layers",
+      "description": "ConvNeXt Small widens the channel dimensions across all four stages compared to the Tiny variant, providing greater modeling capacity while maintaining the same modernized ConvNet design philosophy. The increased width allows for richer feature representations at each spatial resolution, making it better suited for datasets with higher visual complexity or fine-grained distinctions.",
+      "best_for": "When ConvNeXt Tiny capacity is insufficient",
+      "pros": [
+        "More capacity than Tiny with same efficient design",
+        "Pure ConvNet matching Swin-S Transformer accuracy",
+        "Scales naturally from Tiny variant",
+        "Supports all dimensionalities"
+      ],
+      "cons": [
+        "Nearly double the parameters of Tiny",
+        "Higher memory requirements",
+        "Diminishing returns on smaller datasets"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "vision",
+        "modern-cnn",
+        "wide",
+        "scalable",
+        "multi-dimensional"
+      ]
+    },
+    {
+      "id": "convnext_base",
+      "display_name": "ConvNeXt Base",
+      "architecture_family": "CNN",
+      "author_institution": "Meta AI Research (Zhuang Liu et al.)",
+      "year_published": 2022,
+      "params_m": 87.6,
+      "size_mb": 350.0,
+      "supported_dims": [
+        1,
+        2,
+        3
+      ],
+      "is_pretrained": false,
+      "short_description": "Base-sized ConvNeXt — competitive with ViT-B",
+      "description": "ConvNeXt Base matches the parameter count and accuracy of ViT-Base while using only convolutional operations. At 87.6M parameters, it provides the largest ConvNeXt configuration in this collection, capable of learning highly complex feature hierarchies. Its hierarchical multi-stage design naturally produces multi-scale features, an advantage over ViT's single-scale representation for dense prediction tasks.",
+      "best_for": "Large datasets needing Transformer-level performance",
+      "pros": [
+        "Matches ViT-Base accuracy with pure convolutions",
+        "Hierarchical features ideal for dense prediction",
+        "No positional encoding issues — handles variable input sizes",
+        "Supports all dimensionalities"
+      ],
+      "cons": [
+        "High memory and compute requirements",
+        "Requires strong regularization to train well",
+        "Large model file size"
+      ],
+      "compute_tier": "High",
+      "tags": [
+        "vision",
+        "modern-cnn",
+        "large-scale",
+        "hierarchical",
+        "dense-prediction"
+      ]
+    },
+    {
+      "id": "convnext_tiny_pretrained",
+      "display_name": "ConvNeXt Tiny (Pretrained)",
+      "architecture_family": "CNN",
+      "author_institution": "Meta AI Research (Zhuang Liu et al.)",
+      "year_published": 2022,
+      "params_m": 27.8,
+      "size_mb": 112.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "ConvNeXt Tiny with ImageNet-1K initialization",
+      "description": "ConvNeXt Tiny pretrained on ImageNet-1K combines the modernized ConvNet architecture with powerful learned representations. The pretrained features benefit from the modern training recipe including RandAugment, Mixup, CutMix, and strong regularization, producing significantly better transfer learning features than classic pretrained ResNets. This makes it one of the strongest 2D transfer learning backbones at its parameter count.",
+      "best_for": "High-quality 2D transfer learning",
+      "pros": [
+        "Superior transfer learning features vs. pretrained ResNets",
+        "Modern training recipe produces robust representations",
+        "Strong accuracy-to-parameter ratio",
+        "Well-suited for fine-grained 2D tasks"
+      ],
+      "cons": [
+        "2D only",
+        "Larger than pretrained MobileNets/EfficientNets",
+        "Requires matching training augmentations for best fine-tuning"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "vision",
+        "transfer-learning",
+        "pretrained",
+        "modern-cnn",
+        "fine-grained"
+      ]
+    },
+    {
+      "id": "convnext_v2_tiny",
+      "display_name": "ConvNeXt V2 Tiny",
+      "architecture_family": "CNN",
+      "author_institution": "Meta AI Research (Sanghyun Woo et al.)",
+      "year_published": 2023,
+      "params_m": 27.9,
+      "size_mb": 112.0,
+      "supported_dims": [
+        1,
+        2,
+        3
+      ],
+      "is_pretrained": false,
+      "short_description": "ConvNeXt V2 with Global Response Normalization",
+      "description": "ConvNeXt V2 enhances the original ConvNeXt with Global Response Normalization (GRN) — a novel layer that addresses feature collapse in self-supervised learning by normalizing and calibrating channel responses based on their global statistics. Co-designed with the Fully Convolutional Masked Autoencoder (FCMAE) pretraining framework, V2 models achieve significantly better representations especially when pretrained with self-supervised objectives, closing the gap between ConvNets and masked-image-modeling ViTs.",
+      "best_for": "Improved training stability across all dimensions",
+      "pros": [
+        "GRN prevents feature collapse in self-supervised learning",
+        "Co-designed with FCMAE for optimal pretraining",
+        "Drop-in replacement for ConvNeXt V1",
+        "Supports all dimensionalities"
+      ],
+      "cons": [
+        "Marginal improvement over V1 with supervised training only",
+        "GRN adds slight computational overhead",
+        "Full benefits require FCMAE pretraining"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "vision",
+        "modern-cnn",
+        "self-supervised",
+        "grn",
+        "multi-dimensional"
+      ]
+    },
+    {
+      "id": "convnext_v2_small",
+      "display_name": "ConvNeXt V2 Small",
+      "architecture_family": "CNN",
+      "author_institution": "Meta AI Research (Sanghyun Woo et al.)",
+      "year_published": 2023,
+      "params_m": 49.6,
+      "size_mb": 200.0,
+      "supported_dims": [
+        1,
+        2,
+        3
+      ],
+      "is_pretrained": false,
+      "short_description": "Larger ConvNeXt V2 with GRN layers",
+      "description": "ConvNeXt V2 Small scales up the V2 architecture with wider channels while retaining GRN layers throughout. The larger capacity benefits significantly from self-supervised pretraining via FCMAE, as the additional parameters can better leverage the richer representations learned from unlabeled data. This variant is particularly compelling when large unlabeled datasets are available for pretraining.",
+      "best_for": "Enhanced representations with self-supervised pretraining",
+      "pros": [
+        "Excellent with FCMAE self-supervised pretraining",
+        "GRN improves channel diversity",
+        "Pure ConvNet with modern normalization",
+        "Supports all dimensionalities"
+      ],
+      "cons": [
+        "Full benefits require self-supervised pretraining pipeline",
+        "Higher memory than V2 Tiny",
+        "2* parameters of Tiny variant"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "vision",
+        "modern-cnn",
+        "self-supervised",
+        "wide",
+        "grn"
+      ]
+    },
+    {
+      "id": "convnext_v2_base",
+      "display_name": "ConvNeXt V2 Base",
+      "architecture_family": "CNN",
+      "author_institution": "Meta AI Research (Sanghyun Woo et al.)",
+      "year_published": 2023,
+      "params_m": 87.7,
+      "size_mb": 350.0,
+      "supported_dims": [
+        1,
+        2,
+        3
+      ],
+      "is_pretrained": false,
+      "short_description": "Base ConvNeXt V2 — top-tier ConvNet performance",
+      "description": "ConvNeXt V2 Base represents the pinnacle of pure convolutional architecture design, combining 87.7M parameters with GRN normalization and FCMAE compatibility. When pretrained with FCMAE on ImageNet, it achieves accuracy competitive with or exceeding masked-autoencoder ViT models, demonstrating that the ConvNet paradigm can match Transformer-based self-supervised learning when properly designed.",
+      "best_for": "Large-scale tasks with modern ConvNet architecture",
+      "pros": [
+        "Matches MAE-ViT accuracy with pure convolutions",
+        "State-of-the-art ConvNet with self-supervised pretraining",
+        "Hierarchical multi-scale features",
+        "Supports all dimensionalities"
+      ],
+      "cons": [
+        "High compute and memory requirements",
+        "Requires FCMAE for best results",
+        "Diminishing supervised-only gains over V1"
+      ],
+      "compute_tier": "High",
+      "tags": [
+        "vision",
+        "modern-cnn",
+        "state-of-the-art",
+        "self-supervised",
+        "large-scale"
+      ]
+    },
+    {
+      "id": "convnext_v2_tiny_pretrained",
+      "display_name": "ConvNeXt V2 Tiny (Pretrained)",
+      "architecture_family": "CNN",
+      "author_institution": "Meta AI Research (Sanghyun Woo et al.)",
+      "year_published": 2023,
+      "params_m": 27.9,
+      "size_mb": 112.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "ConvNeXt V2 Tiny with pretrained weights",
+      "description": "ConvNeXt V2 Tiny pretrained combines the GRN-enhanced architecture with weights learned through modern training paradigms. The pretrained features capture robust visual representations that transfer exceptionally well to downstream 2D tasks, especially benefiting from the improved feature diversity enforced by Global Response Normalization during pretraining.",
+      "best_for": "State-of-the-art 2D transfer learning",
+      "pros": [
+        "GRN-enhanced pretrained features for superior transfer learning",
+        "Modern architecture with robust representations",
+        "Strong fine-tuning performance across domains",
+        "Competitive with pretrained Swin Transformers"
+      ],
+      "cons": [
+        "2D only",
+        "Larger than lightweight pretrained alternatives",
+        "Requires modern augmentation for optimal fine-tuning"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "vision",
+        "transfer-learning",
+        "pretrained",
+        "grn",
+        "state-of-the-art"
+      ]
+    },
+    {
+      "id": "unireplknet_tiny",
+      "display_name": "UniRepLKNet Tiny",
+      "architecture_family": "CNN",
+      "author_institution": "Tsinghua University / MEGVII (Xiaohan Ding et al.)",
+      "year_published": 2023,
+      "params_m": 30.8,
+      "size_mb": 125.0,
+      "supported_dims": [
+        1,
+        2,
+        3
+      ],
+      "is_pretrained": false,
+      "short_description": "Large-kernel ConvNet with universal perception",
+      "description": "UniRepLKNet pushes convolutional kernel sizes to extremes (up to 31*31 or larger) using structural reparameterization, enabling convolutions to capture very long-range dependencies traditionally reserved for attention mechanisms. The architecture uses dilated reparam blocks that decompose large kernels into efficient parallel branches during training, then merge them into a single large kernel for inference. This provides Transformer-like global receptive fields with CNN computational characteristics.",
+      "best_for": "Tasks requiring very large effective receptive fields",
+      "pros": [
+        "Very large receptive field rivaling attention mechanisms",
+        "Efficient via structural reparameterization",
+        "Strong on tasks requiring global context",
+        "Supports all dimensionalities natively"
+      ],
+      "cons": [
+        "Large kernel computation can be memory-intensive",
+        "Reparameterization adds training complexity",
+        "Less ecosystem support than mainstream architectures"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "vision",
+        "large-kernel",
+        "reparameterization",
+        "global-context",
+        "multi-dimensional"
+      ]
+    },
+    {
+      "id": "unireplknet_small",
+      "display_name": "UniRepLKNet Small",
+      "architecture_family": "CNN",
+      "author_institution": "Tsinghua University / MEGVII (Xiaohan Ding et al.)",
+      "year_published": 2023,
+      "params_m": 56.0,
+      "size_mb": 225.0,
+      "supported_dims": [
+        1,
+        2,
+        3
+      ],
+      "is_pretrained": false,
+      "short_description": "Wider UniRepLKNet with larger kernels",
+      "description": "UniRepLKNet Small scales the channel widths and potentially kernel sizes beyond the Tiny variant, providing greater capacity for capturing complex spatial relationships. The structural reparameterization technique ensures that despite the massive effective kernel sizes, inference remains efficient by merging parallel branches. This variant is suited for tasks where spatial relationships span large portions of the input.",
+      "best_for": "Complex spatial patterns across all dimensions",
+      "pros": [
+        "Massive effective receptive field",
+        "Efficient inference via reparameterized kernels",
+        "Strong for spatially complex tasks",
+        "Multi-dimensional support"
+      ],
+      "cons": [
+        "High memory during training due to parallel branches",
+        "Larger model size",
+        "Niche — less community adoption"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "vision",
+        "large-kernel",
+        "spatial",
+        "wide",
+        "reparameterization"
+      ]
+    },
+    {
+      "id": "unireplknet_base",
+      "display_name": "UniRepLKNet Base",
+      "architecture_family": "CNN",
+      "author_institution": "Tsinghua University / MEGVII (Xiaohan Ding et al.)",
+      "year_published": 2023,
+      "params_m": 97.6,
+      "size_mb": 390.0,
+      "supported_dims": [
+        1,
+        2,
+        3
+      ],
+      "is_pretrained": false,
+      "short_description": "Base UniRepLKNet — maximum receptive field",
+      "description": "UniRepLKNet Base is the largest variant, maximizing both channel width and kernel size to achieve the broadest possible receptive field in a pure convolutional architecture. At 97.6M parameters, it demonstrates that extremely large convolutional kernels can compete with global attention on tasks requiring understanding of full-image context, such as semantic segmentation and object detection at scale.",
+      "best_for": "Large-scale tasks needing global context capture",
+      "pros": [
+        "Maximum receptive field in a ConvNet",
+        "Competitive with global attention on dense tasks",
+        "Efficient inference after reparameterization",
+        "Full multi-dimensional support"
+      ],
+      "cons": [
+        "Very high compute and memory requirements",
+        "Complex reparameterization training setup",
+        "Large model file size"
+      ],
+      "compute_tier": "High",
+      "tags": [
+        "vision",
+        "large-kernel",
+        "global-context",
+        "large-scale",
+        "dense-prediction"
+      ]
+    },
+    {
+      "id": "vit_tiny",
+      "display_name": "ViT Tiny",
+      "architecture_family": "Transformer",
+      "author_institution": "Google Brain (Alexey Dosovitskiy et al.)",
+      "year_published": 2020,
+      "params_m": 5.4,
+      "size_mb": 22.0,
+      "supported_dims": [
+        1,
+        2
+      ],
+      "is_pretrained": false,
+      "short_description": "Compact Vision Transformer with patch embeddings",
+      "description": "ViT Tiny is a compact variant of the Vision Transformer that splits input images into fixed-size patches, linearly embeds them, and processes the sequence with standard Transformer encoder blocks featuring multi-head self-attention (MHSA). Introduced by Google Brain in 2020, ViT demonstrated that pure Transformer architectures — originally designed for NLP — can achieve excellent results on image classification when trained on sufficient data, challenging the dominance of CNNs.",
+      "best_for": "Small datasets where attention mechanisms help",
+      "pros": [
+        "Global self-attention captures long-range dependencies",
+        "Lightweight for a Transformer architecture",
+        "Flexible — works on 1D and 2D data",
+        "Foundation for many modern vision architectures"
+      ],
+      "cons": [
+        "Requires more data than CNNs to train well from scratch",
+        "Quadratic complexity with sequence length",
+        "No built-in inductive bias for spatial locality"
+      ],
+      "compute_tier": "Low",
+      "tags": [
+        "vision",
+        "transformer",
+        "self-attention",
+        "patch-embedding",
+        "lightweight"
+      ]
+    },
+    {
+      "id": "vit_small",
+      "display_name": "ViT Small",
+      "architecture_family": "Transformer",
+      "author_institution": "Google Brain (Alexey Dosovitskiy et al.)",
+      "year_published": 2020,
+      "params_m": 21.4,
+      "size_mb": 86.0,
+      "supported_dims": [
+        1,
+        2
+      ],
+      "is_pretrained": false,
+      "short_description": "Standard Vision Transformer architecture",
+      "description": "ViT Small uses 384-dimensional embeddings with 6 attention heads across 12 Transformer encoder layers, providing a solid balance of model capacity and computational requirements. Each layer applies multi-head self-attention followed by an MLP block with GELU activation and LayerNorm. This mid-range configuration captures complex token interactions while remaining trainable on single-GPU setups with moderate dataset sizes.",
+      "best_for": "Medium datasets with sufficient training data",
+      "pros": [
+        "Good balance of capacity and compute for ViT family",
+        "Strong global feature modeling",
+        "Well-studied architecture with extensive research support",
+        "Supports 1D and 2D inputs"
+      ],
+      "cons": [
+        "Needs substantial training data to outperform CNNs",
+        "Quadratic attention cost limits input resolution",
+        "No hierarchical feature maps without modification"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "vision",
+        "transformer",
+        "self-attention",
+        "general-purpose",
+        "mid-range"
+      ]
+    },
+    {
+      "id": "vit_base",
+      "display_name": "ViT Base",
+      "architecture_family": "Transformer",
+      "author_institution": "Google Brain (Alexey Dosovitskiy et al.)",
+      "year_published": 2020,
+      "params_m": 85.3,
+      "size_mb": 340.0,
+      "supported_dims": [
+        1,
+        2
+      ],
+      "is_pretrained": false,
+      "short_description": "Full-scale Vision Transformer",
+      "description": "ViT Base (ViT-B/16) uses 768-dimensional embeddings with 12 attention heads across 12 layers, matching BERT-Base in architecture scale. With 85.3M parameters, it was the configuration that first demonstrated ViT could exceed CNN accuracy when pretrained on large datasets (JFT-300M). The global self-attention at every layer enables the model to learn dynamic, input-dependent feature aggregation patterns that are impossible for fixed-kernel convolutions.",
+      "best_for": "Large datasets where global self-attention is beneficial",
+      "pros": [
+        "Input-dependent dynamic attention patterns",
+        "Strong accuracy with sufficient training data",
+        "Foundation model for many downstream applications",
+        "Extensive pretrained checkpoint ecosystem"
+      ],
+      "cons": [
+        "High memory and compute requirements",
+        "Quadratic complexity limits high-resolution inputs",
+        "Underperforms CNNs on small datasets without pretraining"
+      ],
+      "compute_tier": "High",
+      "tags": [
+        "vision",
+        "transformer",
+        "large-scale",
+        "foundation-model",
+        "global-attention"
+      ]
+    },
+    {
+      "id": "swin_t",
+      "display_name": "Swin Tiny",
+      "architecture_family": "Transformer",
+      "author_institution": "Microsoft Research (Ze Liu et al.)",
+      "year_published": 2021,
+      "params_m": 27.5,
+      "size_mb": 112.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Shifted-window Transformer — efficient local attention",
+      "description": "Swin Transformer revolutionized vision Transformers by introducing shifted-window (Swin) self-attention, which computes attention within local windows and shifts them between layers to enable cross-window connections. This achieves linear computational complexity with respect to image size (vs. quadratic for ViT) while maintaining a hierarchical feature pyramid similar to CNNs. The 2021 architecture won the ICCV Best Paper Honorable Mention and became a dominant backbone for detection and segmentation.",
+      "best_for": "2D tasks needing hierarchical feature extraction",
+      "pros": [
+        "Linear complexity enables high-resolution inputs",
+        "Hierarchical features ideal for detection/segmentation",
+        "Shifted windows enable cross-window interaction",
+        "Pretrained weights deliver strong transfer learning"
+      ],
+      "cons": [
+        "2D only — window partitioning is 2D-specific",
+        "Window size is a fixed hyperparameter",
+        "More complex implementation than vanilla ViT"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "vision",
+        "transformer",
+        "shifted-window",
+        "hierarchical",
+        "detection"
+      ]
+    },
+    {
+      "id": "swin_s",
+      "display_name": "Swin Small",
+      "architecture_family": "Transformer",
+      "author_institution": "Microsoft Research (Ze Liu et al.)",
+      "year_published": 2021,
+      "params_m": 48.8,
+      "size_mb": 195.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Larger Swin Transformer with more capacity",
+      "description": "Swin Small doubles the depth of the third stage compared to Swin Tiny, significantly increasing the model's capacity for learning complex visual patterns at the 1/16 resolution level. With 48.8M parameters, it provides a meaningful accuracy boost while retaining the efficient shifted-window attention mechanism. This variant is well-suited for tasks requiring richer mid-level feature representations.",
+      "best_for": "Medium-to-large 2D datasets with complex patterns",
+      "pros": [
+        "Deeper third stage for richer mid-level features",
+        "Efficient shifted-window attention scales well",
+        "Strong pretrained features for transfer learning",
+        "Excellent for detection and segmentation tasks"
+      ],
+      "cons": [
+        "2D only",
+        "Higher memory than Swin Tiny",
+        "Fixed window size limits adaptability"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "vision",
+        "transformer",
+        "shifted-window",
+        "deep",
+        "segmentation"
+      ]
+    },
+    {
+      "id": "swin_b",
+      "display_name": "Swin Base",
+      "architecture_family": "Transformer",
+      "author_institution": "Microsoft Research (Ze Liu et al.)",
+      "year_published": 2021,
+      "params_m": 86.7,
+      "size_mb": 345.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Base Swin Transformer — strong 2D performance",
+      "description": "Swin Base is the largest standard Swin variant with 86.7M parameters and 128-dimensional initial embeddings, providing maximum capacity within the Swin architecture family. Its hierarchical four-stage design with progressive downsampling generates rich multi-scale feature maps. Combined with shifted-window attention's linear complexity, it can process high-resolution images efficiently while capturing both local details and global context through cross-window interactions.",
+      "best_for": "Large 2D datasets with hierarchical features",
+      "pros": [
+        "Maximum capacity in the Swin family",
+        "Multi-scale features for dense prediction tasks",
+        "Linear complexity enables practical high-resolution processing",
+        "State-of-the-art pretrained features"
+      ],
+      "cons": [
+        "High GPU memory requirements",
+        "2D only",
+        "Complex shifted-window implementation"
+      ],
+      "compute_tier": "High",
+      "tags": [
+        "vision",
+        "transformer",
+        "shifted-window",
+        "large-scale",
+        "multi-scale"
+      ]
+    },
+    {
+      "id": "maxvit_tiny",
+      "display_name": "MaxViT Tiny",
+      "architecture_family": "Transformer",
+      "author_institution": "Google Research (Zhengzhong Tu et al.)",
+      "year_published": 2022,
+      "params_m": 30.1,
+      "size_mb": 120.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Multi-axis attention with blocked local + dilated global",
+      "description": "MaxViT introduces a novel multi-axis attention mechanism that combines blocked local attention (within spatial windows) and dilated global attention (across a grid of sparsely sampled tokens) in alternating layers. This dual-attention design captures both fine-grained local patterns and long-range global dependencies with linear complexity. Each MaxViT block also includes MBConv layers, creating a hybrid CNN-Transformer architecture that benefits from both convolutional inductive biases and global attention.",
+      "best_for": "2D tasks needing both local and global attention",
+      "pros": [
+        "Captures both local and global dependencies efficiently",
+        "Linear complexity via blocked + dilated attention",
+        "Hybrid MBConv+attention design leverages best of both worlds",
+        "Strong across classification, detection, and generation"
+      ],
+      "cons": [
+        "2D only",
+        "Complex multi-axis attention implementation",
+        "Less widely adopted than Swin Transformer"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "vision",
+        "transformer",
+        "multi-axis-attention",
+        "hybrid",
+        "mbconv"
+      ]
+    },
+    {
+      "id": "maxvit_small",
+      "display_name": "MaxViT Small",
+      "architecture_family": "Transformer",
+      "author_institution": "Google Research (Zhengzhong Tu et al.)",
+      "year_published": 2022,
+      "params_m": 67.6,
+      "size_mb": 270.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Larger MaxViT with expanded capacity",
+      "description": "MaxViT Small increases the channel dimensions and block counts compared to MaxViT Tiny, providing greater capacity for learning complex multi-scale visual features. The expanded multi-axis attention mechanism can capture more diverse spatial relationships, while the increased MBConv capacity enriches local feature extraction. This variant targets tasks demanding higher accuracy with complex spatial dependencies.",
+      "best_for": "Complex 2D tasks with multi-scale feature needs",
+      "pros": [
+        "Enhanced multi-axis attention for complex patterns",
+        "Stronger local+global feature integration",
+        "Good scaling from Tiny variant",
+        "Hybrid architecture benefits from both paradigms"
+      ],
+      "cons": [
+        "Significant GPU memory requirements",
+        "2D only",
+        "Training complexity due to multi-axis attention"
+      ],
+      "compute_tier": "High",
+      "tags": [
+        "vision",
+        "transformer",
+        "multi-axis-attention",
+        "high-capacity",
+        "multi-scale"
+      ]
+    },
+    {
+      "id": "maxvit_base",
+      "display_name": "MaxViT Base",
+      "architecture_family": "Transformer",
+      "author_institution": "Google Research (Zhengzhong Tu et al.)",
+      "year_published": 2022,
+      "params_m": 119.1,
+      "size_mb": 475.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Full-scale MaxViT — state-of-the-art multi-axis",
+      "description": "MaxViT Base is the largest variant at 119.1M parameters, maximizing the multi-axis attention mechanism's capacity. At this scale, the combination of blocked local attention, dilated global attention, and MBConv layers creates one of the most expressive vision architectures available. It has shown particularly strong results on image generation tasks (as a backbone for diffusion models) in addition to standard classification and detection benchmarks.",
+      "best_for": "Large 2D datasets with ample GPU resources",
+      "pros": [
+        "Maximum multi-axis attention capacity",
+        "State-of-the-art on multiple vision benchmarks",
+        "Excellent backbone for generative models",
+        "Comprehensive local+global feature modeling"
+      ],
+      "cons": [
+        "Very high compute and memory requirements",
+        "2D only",
+        "Complex architecture — harder to debug and customize"
+      ],
+      "compute_tier": "High",
+      "tags": [
+        "vision",
+        "transformer",
+        "multi-axis-attention",
+        "state-of-the-art",
+        "generative"
+      ]
+    },
+    {
+      "id": "fastvit_t8",
+      "display_name": "FastViT-T8",
+      "architecture_family": "Hybrid",
+      "author_institution": "Apple (Pavan Kumar Anasosalu Vasu et al.)",
+      "year_published": 2023,
+      "params_m": 4.0,
+      "size_mb": 16.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Ultrafast hybrid CNN-ViT with RepMixer",
+      "description": "FastViT-T8 introduces RepMixer — a reparameterizable token mixing layer that uses depthwise convolutions during training and merges them into a single efficient operation at inference. Combined with a hybrid architecture that uses convolutional stages early and attention stages later, FastViT achieves a remarkable latency-accuracy trade-off. Developed by Apple for on-device deployment, it is one of the fastest hybrid vision models available.",
+      "best_for": "Real-time 2D inference with minimal resources",
+      "pros": [
+        "Extremely fast inference via structural reparameterization",
+        "Excellent latency-accuracy trade-off",
+        "Designed for on-device and real-time deployment",
+        "RepMixer is highly hardware-efficient"
+      ],
+      "cons": [
+        "2D only",
+        "Limited capacity for complex visual tasks",
+        "Niche — less community support than mainstream models"
+      ],
+      "compute_tier": "Edge",
+      "tags": [
+        "mobile",
+        "hybrid",
+        "reparameterization",
+        "real-time",
+        "on-device"
+      ]
+    },
+    {
+      "id": "fastvit_t12",
+      "display_name": "FastViT-T12",
+      "architecture_family": "Hybrid",
+      "author_institution": "Apple (Pavan Kumar Anasosalu Vasu et al.)",
+      "year_published": 2023,
+      "params_m": 6.8,
+      "size_mb": 27.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Fast hybrid with slightly more capacity",
+      "description": "FastViT-T12 increases model capacity over T8 with wider channels and more RepMixer blocks, providing better accuracy while retaining the ultra-fast inference characteristics of the FastViT family. The additional capacity enables it to capture more complex visual patterns, making it suitable for applications where T8's accuracy is slightly insufficient but real-time speed is still critical.",
+      "best_for": "Speed-critical 2D tasks with better accuracy",
+      "pros": [
+        "Better accuracy than T8 with similar speed profile",
+        "RepMixer enables efficient inference",
+        "Good for edge deployment requiring moderate accuracy",
+        "Apple-optimized for mobile hardware"
+      ],
+      "cons": [
+        "2D only",
+        "Still limited capacity vs. full-size models",
+        "Smaller ecosystem than mainstream architectures"
+      ],
+      "compute_tier": "Edge",
+      "tags": [
+        "mobile",
+        "hybrid",
+        "fast-inference",
+        "edge",
+        "repmixer"
+      ]
+    },
+    {
+      "id": "fastvit_s12",
+      "display_name": "FastViT-S12",
+      "architecture_family": "Hybrid",
+      "author_institution": "Apple (Pavan Kumar Anasosalu Vasu et al.)",
+      "year_published": 2023,
+      "params_m": 8.8,
+      "size_mb": 35.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Small FastViT balancing speed and accuracy",
+      "description": "FastViT-S12 moves into the 'Small' model tier with 8.8M parameters, using wider channels than the T-series while maintaining RepMixer's efficient token mixing. This variant balances inference speed and modeling capacity, making it practical for production deployments where both latency and accuracy requirements are moderate. The hybrid CNN-attention design captures local patterns via convolutions and global relationships via later attention stages.",
+      "best_for": "Efficient 2D tasks needing moderate complexity",
+      "pros": [
+        "Good balance of speed and accuracy in the FastViT family",
+        "Efficient hybrid CNN-attention design",
+        "Suitable for production edge deployment",
+        "Pretrained weights available"
+      ],
+      "cons": [
+        "2D only",
+        "Accuracy still below full-size models",
+        "Limited multi-scale feature generation"
+      ],
+      "compute_tier": "Low",
+      "tags": [
+        "mobile",
+        "hybrid",
+        "balanced",
+        "production",
+        "efficient"
+      ]
+    },
+    {
+      "id": "fastvit_sa12",
+      "display_name": "FastViT-SA12",
+      "architecture_family": "Hybrid",
+      "author_institution": "Apple (Pavan Kumar Anasosalu Vasu et al.)",
+      "year_published": 2023,
+      "params_m": 10.9,
+      "size_mb": 44.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "FastViT with self-attention stages",
+      "description": "FastViT-SA12 adds explicit self-attention (SA) stages on top of the RepMixer token mixing, creating a more expressive model that can capture complex global interactions. The 'SA' suffix indicates additional attention blocks in the later network stages, providing a meaningful accuracy boost over the S12 variant at a moderate latency cost. This design is optimal when slightly more compute budget is available for improved feature quality.",
+      "best_for": "2D tasks benefiting from attention at higher resolution",
+      "pros": [
+        "Self-attention stages add global reasoning capability",
+        "Meaningful accuracy boost over S12",
+        "Still fast enough for near-real-time inference",
+        "Hybrid design leverages best of CNN and attention"
+      ],
+      "cons": [
+        "2D only",
+        "Self-attention adds latency vs. pure RepMixer variants",
+        "Higher memory than T-series models"
+      ],
+      "compute_tier": "Low",
+      "tags": [
+        "hybrid",
+        "self-attention",
+        "efficient",
+        "near-real-time",
+        "production"
+      ]
+    },
+    {
+      "id": "caformer_s18",
+      "display_name": "CAFormer-S18",
+      "architecture_family": "Hybrid",
+      "author_institution": "Sea AI Lab / NUS (Weihao Yu et al.)",
+      "year_published": 2022,
+      "params_m": 26.3,
+      "size_mb": 105.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "MetaFormer with separable attention and convolutions",
+      "description": "CAFormer (Convolution-Attention Former) is built on the MetaFormer hypothesis — that the general Transformer architecture is more important than the specific token mixer. It uses depthwise separable convolutions in early stages for local feature extraction and vanilla self-attention in later stages for global reasoning. This principled hybrid design, validated by the MetaFormer framework from Sea AI Lab, achieves excellent accuracy by leveraging the right inductive bias at each spatial resolution.",
+      "best_for": "2D tasks needing strong token mixing strategies",
+      "pros": [
+        "Principled design based on MetaFormer framework",
+        "Optimal token mixer at each resolution stage",
+        "Strong accuracy-compute trade-off",
+        "Well-validated architecture design methodology"
+      ],
+      "cons": [
+        "2D only",
+        "Late-stage attention increases memory for large inputs",
+        "Less mainstream than Swin or ConvNeXt"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "hybrid",
+        "metaformer",
+        "separable-attention",
+        "principled-design",
+        "token-mixing"
+      ]
+    },
+    {
+      "id": "caformer_s36",
+      "display_name": "CAFormer-S36",
+      "architecture_family": "Hybrid",
+      "author_institution": "Sea AI Lab / NUS (Weihao Yu et al.)",
+      "year_published": 2022,
+      "params_m": 39.2,
+      "size_mb": 155.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Deeper CAFormer with 36 transformer blocks",
+      "description": "CAFormer-S36 doubles the depth of the S18 variant to 36 blocks, providing significantly more layers for both convolutional and attention-based token mixing. The increased depth enables the model to learn more complex feature transformations and more nuanced attention patterns in the later stages. This deeper variant excels on tasks requiring fine-grained distinctions or complex spatial reasoning.",
+      "best_for": "Complex 2D patterns requiring deeper processing",
+      "pros": [
+        "Double the depth of S18 for more complex features",
+        "Strong performance on fine-grained recognition",
+        "MetaFormer-validated design scales well with depth",
+        "Good accuracy at moderate parameter count"
+      ],
+      "cons": [
+        "2D only",
+        "Deeper network increases training time",
+        "Attention stages compound memory at depth"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "hybrid",
+        "metaformer",
+        "deep",
+        "fine-grained",
+        "attention"
+      ]
+    },
+    {
+      "id": "caformer_m36",
+      "display_name": "CAFormer-M36",
+      "architecture_family": "Hybrid",
+      "author_institution": "Sea AI Lab / NUS (Weihao Yu et al.)",
+      "year_published": 2022,
+      "params_m": 56.9,
+      "size_mb": 230.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Medium-width CAFormer with 36 blocks",
+      "description": "CAFormer-M36 combines the 36-block depth with wider channel dimensions ('Medium' width), creating the most capable CAFormer variant in this collection. The expanded width provides richer feature representations at every stage, while the depth enables complex multi-step reasoning. This variant demonstrates the MetaFormer design's capacity to scale effectively along both width and depth dimensions.",
+      "best_for": "High-capacity 2D feature extraction",
+      "pros": [
+        "Maximum capacity in the CAFormer family",
+        "Rich features from combined depth and width scaling",
+        "Strong on challenging 2D benchmarks",
+        "Proven MetaFormer design methodology"
+      ],
+      "cons": [
+        "High GPU memory requirements",
+        "2D only",
+        "Diminishing returns vs. S36 on simpler tasks"
+      ],
+      "compute_tier": "High",
+      "tags": [
+        "hybrid",
+        "metaformer",
+        "high-capacity",
+        "wide",
+        "deep"
+      ]
+    },
+    {
+      "id": "poolformer_s12",
+      "display_name": "PoolFormer-S12",
+      "architecture_family": "Hybrid",
+      "author_institution": "Sea AI Lab / NUS (Weihao Yu et al.)",
+      "year_published": 2021,
+      "params_m": 11.9,
+      "size_mb": 48.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "MetaFormer using pooling instead of attention",
+      "description": "PoolFormer is the groundbreaking architecture that validated the MetaFormer hypothesis by replacing the attention mechanism with a simple average pooling operation as the token mixer — and still achieving competitive accuracy. This 2021 experiment proved that the general Transformer-style architecture (norm → mixer → norm → MLP) is more important than the specific mixing mechanism. Despite using no learned parameters in its token mixer, PoolFormer-S12 achieves accuracy comparable to DeiT-Small.",
+      "best_for": "Efficient 2D tasks — proves architecture matters more",
+      "pros": [
+        "Groundbreaking validation of MetaFormer hypothesis",
+        "Extremely simple and efficient token mixing",
+        "No learned parameters in the mixing operation",
+        "Surprisingly strong accuracy for its simplicity"
+      ],
+      "cons": [
+        "2D only",
+        "Pooling mixer limits representational flexibility",
+        "Outperformed by learned mixers like attention and convolution"
+      ],
+      "compute_tier": "Low",
+      "tags": [
+        "hybrid",
+        "metaformer",
+        "pooling",
+        "efficient",
+        "research"
+      ]
+    },
+    {
+      "id": "efficientvit_m1",
+      "display_name": "EfficientViT-M1",
+      "architecture_family": "Hybrid",
+      "author_institution": "MIT (Han Cai et al.)",
+      "year_published": 2023,
+      "params_m": 2.6,
+      "size_mb": 10.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Memory-efficient ViT with linear attention",
+      "description": "EfficientViT-M1 replaces the quadratic softmax attention with a linear attention mechanism (ReLU-based kernel approximation), reducing both memory usage and computation to linear complexity in sequence length. Developed at MIT, this architecture is specifically designed for deployment on memory-constrained devices. The lightweight design uses a cascaded group attention pattern that reduces redundancy across attention heads, maximizing performance per parameter.",
+      "best_for": "Ultra-lightweight 2D inference on limited hardware",
+      "pros": [
+        "Linear attention complexity reduces memory dramatically",
+        "Cascaded group attention eliminates head redundancy",
+        "Extremely small model suitable for microcontrollers",
+        "Efficient inference on CPU and edge devices"
+      ],
+      "cons": [
+        "2D only",
+        "Linear attention approximation loses some expressiveness",
+        "Very limited capacity for complex tasks"
+      ],
+      "compute_tier": "Edge",
+      "tags": [
+        "mobile",
+        "linear-attention",
+        "edge",
+        "memory-efficient",
+        "lightweight"
+      ]
+    },
+    {
+      "id": "efficientvit_b1",
+      "display_name": "EfficientViT-B1",
+      "architecture_family": "Hybrid",
+      "author_institution": "MIT (Han Cai et al.)",
+      "year_published": 2023,
+      "params_m": 7.5,
+      "size_mb": 30.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Balanced EfficientViT with cascaded attention",
+      "description": "EfficientViT-B1 scales up from the M-series with a balanced architecture that uses cascaded group attention to efficiently mix tokens across spatial dimensions. The B-series introduces wider channels and more stages while maintaining the linear-complexity attention mechanism. This variant provides a strong accuracy-speed trade-off suitable for edge GPUs and mobile devices that can handle slightly larger models than the M-series.",
+      "best_for": "Efficient 2D tasks with good accuracy-speed trade-off",
+      "pros": [
+        "Strong accuracy-latency balance",
+        "Linear attention scales to higher resolutions",
+        "Cascaded attention improves head diversity",
+        "Good for edge GPU deployment"
+      ],
+      "cons": [
+        "2D only",
+        "Linear attention less expressive than softmax attention",
+        "Less community adoption than mainstream ViTs"
+      ],
+      "compute_tier": "Low",
+      "tags": [
+        "hybrid",
+        "linear-attention",
+        "efficient",
+        "cascaded-attention",
+        "edge-gpu"
+      ]
+    },
+    {
+      "id": "efficientvit_b2",
+      "display_name": "EfficientViT-B2",
+      "architecture_family": "Hybrid",
+      "author_institution": "MIT (Han Cai et al.)",
+      "year_published": 2023,
+      "params_m": 21.8,
+      "size_mb": 87.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Larger EfficientViT for higher accuracy",
+      "description": "EfficientViT-B2 further expands the B-series with wider channels and deeper stages, pushing the accuracy boundary while retaining linear-complexity attention. At 21.8M parameters, it enters the mid-range model category and competes with standard ViT-Small and EfficientNet-B2 while offering superior inference speed due to its efficient attention mechanism. The architecture demonstrates that linear attention can scale to meaningful model sizes without sacrificing quality.",
+      "best_for": "Medium 2D datasets with memory-efficient attention",
+      "pros": [
+        "Mid-range accuracy with efficient linear attention",
+        "Competes with ViT-Small at faster inference",
+        "Scales linear attention to meaningful model sizes",
+        "Good pretrained features for transfer learning"
+      ],
+      "cons": [
+        "2D only",
+        "Gap vs. softmax attention widens at this scale",
+        "Training may require careful hyperparameter tuning"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "hybrid",
+        "linear-attention",
+        "mid-range",
+        "efficient",
+        "scalable"
+      ]
+    },
+    {
+      "id": "efficientvit_l2",
+      "display_name": "EfficientViT-L2",
+      "architecture_family": "Hybrid",
+      "author_institution": "MIT (Han Cai et al.)",
+      "year_published": 2023,
+      "params_m": 60.5,
+      "size_mb": 240.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": true,
+      "short_description": "Large EfficientViT — high accuracy, efficient inference",
+      "description": "EfficientViT-L2 is the largest variant in the MIT EfficientViT family, pushing linear attention to 60.5M parameters. At this scale, the architecture achieves accuracy competitive with standard quadratic-attention Transformers while maintaining significantly faster inference throughput. The L-series introduces additional architectural optimizations for large-scale deployment, making it suitable for server-side inference where throughput at moderate latency is the primary concern.",
+      "best_for": "Large-scale 2D tasks prioritizing inference speed",
+      "pros": [
+        "High accuracy comparable to standard large ViTs",
+        "Significantly faster inference than quadratic-attention models",
+        "Optimized for server-side throughput",
+        "Strong pretrained representations"
+      ],
+      "cons": [
+        "High memory for training",
+        "2D only",
+        "Linear attention approximation gap still present at scale"
+      ],
+      "compute_tier": "High",
+      "tags": [
+        "hybrid",
+        "linear-attention",
+        "large-scale",
+        "high-throughput",
+        "server-side"
+      ]
+    },
+    {
+      "id": "mamba_1d",
+      "display_name": "Mamba-1D",
+      "architecture_family": "SSM",
+      "author_institution": "Carnegie Mellon / Princeton (Albert Gu & Tri Dao)",
+      "year_published": 2023,
+      "params_m": 3.4,
+      "size_mb": 14.0,
+      "supported_dims": [
+        1
+      ],
+      "is_pretrained": false,
+      "short_description": "Selective state space model for 1D sequences",
+      "description": "Mamba introduces selective state spaces — a groundbreaking evolution of structured SSMs where the state transition matrices are input-dependent, allowing the model to selectively focus on or ignore information along the sequence. Combined with a hardware-aware parallel scan algorithm, Mamba achieves linear-time sequence processing with the expressiveness of attention-like mechanisms. This 2023 architecture has rapidly become the leading alternative to Transformers for long-sequence modeling.",
+      "best_for": "Long 1D sequences with linear-time processing",
+      "pros": [
+        "Linear-time sequence processing vs. quadratic attention",
+        "Input-dependent state selection for dynamic filtering",
+        "Hardware-efficient parallel scan implementation",
+        "State-of-the-art SSM for sequence tasks"
+      ],
+      "cons": [
+        "1D only — not directly applicable to 2D/3D data",
+        "Relatively new with evolving best practices",
+        "Requires custom CUDA kernels for optimal speed"
+      ],
+      "compute_tier": "Low",
+      "tags": [
+        "sequence",
+        "ssm",
+        "selective",
+        "linear-complexity",
+        "long-range"
+      ]
+    },
+    {
+      "id": "s4d_small",
+      "display_name": "S4D Small",
+      "architecture_family": "SSM",
+      "author_institution": "Stanford / Carnegie Mellon (Albert Gu et al.)",
+      "year_published": 2022,
+      "params_m": 0.8,
+      "size_mb": 3.0,
+      "supported_dims": [
+        1
+      ],
+      "is_pretrained": false,
+      "short_description": "Compact diagonal structured state space model",
+      "description": "S4D (Structured State Space for Sequences — Diagonal) simplifies the original S4 model by using diagonal state matrices instead of the full HiPPO-initialized DPLR matrices. This diagonal parameterization is mathematically equivalent for many practical cases while being significantly simpler to implement and faster to compute. At only 0.8M parameters, S4D Small is one of the smallest models capable of capturing very long-range dependencies in sequential data.",
+      "best_for": "Very long 1D signals with minimal parameters",
+      "pros": [
+        "Extremely small model captures long-range dependencies",
+        "Simplified diagonal parameterization is easy to implement",
+        "Sub-quadratic complexity for very long sequences",
+        "Minimal hardware requirements"
+      ],
+      "cons": [
+        "1D only",
+        "Diagonal simplification may lose some expressiveness",
+        "Fixed (non-selective) state transitions"
+      ],
+      "compute_tier": "Edge",
+      "tags": [
+        "sequence",
+        "ssm",
+        "diagonal",
+        "ultra-lightweight",
+        "long-range"
+      ]
+    },
+    {
+      "id": "s4d",
+      "display_name": "S4D",
+      "architecture_family": "SSM",
+      "author_institution": "Stanford / Carnegie Mellon (Albert Gu et al.)",
+      "year_published": 2022,
+      "params_m": 3.2,
+      "size_mb": 13.0,
+      "supported_dims": [
+        1
+      ],
+      "is_pretrained": false,
+      "short_description": "Diagonal structured state space model",
+      "description": "S4D is the standard-sized diagonal state space model that models sequential data through continuous-time linear recurrences discretized for digital processing. The diagonal state matrix enables efficient parallel computation via convolution in training mode and recurrent processing at inference. S4D captures dependencies across thousands of time steps, making it particularly effective for audio, scientific signals, and other long-range sequential tasks.",
+      "best_for": "Long-range 1D dependencies at sub-quadratic cost",
+      "pros": [
+        "Efficient long-range dependency modeling",
+        "Dual computation modes: convolution (train) and recurrence (infer)",
+        "Well-suited for audio and scientific signal processing",
+        "Strong theoretical foundations from control theory"
+      ],
+      "cons": [
+        "1D only",
+        "Non-selective — treats all inputs uniformly",
+        "May underperform attention on tasks requiring content-based reasoning"
+      ],
+      "compute_tier": "Low",
+      "tags": [
+        "sequence",
+        "ssm",
+        "diagonal",
+        "long-range",
+        "signal-processing"
+      ]
+    },
+    {
+      "id": "s4d_large",
+      "display_name": "S4D Large",
+      "architecture_family": "SSM",
+      "author_institution": "Stanford / Carnegie Mellon (Albert Gu et al.)",
+      "year_published": 2022,
+      "params_m": 11.0,
+      "size_mb": 44.0,
+      "supported_dims": [
+        1
+      ],
+      "is_pretrained": false,
+      "short_description": "Large S4D with expanded state dimensions",
+      "description": "S4D Large expands the state dimensions and channel widths of the standard S4D model, providing greater capacity for capturing complex long-range temporal patterns. The larger state space enables more nuanced representations of sequential dynamics, while the increased channel width allows for richer feature extraction at each time step. This variant targets challenging 1D tasks where the standard S4D's capacity is insufficient.",
+      "best_for": "Complex 1D patterns requiring more model capacity",
+      "pros": [
+        "Expanded state space for complex temporal dynamics",
+        "Greater capacity than standard S4D",
+        "Maintains sub-quadratic complexity at larger scale",
+        "Strong for complex audio and signal tasks"
+      ],
+      "cons": [
+        "1D only",
+        "Higher memory than standard S4D",
+        "Non-selective state transitions limit content-based reasoning"
+      ],
+      "compute_tier": "Low",
+      "tags": [
+        "sequence",
+        "ssm",
+        "high-capacity",
+        "temporal",
+        "signal-processing"
+      ]
+    },
+    {
+      "id": "vim_tiny",
+      "display_name": "Vision Mamba Tiny",
+      "architecture_family": "SSM",
+      "author_institution": "Huazhong UST / Horizon Robotics (Lianghui Zhu et al.)",
+      "year_published": 2024,
+      "params_m": 6.6,
+      "size_mb": 26.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": false,
+      "short_description": "Mamba-based architecture adapted for 2D vision",
+      "description": "Vision Mamba (Vim) adapts the selective state space model to 2D vision by flattening image patches into sequences and processing them with bidirectional Mamba blocks. The bidirectional scanning — processing patches left-to-right and right-to-left — enables the model to capture spatial relationships in both directions, partially compensating for the loss of 2D spatial structure. Vim achieves competitive accuracy with ViT while scaling linearly with image resolution instead of quadratically.",
+      "best_for": "2D tasks with long-range spatial dependencies",
+      "pros": [
+        "Linear complexity enables high-resolution image processing",
+        "Bidirectional scanning captures spatial context",
+        "Competitive with ViT at lower compute cost",
+        "Novel SSM approach to vision tasks"
+      ],
+      "cons": [
+        "2D patch flattening loses some spatial inductive bias",
+        "Relatively new — fewer pretrained checkpoints available",
+        "Bidirectional scanning adds implementation complexity"
+      ],
+      "compute_tier": "Low",
+      "tags": [
+        "vision",
+        "ssm",
+        "mamba",
+        "linear-complexity",
+        "bidirectional"
+      ]
+    },
+    {
+      "id": "vim_small",
+      "display_name": "Vision Mamba Small",
+      "architecture_family": "SSM",
+      "author_institution": "Huazhong UST / Horizon Robotics (Lianghui Zhu et al.)",
+      "year_published": 2024,
+      "params_m": 51.1,
+      "size_mb": 205.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": false,
+      "short_description": "Larger Vision Mamba with SSM scanning",
+      "description": "Vision Mamba Small scales up the Vim architecture with wider state dimensions and more Mamba blocks, providing greater capacity for learning complex 2D visual representations through SSM-based sequence processing. The increased model size enables richer bidirectional scanning patterns and more expressive state dynamics. At 51.1M parameters, it competes with ViT-Small and Swin-Tiny while offering better scaling to high-resolution inputs.",
+      "best_for": "Medium-to-large 2D datasets with sub-quadratic scaling",
+      "pros": [
+        "Sub-quadratic scaling for high-resolution 2D inputs",
+        "Richer state dynamics than Vim Tiny",
+        "Competitive with established ViT/Swin models",
+        "Efficient for large image processing"
+      ],
+      "cons": [
+        "2D only",
+        "SSM vision paradigm still maturing",
+        "Limited pretrained model availability"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "vision",
+        "ssm",
+        "mamba",
+        "scalable",
+        "high-resolution"
+      ]
+    },
+    {
+      "id": "vim_base",
+      "display_name": "Vision Mamba Base",
+      "architecture_family": "SSM",
+      "author_institution": "Huazhong UST / Horizon Robotics (Lianghui Zhu et al.)",
+      "year_published": 2024,
+      "params_m": 201.4,
+      "size_mb": 805.0,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": false,
+      "short_description": "Full-scale Vision Mamba — maximum SSM capacity",
+      "description": "Vision Mamba Base is the largest Vim variant at 201.4M parameters, pushing SSM-based vision processing to its current limits. The massive state space and wide channels enable the model to learn extremely rich bidirectional representations through selective state transitions. While resource-intensive, it demonstrates the potential of SSM architectures to scale to large vision models, offering a fundamentally different computational paradigm from Transformer-based vision.",
+      "best_for": "Large 2D datasets with very long-range dependencies",
+      "pros": [
+        "Maximum SSM capacity for vision tasks",
+        "Linear complexity advantage at very high resolutions",
+        "Explores the frontier of SSM-based vision",
+        "Rich learned representations from large state space"
+      ],
+      "cons": [
+        "Very high compute and memory requirements",
+        "2D only",
+        "Largest model with least mature training recipes"
+      ],
+      "compute_tier": "High",
+      "tags": [
+        "vision",
+        "ssm",
+        "mamba",
+        "large-scale",
+        "research-frontier"
+      ]
+    },
+    {
+      "id": "tcn_small",
+      "display_name": "TCN Small",
+      "architecture_family": "CNN",
+      "author_institution": "CMU (Shaojie Bai, J. Zico Kolter, Vladlen Koltun)",
+      "year_published": 2018,
+      "params_m": 0.9,
+      "size_mb": 4.0,
+      "supported_dims": [
+        1
+      ],
+      "is_pretrained": false,
+      "short_description": "Compact temporal convolutional network",
+      "description": "TCN Small is a compact temporal convolutional network that uses causal dilated convolutions — convolutions that exponentially increase their dilation factor at each layer to create an exponentially growing receptive field. Combined with residual connections and weight normalization, TCNs demonstrated in 2018 that convolutional architectures could match or exceed RNN/LSTM performance on sequence modeling benchmarks while being more parallelizable and having more stable gradients.",
+      "best_for": "Short 1D time series with limited compute budget",
+      "pros": [
+        "Extremely lightweight for temporal processing",
+        "Parallelizable — much faster than RNNs",
+        "Stable training via causal convolutions",
+        "Simple architecture easy to understand and modify"
+      ],
+      "cons": [
+        "1D only",
+        "Limited receptive field in the small variant",
+        "Fixed receptive field — cannot adapt to input length"
+      ],
+      "compute_tier": "Edge",
+      "tags": [
+        "temporal",
+        "causal-convolution",
+        "lightweight",
+        "time-series",
+        "parallelizable"
+      ]
+    },
+    {
+      "id": "tcn",
+      "display_name": "TCN",
+      "architecture_family": "CNN",
+      "author_institution": "CMU (Shaojie Bai, J. Zico Kolter, Vladlen Koltun)",
+      "year_published": 2018,
+      "params_m": 6.9,
+      "size_mb": 28.0,
+      "supported_dims": [
+        1
+      ],
+      "is_pretrained": false,
+      "short_description": "Standard temporal convolutional network",
+      "description": "The standard TCN uses multiple residual blocks of causal dilated 1D convolutions with exponentially increasing dilation factors (1, 2, 4, 8, ...), creating a large effective receptive field while maintaining a manageable parameter count. Each block includes weight normalization, ReLU activation, and dropout for regularization. This architecture provides a strong general-purpose baseline for 1D time series regression and classification tasks.",
+      "best_for": "General-purpose 1D time series regression",
+      "pros": [
+        "Strong general-purpose 1D sequence model",
+        "Exponential receptive field growth with depth",
+        "Fully parallelizable during training",
+        "Well-established baseline with extensive benchmarks"
+      ],
+      "cons": [
+        "1D only",
+        "Receptive field is fixed at architecture time",
+        "No attention mechanism for content-based selection"
+      ],
+      "compute_tier": "Low",
+      "tags": [
+        "temporal",
+        "causal-convolution",
+        "general-purpose",
+        "time-series",
+        "baseline"
+      ]
+    },
+    {
+      "id": "tcn_large",
+      "display_name": "TCN Large",
+      "architecture_family": "CNN",
+      "author_institution": "CMU (Shaojie Bai, J. Zico Kolter, Vladlen Koltun)",
+      "year_published": 2018,
+      "params_m": 10.0,
+      "size_mb": 40.0,
+      "supported_dims": [
+        1
+      ],
+      "is_pretrained": false,
+      "short_description": "Large TCN with wider dilated convolutions",
+      "description": "TCN Large extends the standard TCN with wider channels and more residual blocks, significantly expanding both the receptive field and the representational capacity. The wider dilated convolutions capture more complex temporal patterns at each dilation scale, while additional blocks extend the maximum receptive field. This variant is designed for challenging temporal tasks with complex, long-range dependencies.",
+      "best_for": "Complex 1D temporal patterns at longer ranges",
+      "pros": [
+        "Extended receptive field for longer-range patterns",
+        "Wider channels capture more complex temporal features",
+        "Maintains TCN's parallelizability advantage",
+        "Strong for complex time series tasks"
+      ],
+      "cons": [
+        "1D only",
+        "Fixed receptive field at architecture time",
+        "Higher memory than standard TCN"
+      ],
+      "compute_tier": "Low",
+      "tags": [
+        "temporal",
+        "causal-convolution",
+        "high-capacity",
+        "long-range",
+        "wide"
+      ]
+    },
+    {
+      "id": "wavenet_small",
+      "display_name": "WaveNet Small",
+      "architecture_family": "CNN",
+      "author_institution": "DeepMind (Aäron van den Oord et al.)",
+      "year_published": 2016,
+      "params_m": 1.0,
+      "size_mb": 4.0,
+      "supported_dims": [
+        1
+      ],
+      "is_pretrained": false,
+      "short_description": "Compact gated dilated convolutional network",
+      "description": "WaveNet Small is a compact version of DeepMind's WaveNet architecture that uses gated dilated causal convolutions — splitting each layer's output into tanh (filter) and sigmoid (gate) branches that are element-wise multiplied. This gating mechanism, inspired by LSTM gates, allows the network to learn which temporal features to pass through. Originally designed for raw audio waveform generation, the architecture excels on any 1D signal processing task.",
+      "best_for": "Short waveform signals with limited resources",
+      "pros": [
+        "Gated activations provide learned feature selection",
+        "Efficient causal processing for streaming data",
+        "Proven on audio and signal processing tasks",
+        "Very small model footprint"
+      ],
+      "cons": [
+        "1D only",
+        "Limited capacity in the small variant",
+        "Autoregressive inference can be slow for generation"
+      ],
+      "compute_tier": "Edge",
+      "tags": [
+        "audio",
+        "gated-convolution",
+        "causal",
+        "lightweight",
+        "waveform"
+      ]
+    },
+    {
+      "id": "wavenet",
+      "display_name": "WaveNet",
+      "architecture_family": "CNN",
+      "author_institution": "DeepMind (Aäron van den Oord et al.)",
+      "year_published": 2016,
+      "params_m": 4.0,
+      "size_mb": 16.0,
+      "supported_dims": [
+        1
+      ],
+      "is_pretrained": false,
+      "short_description": "Gated dilated convolutions for sequence modeling",
+      "description": "WaveNet uses stacked gated dilated causal convolutions with skip connections that sum outputs from all layers, creating a rich multi-resolution temporal representation. The doubling dilation pattern (1, 2, 4, ..., 512) across multiple stacks creates an exponentially large receptive field capable of modeling thousands of time steps. Originally achieving state-of-the-art text-to-speech quality in 2016, WaveNet's architecture has proven effective for general 1D temporal regression and signal processing.",
+      "best_for": "Audio-like 1D signals with exponential receptive field",
+      "pros": [
+        "Exponential receptive field from dilated convolution stacks",
+        "Gated activations with skip connections create rich features",
+        "Proven on high-fidelity audio generation",
+        "Multi-resolution features from skip connection summation"
+      ],
+      "cons": [
+        "1D only",
+        "Autoregressive generation is inherently slow",
+        "Skip connections increase memory during training"
+      ],
+      "compute_tier": "Low",
+      "tags": [
+        "audio",
+        "gated-convolution",
+        "dilated",
+        "multi-resolution",
+        "generative"
+      ]
+    },
+    {
+      "id": "wavenet_large",
+      "display_name": "WaveNet Large",
+      "architecture_family": "CNN",
+      "author_institution": "DeepMind (Aäron van den Oord et al.)",
+      "year_published": 2016,
+      "params_m": 15.0,
+      "size_mb": 60.0,
+      "supported_dims": [
+        1
+      ],
+      "is_pretrained": false,
+      "short_description": "Large WaveNet with deeper dilation stacks",
+      "description": "WaveNet Large adds more dilation stacks and wider channels to the standard WaveNet, dramatically expanding both the effective receptive field and the model's capacity to capture complex temporal patterns. The deeper stacking of gated dilated convolutions enables the model to process very long waveforms with multiple overlapping receptive field patterns. This variant is suited for tasks requiring the widest possible temporal context in 1D data.",
+      "best_for": "Long 1D waveforms requiring wide temporal coverage",
+      "pros": [
+        "Very large receptive field from deep dilation stacks",
+        "High-capacity gated convolutions for complex signals",
+        "Multi-stack architecture provides redundant temporal coverage",
+        "Strong for challenging audio and scientific signals"
+      ],
+      "cons": [
+        "1D only",
+        "Significant memory requirements for deep stacks",
+        "Autoregressive inference remains slow for generation"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "audio",
+        "gated-convolution",
+        "deep",
+        "long-range",
+        "high-capacity"
+      ]
+    },
+    {
+      "id": "resnet3d_18",
+      "display_name": "3D ResNet-18",
+      "architecture_family": "CNN",
+      "author_institution": "Facebook AI Research (Du Tran et al.)",
+      "year_published": 2018,
+      "params_m": 33.2,
+      "size_mb": 135.0,
+      "supported_dims": [
+        3
+      ],
+      "is_pretrained": false,
+      "short_description": "ResNet with 3D convolutions for volumetric data",
+      "description": "3D ResNet-18 extends the ResNet architecture by replacing all 2D convolutions with 3D convolutions, enabling it to process volumetric data (depth * height * width) natively. Each 3D convolutional kernel operates across all three spatial dimensions simultaneously, capturing patterns that span the full volume. Originally developed for video understanding (treating time as the third dimension), it is equally applicable to medical imaging (CT/MRI), scientific simulations, and other volumetric datasets.",
+      "best_for": "3D volumes like CT scans or volumetric simulations",
+      "pros": [
+        "Native 3D convolutions capture volumetric patterns",
+        "ResNet skip connections work well in 3D",
+        "Applicable to medical imaging, video, and scientific data",
+        "Proven architecture extended to 3D"
+      ],
+      "cons": [
+        "3D only — cannot process 1D or 2D data",
+        "3D convolutions are computationally expensive",
+        "Much higher parameter count than 2D ResNet-18"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "3d",
+        "volumetric",
+        "medical-imaging",
+        "video",
+        "3d-convolution"
+      ]
+    },
+    {
+      "id": "mc3_18",
+      "display_name": "MC3-18",
+      "architecture_family": "CNN",
+      "author_institution": "Facebook AI Research (Du Tran et al.)",
+      "year_published": 2018,
+      "params_m": 11.5,
+      "size_mb": 46.0,
+      "supported_dims": [
+        3
+      ],
+      "is_pretrained": false,
+      "short_description": "Mixed 3D/2D convolution network — efficient 3D processing",
+      "description": "MC3-18 (Mixed Convolution 3D) uses 3D convolutions in early layers to capture low-level spatiotemporal features and transitions to 2D convolutions in later layers for efficient high-level feature extraction. This mixed approach, introduced alongside R(2+1)D by Facebook AI, significantly reduces computation compared to full 3D convolutions while retaining most of the representational benefit. The insight is that temporal and spatial features can be effectively factorized at deeper layers.",
+      "best_for": "3D data where full 3D convolutions are too expensive",
+      "pros": [
+        "Much more efficient than full 3D convolutions",
+        "Mixed 3D/2D design balances accuracy and compute",
+        "Lower parameter count than 3D ResNet-18",
+        "Good for resource-constrained 3D processing"
+      ],
+      "cons": [
+        "3D only",
+        "Later 2D layers miss some volumetric interactions",
+        "Less expressive than full 3D at capturing deep volumetric patterns"
+      ],
+      "compute_tier": "Low",
+      "tags": [
+        "3d",
+        "mixed-convolution",
+        "efficient",
+        "volumetric",
+        "factorized"
+      ]
+    },
+    {
+      "id": "unet_regression",
+      "display_name": "U-Net Regression",
+      "architecture_family": "Encoder-Decoder",
+      "author_institution": "University of Freiburg (Olaf Ronneberger et al.)",
+      "year_published": 2015,
+      "params_m": 31.0,
+      "size_mb": 125.0,
+      "supported_dims": [
+        1,
+        2,
+        3
+      ],
+      "is_pretrained": false,
+      "short_description": "U-shaped encoder-decoder for dense regression",
+      "description": "U-Net features a symmetric encoder-decoder architecture connected by skip connections at each resolution level, enabling precise localization by combining deep semantic features with shallow spatial details. Originally designed for biomedical image segmentation (2015), this regression variant replaces the classification head with continuous output, making it suitable for dense prediction tasks like depth estimation, super-resolution, and field regression. The skip connections are the key innovation, allowing the decoder to recover fine spatial details lost during encoding.",
+      "best_for": "Tasks needing multi-scale spatial context",
+      "pros": [
+        "Skip connections preserve spatial detail for precise output",
+        "Symmetric encoder-decoder captures multi-scale context",
+        "Versatile — works for any dense regression task",
+        "Supports 1D, 2D, and 3D data"
+      ],
+      "cons": [
+        "High parameter count due to symmetric architecture",
+        "Memory-intensive due to storing encoder features for skip connections",
+        "Encoder-decoder overhead for simple regression tasks"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "encoder-decoder",
+        "skip-connections",
+        "dense-prediction",
+        "multi-scale",
+        "segmentation"
+      ]
+    },
+    {
+      "id": "unet_field",
+      "display_name": "U-Net Field",
+      "architecture_family": "Encoder-Decoder",
+      "author_institution": "University of Freiburg (Olaf Ronneberger et al.)",
+      "year_published": 2015,
+      "params_m": 31.0,
+      "size_mb": 118.4,
+      "supported_dims": [
+        2
+      ],
+      "is_pretrained": false,
+      "short_description": "U-shaped encoder-decoder for dense 2D field regression",
+      "description": "U-Net Field keeps the decoder's spatial tensor and projects it to the target channels with a 1x1 convolution, predicting a full property map rather than a vector. Skip connections at every resolution level combine deep context with fine spatial detail, and the prediction is interpolated when the target grid differs from the input grid. WaveDL routes dense (N,H,W) or (N,C,H,W) targets to this model, making it suited to field reconstruction tasks such as seismic imaging and elastography.",
+      "best_for": "Reconstructing dense 2D property fields from wave data",
+      "pros": [
+        "Predicts complete spatial fields, not summary values",
+        "Skip connections preserve fine spatial detail",
+        "Output grid may differ from the input grid",
+        "Multi-channel fields share one decoder"
+      ],
+      "cons": [
+        "Requires dense field targets; not usable for vector regression",
+        "Memory-intensive: encoder features are stored for skip connections",
+        "Training CLI currently supports 2D field targets only"
+      ],
+      "compute_tier": "Medium",
+      "tags": [
+        "encoder-decoder",
+        "skip-connections",
+        "dense-prediction",
+        "field-regression",
+        "multi-scale"
+      ]
+    }
+  ]
+}

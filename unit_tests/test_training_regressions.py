@@ -13,6 +13,33 @@ from wavedl.utils.metrics import StreamingFieldMetrics
 from wavedl.utils.targets import flatten_targets_by_channel
 
 
+@pytest.fixture(autouse=True)
+def _isolated_working_directory(tmp_path, monkeypatch):
+    """Entry points default --output_dir to '.', where they open a run journal."""
+    monkeypatch.chdir(tmp_path)
+
+
+def _capture_launch(monkeypatch, launcher, captured):
+    """Record the supervised training command instead of spawning it."""
+
+    class _Child:
+        pid = 4242
+        returncode = 0
+
+        def __init__(self, cmd, **_kwargs):
+            captured.append(cmd)
+
+        def wait(self, timeout=None):
+            return 0
+
+        def poll(self):
+            return 0
+
+    # A supervised launcher inherits its owner's group: no group observer.
+    monkeypatch.setenv("WAVEDL_SUPERVISED", "1")
+    monkeypatch.setattr(launcher.subprocess, "Popen", _Child)
+
+
 @pytest.mark.parametrize("offset", [0.0, 1e9])
 def test_streaming_field_metrics_match_full_metrics_with_large_offsets(offset):
     rng = np.random.default_rng(19)
@@ -152,29 +179,19 @@ def test_inprocess_hpo_uses_same_pretrained_default_as_cli(tmp_path, monkeypatch
     assert np.isfinite(result["best_val_loss"])
 
 
-@pytest.mark.parametrize(
-    "unsupported_args",
-    [
-        ["--constraint", "y0 > 0"],
-        ["--constraint_file", "constraint.py"],
-        ["--grad_accum_steps", "2"],
-        ["--selection_metric", "mse"],
-    ],
-)
-def test_cv_rejects_unsupported_training_settings(
-    monkeypatch, capsys, unsupported_args
-):
-    from wavedl.train import main
+def test_cv_rejects_unsupported_training_settings():
+    """CV folds select on the configured loss; HPO's mse selection is refused.
 
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["wavedl-train", "--cv", "2", "--data_path", "unused.npz", *unsupported_args],
-    )
-    with pytest.raises(SystemExit) as error:
-        main()
-    assert error.value.code == 2
-    assert "Cross-validation does not support" in capsys.readouterr().err
+    Physical constraints and gradient accumulation are supported by CV here
+    (see test_cv_option_fidelity), so only selection_metric is rejected.
+    """
+    from wavedl.core.training_cli import parse_training_args, validate_cv_options
+
+    args, _ = parse_training_args(["--cv", "2", "--selection_metric", "mse"])
+    with pytest.raises(
+        ValueError, match=r"Cross-validation does not support.*--selection_metric"
+    ):
+        validate_cv_options(args)
 
 
 class _TinyVectorModel(torch.nn.Module):
@@ -199,6 +216,7 @@ def tiny_training(monkeypatch, tmp_path):
     import pickle
 
     from accelerate import Accelerator
+    from accelerate.state import AcceleratorState
     from sklearn.preprocessing import StandardScaler
     from torch.utils.data import DataLoader, TensorDataset
 
@@ -259,16 +277,13 @@ def tiny_training(monkeypatch, tmp_path):
                 *extra,
             ],
         )
-        args, _parser = train.parse_args()
-        accelerator = Accelerator(
-            cpu=True,
-            mixed_precision="no",
-            gradient_accumulation_steps=args.grad_accum_steps,
+        # The journaled runtime is opened by main(); force its Accelerator onto
+        # CPU and clear process-wide state left by earlier in-process trials.
+        AcceleratorState._reset_state(True)
+        monkeypatch.setattr(
+            train, "Accelerator", lambda **kwargs: Accelerator(cpu=True, **kwargs)
         )
-        try:
-            train._run_training(args, accelerator)
-        finally:
-            accelerator.free_memory()
+        train.main()
         return model_instances[-1] if model_instances else None
 
     return run, x, y
@@ -395,6 +410,7 @@ def test_resuming_epoch_checkpoint_matches_uninterrupted_weights(
 
 
 def test_training_cleanup_runs_when_setup_fails(monkeypatch):
+    from contextlib import nullcontext
     from unittest.mock import MagicMock
 
     from wavedl import train
@@ -402,6 +418,8 @@ def test_training_cleanup_runs_when_setup_fails(monkeypatch):
     accelerator = MagicMock()
     monkeypatch.setattr(sys, "argv", ["train"])
     monkeypatch.setattr(train, "Accelerator", lambda **kwargs: accelerator)
+    monkeypatch.setattr(train, "open_training_runtime", lambda *a: MagicMock())
+    monkeypatch.setattr(train, "training_lifecycle", lambda journal: nullcontext())
 
     def fail(*args):
         raise RuntimeError("setup failure")
@@ -505,19 +523,13 @@ def test_failed_export_cli_has_nonzero_outcome(tmp_path, monkeypatch):
 
 
 def test_launcher_cv_and_precision_use_single_consistent_process(monkeypatch):
-    from types import SimpleNamespace
-
     from wavedl import launcher
 
     captured = []
     monkeypatch.setattr(sys, "argv", ["train", "--cv", "2", "--precision", "no"])
     monkeypatch.setattr(launcher, "detect_gpus", lambda: 4)
     monkeypatch.setattr(launcher, "setup_environment", lambda: None)
-    monkeypatch.setattr(
-        launcher.subprocess,
-        "run",
-        lambda cmd, **kwargs: (captured.append(cmd) or SimpleNamespace(returncode=0)),
-    )
+    _capture_launch(monkeypatch, launcher, captured)
     assert launcher.main() == 0
     assert "--num_processes=1" in captured[0]
     assert "--mixed_precision=no" in captured[0]
@@ -650,8 +662,6 @@ def test_inprocess_trial_enforces_timeout(tmp_path, monkeypatch):
 
 
 def test_launcher_preserves_precision_from_yaml(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
     from wavedl import launcher
 
     config = tmp_path / "config.yaml"
@@ -661,14 +671,11 @@ def test_launcher_preserves_precision_from_yaml(tmp_path, monkeypatch):
         sys, "argv", ["train", "--config", str(config), "--num_gpus", "1"]
     )
     monkeypatch.setattr(launcher, "setup_environment", lambda: None)
-    monkeypatch.setattr(
-        launcher.subprocess,
-        "run",
-        lambda cmd, **kwargs: (captured.append(cmd) or SimpleNamespace(returncode=0)),
-    )
+    _capture_launch(monkeypatch, launcher, captured)
     assert launcher.main() == 0
     assert "--mixed_precision=no" in captured[0]
-    assert captured[0][-2:] == ["--precision", "no"]
+    # Training re-reads the forwarded YAML, so it cannot select another precision.
+    assert captured[0][-2:] == ["--config", str(config)]
 
 
 @pytest.mark.parametrize("explicit_resume", [False, True])
@@ -838,8 +845,6 @@ def test_inprocess_pruned_trial_records_best_val_loss_and_supports_patience_one(
 
 
 def test_launcher_detects_wandb_from_yaml_config(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
     from wavedl import launcher
 
     config = tmp_path / "config.yaml"
@@ -849,11 +854,7 @@ def test_launcher_detects_wandb_from_yaml_config(tmp_path, monkeypatch):
         sys, "argv", ["train", "--config", str(config), "--num_gpus", "1"]
     )
     monkeypatch.setattr(launcher, "setup_environment", lambda: None)
-    monkeypatch.setattr(
-        launcher.subprocess,
-        "run",
-        lambda cmd, **kwargs: SimpleNamespace(returncode=0),
-    )
+    _capture_launch(monkeypatch, launcher, [])
     monkeypatch.setattr(
         launcher,
         "print_summary",

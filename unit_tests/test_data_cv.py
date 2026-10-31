@@ -919,3 +919,93 @@ class TestLeakageDetection:
         )
 
         # If this assertion fails, validation data was included in fit()
+
+
+@pytest.mark.parametrize(
+    ("X", "y", "folds", "message"),
+    [
+        (
+            np.empty((0, 4), dtype=np.float32),
+            np.empty((0, 1), dtype=np.float32),
+            2,
+            "samples and targets",
+        ),
+        (
+            np.zeros((4, 4), dtype=np.float32),
+            np.zeros((3, 1), dtype=np.float32),
+            2,
+            "same number of samples",
+        ),
+        (
+            np.zeros((4, 4), dtype=np.float32),
+            np.zeros(4, dtype=np.float32),
+            2,
+            "at least 2 dimensions",
+        ),
+        (
+            np.zeros((4, 4), dtype=np.float32),
+            np.zeros((4, 1), dtype=np.float32),
+            5,
+            "at least 5 samples",
+        ),
+    ],
+)
+def test_cross_validation_rejects_invalid_input_contract(
+    X, y, folds, message, tmp_path
+):
+    """Malformed CV data fails before filesystem/model work with a clear reason."""
+    from wavedl.utils.cross_validation import run_cross_validation
+
+    with pytest.raises(ValueError, match=message):
+        run_cross_validation(
+            X,
+            y,
+            model_name="cnn",
+            in_shape=(4,),
+            out_size=1,
+            folds=folds,
+            output_dir=str(tmp_path / "cv"),
+            workers=0,
+            device=torch.device("cpu"),
+        )
+
+
+def test_cross_validation_rejects_nonfinite_input_contract(tmp_path):
+    """NaN/Inf cannot silently poison fold scalers or persisted summaries."""
+    from wavedl.utils.cross_validation import run_cross_validation
+
+    X = np.zeros((4, 4), dtype=np.float32)
+    y = np.zeros((4, 1), dtype=np.float32)
+    y[0, 0] = np.nan
+    with pytest.raises(ValueError, match="only finite values"):
+        run_cross_validation(
+            X,
+            y,
+            model_name="cnn",
+            in_shape=(4,),
+            out_size=1,
+            folds=2,
+            output_dir=str(tmp_path / "cv"),
+            workers=0,
+            device=torch.device("cpu"),
+        )
+
+
+def test_cross_validation_rejects_non_numeric_input_contract(tmp_path):
+    """Object/string arrays fail as a controlled contract error, not TypeError."""
+    from wavedl.utils.cross_validation import run_cross_validation
+
+    X = np.full((4, 4), "not-numeric", dtype=object)
+    y = np.zeros((4, 1), dtype=np.float32)
+    with pytest.raises(ValueError, match="real numeric values"):
+        run_cross_validation(
+            X,
+            y,
+            model_name="cnn",
+            in_shape=(4,),
+            out_size=1,
+            folds=2,
+            output_dir=str(tmp_path / "cv"),
+            workers=0,
+            device=torch.device("cpu"),
+        )

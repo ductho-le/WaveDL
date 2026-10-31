@@ -1,0 +1,186 @@
+{
+  "model": {
+    "label": "Model architecture",
+    "description": "Model architecture to train"
+  },
+  "import_modules": {
+    "label": "Registration modules",
+    "description": "Python modules to import before training (for custom models)"
+  },
+  "pretrained": {
+    "label": "Pretrained weights",
+    "description": "Use ImageNet pretrained weights (only for *_pretrained model variants). Default: train from scratch."
+  },
+  "batch_size": {
+    "label": "Batch size",
+    "description": "Batch size per GPU"
+  },
+  "lr": {
+    "label": "Learning rate",
+    "description": "Initial learning rate"
+  },
+  "epochs": {
+    "label": "Epochs",
+    "description": "Maximum training epochs"
+  },
+  "patience": {
+    "label": "Early stopping patience",
+    "description": "Early stopping patience"
+  },
+  "weight_decay": {
+    "label": "Weight decay",
+    "description": "Weight decay"
+  },
+  "grad_clip": {
+    "label": "Gradient clipping",
+    "description": "Gradient clipping norm"
+  },
+  "grad_accum_steps": {
+    "label": "Gradient accumulation steps",
+    "description": "Gradient accumulation steps. Effective batch = batch_size x grad_accum_steps x num_gpus"
+  },
+  "loss": {
+    "label": "Loss function",
+    "description": "Loss function for training"
+  },
+  "huber_delta": {
+    "label": "Huber delta",
+    "description": "Delta for Huber loss"
+  },
+  "loss_weights": {
+    "label": "Loss weights",
+    "description": "Comma-separated weights for weighted_mse (e.g., '1.0,2.0,1.0')"
+  },
+  "optimizer": {
+    "label": "Optimizer",
+    "description": "Optimizer for training"
+  },
+  "momentum": {
+    "label": "Momentum",
+    "description": "Momentum for SGD/RMSprop"
+  },
+  "nesterov": {
+    "label": "Nesterov momentum",
+    "description": "Use Nesterov momentum (SGD)"
+  },
+  "betas": {
+    "label": "Beta coefficients",
+    "description": "Betas for Adam variants (comma-separated)"
+  },
+  "scheduler": {
+    "label": "Learning rate schedule",
+    "description": "LR scheduler"
+  },
+  "scheduler_patience": {
+    "label": "Learning rate patience",
+    "description": "Patience for ReduceLROnPlateau"
+  },
+  "min_lr": {
+    "label": "Minimum learning rate",
+    "description": "Minimum learning rate"
+  },
+  "scheduler_factor": {
+    "label": "Learning rate reduction factor",
+    "description": "LR reduction factor"
+  },
+  "warmup_epochs": {
+    "label": "Warmup epochs",
+    "description": "Warmup epochs for linear_warmup"
+  },
+  "step_size": {
+    "label": "Scheduler step interval",
+    "description": "Step size for StepLR"
+  },
+  "milestones": {
+    "label": "Scheduler milestones",
+    "description": "Comma-separated epochs for MultiStepLR (e.g., '30,60,90')"
+  },
+  "data_path": {
+    "label": "Training dataset",
+    "description": "Path to NPZ dataset"
+  },
+  "workers": {
+    "label": "Data loader workers",
+    "description": "DataLoader workers per GPU (-1=auto-detect based on CPU cores)"
+  },
+  "seed": {
+    "label": "Random seed",
+    "description": "Random seed"
+  },
+  "deterministic": {
+    "label": "Deterministic training",
+    "description": "Enable deterministic mode for reproducibility (slower, disables TF32/cuDNN benchmark)"
+  },
+  "cache_validate": {
+    "label": "Cache validation",
+    "description": "Cache validation mode: sha256 (full hash), fast (partial), size (quick)"
+  },
+  "single_channel": {
+    "label": "Single-channel data",
+    "description": "Confirm data is single-channel (suppress ambiguous shape warnings for shallow 3D volumes)"
+  },
+  "cv": {
+    "label": "Cross-validation folds",
+    "description": "Enable K-fold cross-validation with K folds (0=disabled)"
+  },
+  "cv_stratify": {
+    "label": "Stratified cross-validation",
+    "description": "Use stratified splitting for cross-validation"
+  },
+  "cv_bins": {
+    "label": "Stratification bins",
+    "description": "Number of bins for stratified CV (only with --cv_stratify)"
+  },
+  "resume": {
+    "label": "Resume checkpoint",
+    "description": "Checkpoint directory to resume from"
+  },
+  "save_every": {
+    "label": "Checkpoint interval",
+    "description": "Save checkpoint every N epochs (0=disable)"
+  },
+  "fresh": {
+    "label": "Fresh training",
+    "description": "Force fresh training, ignore existing checkpoints"
+  },
+  "compile": {
+    "label": "Compile model",
+    "description": "Enable torch.compile (PyTorch 2.x)"
+  },
+  "precision": {
+    "label": "Mixed precision",
+    "description": "Mixed precision mode"
+  },
+  "constraint": {
+    "label": "Constraint expressions",
+    "description": "Soft constraint expressions: 'y0 - y1*y2' (penalize violations)"
+  },
+  "constraint_file": {
+    "label": "Constraint file",
+    "description": "Python file with constraint(pred, inputs) function"
+  },
+  "constraint_weight": {
+    "label": "Constraint weights",
+    "description": "Weight(s) for soft constraints (one per constraint, or single shared weight)"
+  },
+  "constraint_reduction": {
+    "label": "Constraint reduction",
+    "description": "Reduction mode for constraint penalties"
+  },
+  "wandb": {
+    "label": "W&B logging",
+    "description": "Enable Weights & Biases logging"
+  },
+  "wandb_watch": {
+    "label": "W&B gradient tracking",
+    "description": "Enable WandB gradient watching (adds overhead, useful for debugging)"
+  },
+  "project_name": {
+    "label": "W&B project name",
+    "description": "WandB project name"
+  },
+  "run_name": {
+    "label": "W&B run name",
+    "description": "WandB run name"
+  }
+}

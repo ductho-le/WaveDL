@@ -27,7 +27,7 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+/lib/
 lib64/
 parts/
 sdist/
@@ -65,6 +65,7 @@ coverage.xml
 .ipynb_checkpoints
 *.ipynb
 !notebooks/demo.ipynb
+!notebooks/gui_colab.ipynb
 
 # Environment
 .env
@@ -117,6 +118,38 @@ logs/
 
 # Documentation
 manuscript/
+docs/**
+
+.VSCodeCounter
+
+
+*.code-workspace
+
+/test.py
+config.json
+AppData/
+download/
+build/
+dist/
+
+# Generated web workstation static assets
+src/wavedl_daemon/web_assets/
+
+# Package manager lockfiles
+uv.lock
+
+# Assistant and workspace instructions
+AGENTS.md
+CLAUDE.md
 
 # Apps
 examples/ios_demo
+.agent
+
+# Agent workspaces
+.worktrees/
+.serena/
+
+# Assistant and tool caches
+.playwright-mcp/
+.superpowers/

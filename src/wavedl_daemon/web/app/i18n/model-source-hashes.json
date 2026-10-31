@@ -1,0 +1,641 @@
+{
+  "cnn": {
+    "description": "1f1c8b3347e072",
+    "bestFor": "123cc47f694391",
+    "shortDescription": "0ab1c208eb5da4",
+    "pros": {
+      "first": "00bebaa640fcf8",
+      "second": "06348203063ec0"
+    }
+  },
+  "resnet18": {
+    "description": "0ee6cf7e447f91",
+    "bestFor": "06cb96ac9a51d4",
+    "shortDescription": "16301bf24035d0",
+    "pros": {
+      "first": "1858ee275a7329",
+      "second": "0d1b930a8a67d1"
+    }
+  },
+  "resnet34": {
+    "description": "0ddbbc49647e8d",
+    "bestFor": "12d2a526a4543f",
+    "shortDescription": "00a9ca38f41666",
+    "pros": {
+      "first": "0ce1508aeadac1",
+      "second": "1c7692032b93cb"
+    }
+  },
+  "resnet50": {
+    "description": "14a9478f85ecea",
+    "bestFor": "1ef92a57e71b43",
+    "shortDescription": "07e36260550b25",
+    "pros": {
+      "first": "0d27eef1bc77a6",
+      "second": "170e6e0ad9601d"
+    }
+  },
+  "resnet18_pretrained": {
+    "description": "1d8427376e6f17",
+    "bestFor": "09f6df6256b886",
+    "shortDescription": "09a5b19cdbca74",
+    "pros": {
+      "first": "0e87ee142b62af",
+      "second": "0aea8f166012c4"
+    }
+  },
+  "resnet50_pretrained": {
+    "description": "1297c94be3f544",
+    "bestFor": "0cc1a555e9bdbe",
+    "shortDescription": "09fe542e176da4",
+    "pros": {
+      "first": "1e13b1a3b38b43",
+      "second": "0a94280a117d18"
+    }
+  },
+  "densenet121": {
+    "description": "1b3af00fe790c5",
+    "bestFor": "1641638f762ed7",
+    "shortDescription": "0fd3a01dbdc4cb",
+    "pros": {
+      "first": "03012b6db24447",
+      "second": "16874adfdffbfc"
+    }
+  },
+  "densenet169": {
+    "description": "1170689a2baca7",
+    "bestFor": "0afbb926a67605",
+    "shortDescription": "09553b48b314ba",
+    "pros": {
+      "first": "04222e003567f1",
+      "second": "14509abe396def"
+    }
+  },
+  "densenet121_pretrained": {
+    "description": "07d9467cfff7a2",
+    "bestFor": "0859f0f1d309dc",
+    "shortDescription": "01346a1f806242",
+    "pros": {
+      "first": "1da93d0d40eaed",
+      "second": "115210365d5a92"
+    }
+  },
+  "mobilenet_v3_small": {
+    "description": "1959fdcc7973d7",
+    "bestFor": "0bd7773160e98a",
+    "shortDescription": "032caa32679817",
+    "pros": {
+      "first": "01bbea82ab96ae",
+      "second": "137c025dcd2a2e"
+    }
+  },
+  "mobilenet_v3_large": {
+    "description": "150affec5d774f",
+    "bestFor": "03cb98757cd8be",
+    "shortDescription": "187f929e99de72",
+    "pros": {
+      "first": "15799036d12394",
+      "second": "01a480a4e56b87"
+    }
+  },
+  "efficientnet_b0": {
+    "description": "1174dd437ccfca",
+    "bestFor": "13cad1d1cb1320",
+    "shortDescription": "0ebccf9e297b10",
+    "pros": {
+      "first": "0537935e5dd4e4",
+      "second": "0030bbf9a705ad"
+    }
+  },
+  "efficientnet_b2": {
+    "description": "1c92ad258b88bd",
+    "bestFor": "1129fb090437cc",
+    "shortDescription": "1cf7b39fb310a4",
+    "pros": {
+      "first": "1eddb06052defb",
+      "second": "1d9af8bdc4c61d"
+    }
+  },
+  "efficientnet_b4": {
+    "description": "11cadc72461d33",
+    "bestFor": "02c64311fb10f2",
+    "shortDescription": "1afa26a36fa363",
+    "pros": {
+      "first": "10f91cb76fef7b",
+      "second": "13c9bdf8500f1d"
+    }
+  },
+  "efficientnet_b7": {
+    "description": "001a1c78b568fb",
+    "bestFor": "086ad077ad1054",
+    "shortDescription": "19dd1c2bc56ac1",
+    "pros": {
+      "first": "11657daeb23661",
+      "second": "05359beb3c5db0"
+    }
+  },
+  "efficientnet_v2_s": {
+    "description": "11731dfce00e46",
+    "bestFor": "108c8deed59698",
+    "shortDescription": "137d605ae542cb",
+    "pros": {
+      "first": "15c5eb28ee3701",
+      "second": "1c449a9ac65f6f"
+    }
+  },
+  "efficientnet_v2_m": {
+    "description": "04d26a18602844",
+    "bestFor": "1d863056366c24",
+    "shortDescription": "0aafd9bf27d668",
+    "pros": {
+      "first": "15e27c1841b37f",
+      "second": "1ea88fd313e808"
+    }
+  },
+  "efficientnet_v2_l": {
+    "description": "102899992c02bc",
+    "bestFor": "139788b597d8cc",
+    "shortDescription": "130d85f0777173",
+    "pros": {
+      "first": "004ef76cb600fd",
+      "second": "188a96f6c3f9e3"
+    }
+  },
+  "regnet_y_400mf": {
+    "description": "021c7b077d8b7d",
+    "bestFor": "1d3c328ebfa8a0",
+    "shortDescription": "165a53b9a93285",
+    "pros": {
+      "first": "1c063182002bcf",
+      "second": "1c10303aed242a"
+    }
+  },
+  "regnet_y_800mf": {
+    "description": "133a68b74059b0",
+    "bestFor": "12d6863b2e2d0a",
+    "shortDescription": "0c66d7b51b745f",
+    "pros": {
+      "first": "1feb8e9b824615",
+      "second": "1185f55f1ca506"
+    }
+  },
+  "regnet_y_1_6gf": {
+    "description": "1513d82f5710b9",
+    "bestFor": "173b3793509792",
+    "shortDescription": "08714d232c0b80",
+    "pros": {
+      "first": "180a3603eee8fc",
+      "second": "12dc014db33881"
+    }
+  },
+  "regnet_y_3_2gf": {
+    "description": "1f994a21ace4b0",
+    "bestFor": "1b6bc825214d55",
+    "shortDescription": "04cfa3ad829c35",
+    "pros": {
+      "first": "0ac6de6d25bdd2",
+      "second": "03f30055be6c81"
+    }
+  },
+  "regnet_y_8gf": {
+    "description": "0aad1b4e1c637d",
+    "bestFor": "0fc942b6afb354",
+    "shortDescription": "12ceedb1606508",
+    "pros": {
+      "first": "014c09662ac6a6",
+      "second": "1571c4d969c7e7"
+    }
+  },
+  "convnext_tiny": {
+    "description": "0d8acd40828a03",
+    "bestFor": "1daa9e22403b5a",
+    "shortDescription": "01b93bf7663a4c",
+    "pros": {
+      "first": "0c5de40c886bb9",
+      "second": "1954ec8f179de7"
+    }
+  },
+  "convnext_small": {
+    "description": "0d15c65f348d6d",
+    "bestFor": "05b58663b35611",
+    "shortDescription": "18d7ad9f72db49",
+    "pros": {
+      "first": "0c7085a5e76743",
+      "second": "1d6954eaa1b8dc"
+    }
+  },
+  "convnext_base": {
+    "description": "1c73ee9eaa5aee",
+    "bestFor": "1d6da709c6be07",
+    "shortDescription": "1e1af4aa217244",
+    "pros": {
+      "first": "10b01f8e9ff8b0",
+      "second": "1ce0393dfd2d86"
+    }
+  },
+  "convnext_tiny_pretrained": {
+    "description": "045969d766461c",
+    "bestFor": "0211d6e69b25d2",
+    "shortDescription": "17a58ea99a13c9",
+    "pros": {
+      "first": "0516a9f154acd5",
+      "second": "0229faa65e97a2"
+    }
+  },
+  "convnext_v2_tiny": {
+    "description": "1d5ed1d3c84916",
+    "bestFor": "0abb958e03838e",
+    "shortDescription": "0f09a713a98b6f",
+    "pros": {
+      "first": "1c82f302abd46d",
+      "second": "1bdda8da622034"
+    }
+  },
+  "convnext_v2_small": {
+    "description": "182d7e9f3c31bf",
+    "bestFor": "12cecbc9921ee1",
+    "shortDescription": "1f9ccc7dfa03f2",
+    "pros": {
+      "first": "14d53f8af96d9b",
+      "second": "198661e458378a"
+    }
+  },
+  "convnext_v2_base": {
+    "description": "144cf74c4257fb",
+    "bestFor": "06d6a96c8da7a9",
+    "shortDescription": "1aa3ef0e697ac1",
+    "pros": {
+      "first": "1587be07ca3ba9",
+      "second": "1ac0d607902f3d"
+    }
+  },
+  "convnext_v2_tiny_pretrained": {
+    "description": "19005a0fdc556d",
+    "bestFor": "0351fdba5753ce",
+    "shortDescription": "0610817c54ae5c",
+    "pros": {
+      "first": "0144289e83286d",
+      "second": "0b3bd840b48c53"
+    }
+  },
+  "unireplknet_tiny": {
+    "description": "1e8b28a099d31a",
+    "bestFor": "1671c89b3f0bd4",
+    "shortDescription": "0de3fdac02ca13",
+    "pros": {
+      "first": "045f8131dc7943",
+      "second": "019f24fe754273"
+    }
+  },
+  "unireplknet_small": {
+    "description": "0bae0f47dc3d8a",
+    "bestFor": "1b6055ac707abe",
+    "shortDescription": "0d90d0220b889d",
+    "pros": {
+      "first": "1630c3f01cb035",
+      "second": "1659dee683fe88"
+    }
+  },
+  "unireplknet_base": {
+    "description": "08757bdbefaa02",
+    "bestFor": "0a50372fd35c02",
+    "shortDescription": "0185e88bda6752",
+    "pros": {
+      "first": "16b4ede1d0def7",
+      "second": "03ccf684b4c4c9"
+    }
+  },
+  "vit_tiny": {
+    "description": "099db2c3c1181d",
+    "bestFor": "0292c3e5912940",
+    "shortDescription": "19631e6819e1ba",
+    "pros": {
+      "first": "12a5f1dfb8cff0",
+      "second": "1c81455a8d7762"
+    }
+  },
+  "vit_small": {
+    "description": "0fb9dca6117c8b",
+    "bestFor": "00f54b7bf5decf",
+    "shortDescription": "068e1f119e4722",
+    "pros": {
+      "first": "0658cbb0565e58",
+      "second": "0efe8f79a1e9d7"
+    }
+  },
+  "vit_base": {
+    "description": "1bbc75520aae96",
+    "bestFor": "17c3bd929d0dd2",
+    "shortDescription": "1320094ebf007e",
+    "pros": {
+      "first": "1c38dc2a29bdbc",
+      "second": "09bcf1da17c09c"
+    }
+  },
+  "swin_t": {
+    "description": "0f17f7070fad6b",
+    "bestFor": "043dbb4573a9b9",
+    "shortDescription": "1db4e1e1b91d29",
+    "pros": {
+      "first": "0098a23d890366",
+      "second": "0775d40c455442"
+    }
+  },
+  "swin_s": {
+    "description": "1d228bb6a38121",
+    "bestFor": "096bfdff3250ec",
+    "shortDescription": "135310a0600b40",
+    "pros": {
+      "first": "1c318994734f2d",
+      "second": "13706f2a082708"
+    }
+  },
+  "swin_b": {
+    "description": "0db692681d1d3f",
+    "bestFor": "00ff787c3518fb",
+    "shortDescription": "0c3ec7b809bc26",
+    "pros": {
+      "first": "04897f4fd5a19c",
+      "second": "1c6baeaa1e5685"
+    }
+  },
+  "maxvit_tiny": {
+    "description": "06e1f0dbbb2cd2",
+    "bestFor": "15d2dfd51cd127",
+    "shortDescription": "0db281dcddf62f",
+    "pros": {
+      "first": "16b2eb13741bb3",
+      "second": "13108701734ab7"
+    }
+  },
+  "maxvit_small": {
+    "description": "098b56ef14ae8b",
+    "bestFor": "0671904a10af84",
+    "shortDescription": "1b157a44dc8f00",
+    "pros": {
+      "first": "1cdd463b440c17",
+      "second": "08c84e2ab1a531"
+    }
+  },
+  "maxvit_base": {
+    "description": "1008c063945b1c",
+    "bestFor": "1f48d8e8d0a45b",
+    "shortDescription": "03f71865028856",
+    "pros": {
+      "first": "038b2c73a39bab",
+      "second": "13fd3f3580479f"
+    }
+  },
+  "fastvit_t8": {
+    "description": "106148a697010f",
+    "bestFor": "0a7a9e72593595",
+    "shortDescription": "129af7ae9b5493",
+    "pros": {
+      "first": "17901f36befd6b",
+      "second": "0e682fd9df2a16"
+    }
+  },
+  "fastvit_t12": {
+    "description": "199902e63a26b1",
+    "bestFor": "0083f1dfb58f18",
+    "shortDescription": "03e8f850a60518",
+    "pros": {
+      "first": "071a8e25375709",
+      "second": "1bdc9914731b3b"
+    }
+  },
+  "fastvit_s12": {
+    "description": "16d756a05c487e",
+    "bestFor": "093f0b61a89018",
+    "shortDescription": "0bbcc50abca7e1",
+    "pros": {
+      "first": "070ed16fa3ff33",
+      "second": "10fd73eef1bd5d"
+    }
+  },
+  "fastvit_sa12": {
+    "description": "00dd300933f8ec",
+    "bestFor": "0ac150c2f8de8d",
+    "shortDescription": "0741c3c5d265ea",
+    "pros": {
+      "first": "0e7d31fecc19a7",
+      "second": "0f1cfd1f57e8a5"
+    }
+  },
+  "caformer_s18": {
+    "description": "1c1b82d49f623c",
+    "bestFor": "1a00ebe042997e",
+    "shortDescription": "196177ec0df971",
+    "pros": {
+      "first": "1721ee59fc1439",
+      "second": "062bd57f63db96"
+    }
+  },
+  "caformer_s36": {
+    "description": "16860d75ebbba5",
+    "bestFor": "0854422b90ba9f",
+    "shortDescription": "1d205c5f7d359a",
+    "pros": {
+      "first": "18e02e950fb614",
+      "second": "15d17d5bf888e1"
+    }
+  },
+  "caformer_m36": {
+    "description": "0558e7671809ae",
+    "bestFor": "19a914b6c2b8f0",
+    "shortDescription": "015f65f93d4bf3",
+    "pros": {
+      "first": "0f8098504ddefe",
+      "second": "1c19217dbc7e22"
+    }
+  },
+  "poolformer_s12": {
+    "description": "0ad3a5c470a2ef",
+    "bestFor": "1ffa0fcd847871",
+    "shortDescription": "1ed6b3d0156cca",
+    "pros": {
+      "first": "18eea9c0db6982",
+      "second": "189290ca78b6e3"
+    }
+  },
+  "efficientvit_m1": {
+    "description": "1288102e65c281",
+    "bestFor": "1461b682fd9804",
+    "shortDescription": "1a0f9ade0674b8",
+    "pros": {
+      "first": "0c06c5314f3d37",
+      "second": "14fc65a4b1121e"
+    }
+  },
+  "efficientvit_b1": {
+    "description": "00a2fd7d296408",
+    "bestFor": "1da836f9ea1e45",
+    "shortDescription": "1808f8434fe33b",
+    "pros": {
+      "first": "047ef80e961fd2",
+      "second": "12b7946f59e648"
+    }
+  },
+  "efficientvit_b2": {
+    "description": "0b28847bbcaa1c",
+    "bestFor": "0fbc307655c8c9",
+    "shortDescription": "0817e716328ce8",
+    "pros": {
+      "first": "164b9a3afbf316",
+      "second": "037d30da9e07bc"
+    }
+  },
+  "efficientvit_l2": {
+    "description": "1edeae4d98aded",
+    "bestFor": "0ed28b75e0edd0",
+    "shortDescription": "1a273257576954",
+    "pros": {
+      "first": "12b4a7822846c1",
+      "second": "0b021bc64754fd"
+    }
+  },
+  "mamba_1d": {
+    "description": "0226a97ed0aaa7",
+    "bestFor": "0def5e83035b33",
+    "shortDescription": "09e96eb579ba14",
+    "pros": {
+      "first": "08c31a4ba6b719",
+      "second": "16eb70ff6fac2c"
+    }
+  },
+  "s4d_small": {
+    "description": "1f840009e25d4f",
+    "bestFor": "15075965392261",
+    "shortDescription": "10e061997c0eac",
+    "pros": {
+      "first": "09b8068484a0cd",
+      "second": "0a3930aff3dbe6"
+    }
+  },
+  "s4d": {
+    "description": "0516f8b8b53497",
+    "bestFor": "0a9f5af810a21d",
+    "shortDescription": "1f4f429429b385",
+    "pros": {
+      "first": "17164074e210b4",
+      "second": "0f0e5c08dbf12a"
+    }
+  },
+  "s4d_large": {
+    "description": "07ec35287e97d8",
+    "bestFor": "128b5852c2ee64",
+    "shortDescription": "1ff47ce4f0adb0",
+    "pros": {
+      "first": "05b81ac1ed93e0",
+      "second": "1ab8431221e5c8"
+    }
+  },
+  "vim_tiny": {
+    "description": "1a487f34d4b17d",
+    "bestFor": "0d71598907774a",
+    "shortDescription": "11dbd4e78674da",
+    "pros": {
+      "first": "1440b404fa31c7",
+      "second": "1b84c48eed1f60"
+    }
+  },
+  "vim_small": {
+    "description": "0f4b0fdc973fa9",
+    "bestFor": "1fcdf431d9a785",
+    "shortDescription": "1f52cb7c7f1edd",
+    "pros": {
+      "first": "15c070093fa694",
+      "second": "1fdb54d1cb01cf"
+    }
+  },
+  "vim_base": {
+    "description": "1bb1b1e457bef1",
+    "bestFor": "112cccced65f99",
+    "shortDescription": "06386d5e29b59e",
+    "pros": {
+      "first": "1c7d2fb74363a4",
+      "second": "0bdd0fc770e811"
+    }
+  },
+  "tcn_small": {
+    "description": "1829788ab34dc2",
+    "bestFor": "13d3c11e208465",
+    "shortDescription": "15f8ccffa61225",
+    "pros": {
+      "first": "042432a7eae300",
+      "second": "1403c91657d749"
+    }
+  },
+  "tcn": {
+    "description": "11c07ef06d189a",
+    "bestFor": "1d182bd42d269b",
+    "shortDescription": "145c8d45b4e4ca",
+    "pros": {
+      "first": "06b1e7134f4862",
+      "second": "09ae621fd25832"
+    }
+  },
+  "tcn_large": {
+    "description": "1c2fc3ac186f83",
+    "bestFor": "09fab4c27937af",
+    "shortDescription": "1ae092f4349bd4",
+    "pros": {
+      "first": "1e1a4a270c4a93",
+      "second": "1a3989df6c9f5b"
+    }
+  },
+  "wavenet_small": {
+    "description": "042ff59c9dc9de",
+    "bestFor": "03175f641ad5a8",
+    "shortDescription": "01e8e8b09a67e8",
+    "pros": {
+      "first": "07ec44da2112d7",
+      "second": "1abb518664a085"
+    }
+  },
+  "wavenet": {
+    "description": "0d83571cec0680",
+    "bestFor": "0dedb8c00e8687",
+    "shortDescription": "1e998bc089c61d",
+    "pros": {
+      "first": "0d01c946aa67c0",
+      "second": "041d92cdf7fbff"
+    }
+  },
+  "wavenet_large": {
+    "description": "1cbbc095ebe28d",
+    "bestFor": "12df374e58cb04",
+    "shortDescription": "09c5ad49af6f94",
+    "pros": {
+      "first": "0c419092e6f672",
+      "second": "1c5e47e5e73cf5"
+    }
+  },
+  "resnet3d_18": {
+    "description": "169548fdbc594e",
+    "bestFor": "16404114bca8c7",
+    "shortDescription": "032b13593d8168",
+    "pros": {
+      "first": "1bff6db3000635",
+      "second": "0537fa65396fb9"
+    }
+  },
+  "mc3_18": {
+    "description": "0a8f588399d023",
+    "bestFor": "0d0d7d22bd775f",
+    "shortDescription": "12bec35d6321c7",
+    "pros": {
+      "first": "0a170a7d6b0c32",
+      "second": "08e2b1385f6c45"
+    }
+  },
+  "unet_regression": {
+    "description": "06b4cba9df66be",
+    "bestFor": "17dae2360ff1b8",
+    "shortDescription": "09d43e4ef18e2e",
+    "pros": {
+      "first": "1f0de69e37d858",
+      "second": "1675be3cae3b50"
+    }
+  }
+}

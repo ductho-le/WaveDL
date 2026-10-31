@@ -1,57 +1,356 @@
+# =============================================================================
+# Automated Release Workflow
+# =============================================================================
+# Triggers when a version tag (v*.*.*) is pushed.
+# Creates a GitHub Release with changelog notes and publishes to PyPI.
+#
+# Setup (one-time):
+#   1. On PyPI: Add Trusted Publisher for this repo
+#      - Go to: https://pypi.org/manage/account/publishing/
+#      - Owner: ductho-le, Repository: WaveDL, Workflow: release.yml
+#      - Environment: pypi
+#   2. On GitHub: Create environment named "pypi"
+#      - Go to: Settings > Environments > New environment > "pypi"
+#
+# Usage:
+#   1. Update CHANGELOG.md with release notes
+#   2. Bump version in src/wavedl/__init__.py
+#   3. Commit, tag, and push:
+#      git tag v1.2.0
+#      git push origin main --tags
+# =============================================================================
+
 name: Release
+
 on:
   push:
-    tags: ['v*.*.*']
+    tags:
+      - 'v*.*.*'
+
 permissions:
   contents: read
+
 jobs:
-  validate:
+  # =============================================================================
+  # Test across Python versions (matrix)
+  # =============================================================================
+  test:
+    name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MPLBACKEND: Agg
+      CUDA_VISIBLE_DEVICES: ""
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      WANDB_MODE: disabled
+
+    strategy:
+      fail-fast: true
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
-          python-version: '3.11'
-      - run: pip install packaging
-      - run: python tools/check_release.py --tag "$GITHUB_REF_NAME" --notes-file notes.md --metadata-file metadata.json
-      - uses: actions/upload-artifact@v4
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
         with:
-          name: release-notes
+          python-version: ${{ matrix.python-version }}
+
+      # The installed/static asset tests exercise the Node manifest producer.
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: src/wavedl_daemon/web/package.json
+      - name: Set up Node for web-asset producer tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-py${{ matrix.python-version }}-pip-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-py${{ matrix.python-version }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e ".[dev]"
+          python -m pip check
+
+      - name: Generate the locked web client for this test matrix cell
+        working-directory: src/wavedl_daemon/web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run generate
+
+      - name: Vendor generated assets before all installed/package tests
+        run: python tools/vendor_web_assets.py
+
+      - name: Run tests
+        run: python -m pytest unit_tests -v -m "not slow and not gpu"
+
+  # Build the exact artifacts once, then make every publication step consume
+  # those immutable files. This prevents a release and PyPI from drifting.
+  package:
+    name: Build and verify release artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      manifest_digest: ${{ steps.manifest.outputs.digest }}
+    env:
+      MPLBACKEND: Agg
+      CUDA_VISIBLE_DEVICES: ""
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      WANDB_MODE: disabled
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: src/wavedl_daemon/web/package.json
+      - name: Set up Node for the release web assets
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: src/wavedl_daemon/web/pnpm-lock.yaml
+      - name: Generate the locked release web client
+        working-directory: src/wavedl_daemon/web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run generate
+      - name: Vendor verified generated assets into the release package
+        run: python tools/vendor_web_assets.py
+      - name: Build wheel and source distribution
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel --sdist --outdir dist
+          test "$(find dist -maxdepth 1 -name '*.whl' | wc -l)" -eq 1
+          test "$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq 1
+      - name: Verify version and wheel/sdist web asset identity
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import tarfile
+          import zipfile
+          from email.parser import BytesParser
+          from pathlib import Path
+          from packaging.version import Version
+
+          wheel, = Path("dist").glob("*.whl")
+          sdist, = Path("dist").glob("*.tar.gz")
+          tag = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          source = Path("src/wavedl_daemon/web_assets")
+          expected = {
+              path.relative_to(source).as_posix(): path.read_bytes()
+              for path in source.rglob("*") if path.is_file()
+          }
+          assert {"index.html", ".wavedl-assets.json"} <= expected.keys()
+          with zipfile.ZipFile(wheel) as archive:
+              assert not any(name.startswith("wavedl_daemon/web/") for name in archive.namelist()), "Wheel contains workstation source"
+              metadata, = (name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
+              assert Version(BytesParser().parsebytes(archive.read(metadata))["Version"]) == Version(tag)
+              prefix = "wavedl_daemon/web_assets/"
+              actual = {name.removeprefix(prefix): archive.read(name) for name in archive.namelist() if name.startswith(prefix) and not name.endswith("/")}
+              assert actual == expected, "Wheel differs from verified generated web inventory"
+          with tarfile.open(sdist) as archive:
+              members = archive.getmembers()
+              assert not any("/src/wavedl_daemon/web/" in name for name in archive.getnames()), "Sdist contains workstation source"
+              metadata, = (member for member in members if member.name.count("/") == 1 and member.name.endswith("/PKG-INFO"))
+              assert Version(BytesParser().parsebytes(archive.extractfile(metadata).read())["Version"]) == Version(tag)
+              prefix = sdist.name.removesuffix(".tar.gz") + "/src/wavedl_daemon/web_assets/"
+              actual = {member.name.removeprefix(prefix): archive.extractfile(member).read() for member in members if member.name.startswith(prefix) and member.isfile()}
+              assert actual == expected, "Sdist differs from verified generated web inventory"
+          # Store hashes outside dist: only publishable distributions go to PyPI.
+          version = Version(tag)
+          Path("release-artifacts.json").write_text(json.dumps({"source_commit": os.environ["GITHUB_SHA"], "tag": os.environ["GITHUB_REF_NAME"], "prerelease": version.is_prerelease or version.is_devrelease, "files": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in (wheel, sdist)}}, sort_keys=True))
+          PY
+      - name: Record trusted release manifest digest
+        id: manifest
+        run: echo "digest=$(sha256sum release-artifacts.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Verify the exact wheel outside the checkout
+        env:
+          WAVEDL_ACCEPTANCE_TIMEOUT: "180"
+        run: |
+          wheel=$(find dist -maxdepth 1 -name '*.whl' -print -quit)
+          test -n "$wheel"
+          python -m pip install pytest 'httpx>=0.28,<1'
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          python -m pip freeze > "$RUNNER_TEMP/release-constraints.txt"
+          python -m pip wheel "$PWD/$wheel" --only-binary=:all: --wheel-dir "$RUNNER_TEMP/release-wheelhouse" --constraint "$RUNNER_TEMP/release-constraints.txt" --extra-index-url https://download.pytorch.org/whl/cpu
+          python -m pip download 'setuptools>=83.0.0,<85' wheel --only-binary=:all: --dest "$RUNNER_TEMP/release-wheelhouse"
+          WAVEDL_ACCEPTANCE_WHEEL="$PWD/$wheel" WAVEDL_ACCEPTANCE_WHEELHOUSE="$RUNNER_TEMP/release-wheelhouse" python -m pytest unit_tests/daemon/test_installed_cli.py --noconftest -k isolated_resolved -q --junitxml=release-installed.xml
+      - name: Require isolated exact-wheel acceptance with zero skips
+        if: always()
+        run: |
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          cases = ET.parse("release-installed.xml").getroot().findall(".//testcase")
+          assert len(cases) == 1 and cases[0].get("name") == "test_isolated_resolved_wheelhouse_console_scripts_and_assets"
+          assert not any(case.find(status) is not None for case in cases for status in ("skipped", "failure", "error"))
+          PY
+      - name: Rebuild and verify the exact sdist outside the checkout
+        env:
+          WAVEDL_ACCEPTANCE_TIMEOUT: "180"
+        run: |
+          sdist=$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)
+          test -n "$sdist"
+          WAVEDL_ACCEPTANCE_SDIST="$PWD/$sdist" WAVEDL_ACCEPTANCE_WHEELHOUSE="$RUNNER_TEMP/release-wheelhouse" python -m pytest unit_tests/daemon/test_installed_cli.py --noconftest -k isolated_resolved -q --junitxml=release-sdist-installed.xml
+      - name: Require isolated exact-sdist acceptance with zero skips
+        if: always()
+        run: |
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          cases = ET.parse("release-sdist-installed.xml").getroot().findall(".//testcase")
+          assert len(cases) == 1 and cases[0].get("name") == "test_isolated_resolved_wheelhouse_console_scripts_and_assets"
+          assert not any(case.find(status) is not None for case in cases for status in ("skipped", "failure", "error"))
+          PY
+      - name: Upload immutable release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wavedl-release-dist
           path: |
-            notes.md
-            metadata.json
-  checks:
-    needs: validate
-    uses: ./.github/workflows/test.yml
-  publish:
-    needs: checks
-    runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4
+            dist/*
+            release-artifacts.json
+          if-no-files-found: error
+      - name: Upload release verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: distributions
-          path: dist
-      - uses: pypa/gh-action-pypi-publish@release/v1
+          name: release-package-evidence
+          path: |
+            release-installed.xml
+            release-sdist-installed.xml
+            release-artifacts.json
+          if-no-files-found: warn
+
+  # These existing workflows are reusable daemon and static-client gates. Their jobs
+  # remain unchanged; this caller merely makes release publication wait for
+  # their success.
+  foundations:
+    name: Daemon foundations gate
+    uses: ./.github/workflows/daemon-foundations.yml
+  web-client:
+    name: Static web client quality gate
+    uses: ./.github/workflows/web-client.yml
+
+  # =============================================================================
+  # Create GitHub Release (single job, no matrix)
+  # =============================================================================
   release:
-    needs: publish
+    name: Create Release
+    needs: [test, package, foundations, web-client]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
-          name: release-notes
-      - id: metadata
-        run: echo "prerelease=$(jq -r .prerelease metadata.json)" >> "$GITHUB_OUTPUT"
-      - uses: actions/download-artifact@v4
+          persist-credentials: false
+
+      - name: Download verified release artifacts
+        uses: actions/download-artifact@v4
         with:
-          name: distributions
-          path: dist
-      - uses: softprops/action-gh-release@v2
+          name: wavedl-release-dist
+          path: verified
+
+      - name: Verify downloaded release hashes and source commit
+        id: verified
+        env:
+          EXPECTED_RELEASE_MANIFEST_SHA: ${{ needs.package.outputs.manifest_digest }}
+        run: python tools/verify_release_artifacts.py verified
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          # Extract the section for this version from CHANGELOG.md
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          VERSION_NUM="${VERSION#v}"  # Remove 'v' prefix for matching
+
+          # Extract content between this version header and the next version header
+          NOTES=$(awk -v ver="$VERSION_NUM" '
+            /^## \[/ {
+              if (found) exit
+              if (index($0, "[" ver "]") > 0) found=1
+              next
+            }
+            found { print }
+          ' CHANGELOG.md)
+
+          # Handle multi-line output for GitHub Actions
+          echo "NOTES<<EOF" >> $GITHUB_OUTPUT
+          echo "$NOTES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          body_path: notes.md
-          prerelease: ${{ steps.metadata.outputs.prerelease == 'true' }}
-          files: dist/*
+          name: ${{ steps.version.outputs.VERSION }}
+          body: ${{ steps.changelog.outputs.NOTES }}
+          draft: false
+          prerelease: ${{ steps.verified.outputs.PRERELEASE == 'true' }}
+          files: verified/dist/*
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # =============================================================================
+  # Publish to PyPI
+  # =============================================================================
+  publish:
+    name: Publish to PyPI
+    needs: [release, package]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write  # Required for Trusted Publishing
+
+    steps:
+      - name: Checkout trusted verification code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download verified release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wavedl-release-dist
+          path: verified
+
+      - name: Verify downloaded release hashes and source commit
+        env:
+          EXPECTED_RELEASE_MANIFEST_SHA: ${{ needs.package.outputs.manifest_digest }}
+        run: python tools/verify_release_artifacts.py verified
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: verified/dist/

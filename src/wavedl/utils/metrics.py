@@ -51,16 +51,20 @@ COLORS = {
 
 
 def _is_latex_available() -> bool:
-    """Check if LaTeX is available for matplotlib rendering."""
+    """Check required executables for the Agg LaTeX-to-PNG pipeline.
+
+    A partial TeX install must not prevent ordinary CPU plot operations. This
+    checks executable availability, not installed TeX package compatibility.
+    """
     import shutil
 
-    return shutil.which("latex") is not None
+    return all(shutil.which(program) is not None for program in ("latex", "dvipng"))
 
 
 def configure_matplotlib_style():
     """Configure matplotlib for publication-quality LaTeX-style plots.
 
-    Falls back to standard fonts if LaTeX is not installed.
+    Falls back to standard fonts if the LaTeX rendering tools are incomplete.
     """
     use_latex = _is_latex_available()
 
@@ -1422,24 +1426,23 @@ def plot_error_boxplot(
     fig_width = min(FIGURE_WIDTH_INCH * 0.5, 2 + num_params * 0.8)
     fig, ax = plt.subplots(figsize=(fig_width, FIGURE_WIDTH_INCH * 0.4))
 
+    # Matplotlib renamed labels in 3.9 and removed it in 3.11. Inspect the
+    # callable rather than catching TypeError, which could hide invalid data.
+    import inspect
+
+    label_keyword = (
+        "tick_labels"
+        if "tick_labels" in inspect.signature(ax.boxplot).parameters
+        else "labels"
+    )
     # Box plot (filter NaN for each parameter — near-zero targets excluded)
-    box_data = [errors[:, i][np.isfinite(errors[:, i])] for i in range(num_params)]
-    try:
-        bp = ax.boxplot(
-            box_data,
-            tick_labels=param_names,
-            patch_artist=True,
-            showfliers=True,
-            flierprops={"marker": "o", "markersize": 3, "alpha": 0.5},
-        )
-    except TypeError:
-        bp = ax.boxplot(
-            box_data,
-            labels=param_names,
-            patch_artist=True,
-            showfliers=True,
-            flierprops={"marker": "o", "markersize": 3, "alpha": 0.5},
-        )
+    bp = ax.boxplot(
+        [errors[:, i][np.isfinite(errors[:, i])] for i in range(num_params)],
+        **{label_keyword: param_names},
+        patch_artist=True,
+        showfliers=True,
+        flierprops={"marker": "o", "markersize": 3, "alpha": 0.5},
+    )
 
     # Color the boxes
     for patch in bp["boxes"]:

@@ -1,0 +1,15 @@
+export type SpinnerVariant =
+  | 'default'
+  | 'svg'
+  | 'throbber'
+  | 'ring'
+  | 'pulse-dot'
+  | 'wave'
+  | 'bars'
+  | 'terminal'
+  | 'shimmer-text'
+  | 'loading-dots'
+  | 'ellipsis'
+  | 'typing-dots'
+
+export type SpinnerSize = 'sm' | 'md' | 'lg'

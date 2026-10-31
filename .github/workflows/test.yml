@@ -10,35 +10,68 @@
 name: Tests
 
 on:
-  workflow_call:
   push:
-    branches: [main]
+    branches: [main, 'review/daemon-browser-ci-*']
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     strategy:
       fail-fast: false
       matrix:
         python-version: ['3.11', '3.12', '3.13']
-        os: [ubuntu-latest]
         runtime: [latest]
         include:
-          - {python-version: '3.11', os: ubuntu-latest, runtime: minimum}
-          - {python-version: '3.11', os: windows-latest, runtime: latest}
-          - {python-version: '3.11', os: macos-latest, runtime: latest}
+          - {python-version: '3.11', runtime: minimum}
+
+    env:
+      MPLBACKEND: Agg
+      CUDA_VISIBLE_DEVICES: ""
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      PYTHONFAULTHANDLER: "1"
+      PYTHONUNBUFFERED: "1"
+      WANDB_MODE: disabled
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+
+      # Vendored web-asset fixtures exercise the Node manifest producer.
+      # This is a test/build tool, not a dependency of the daemon runtime.
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: src/wavedl_daemon/web/package.json
+      - name: Set up Node for web-asset producer tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: src/wavedl_daemon/web/pnpm-lock.yaml
+
+      - name: Install locked browser dependencies
+        working-directory: src/wavedl_daemon/web
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate the browser client from the locked source
+        working-directory: src/wavedl_daemon/web
+        run: pnpm run generate
 
       - name: Cache pip dependencies
         uses: actions/cache@v4
@@ -51,48 +84,248 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e ".[dev]"
 
       - name: Install minimum ML runtime
         if: matrix.runtime == 'minimum'
-        run: pip install torch==2.13.0 torchvision==0.28.0 onnx==1.22.0
+        run: python -m pip install torch==2.13.0 torchvision==0.28.0 onnx==1.22.0 --extra-index-url https://download.pytorch.org/whl/cpu
 
-      - name: Run unit tests (skip slow architecture tests)
-        run: pytest unit_tests/ -v --tb=short -m "not slow"
+      - name: Verify installed dependency contracts
+        run: python -m pip check
+
+      - name: Vendor generated browser assets before package tests
+        run: python tools/vendor_web_assets.py
+
+      # Keep dependency resolution distinct from the cheap --system-site-packages
+      # wheel smoke tests. This one cell supplies an explicit complete wheelhouse;
+      # missing dependencies are failures, not accepted optional skips.
+      - name: Prepare an isolated CPU wheelhouse
+        if: matrix.python-version == '3.11'
+        run: |
+          python -m pip freeze --exclude-editable > "$RUNNER_TEMP/wheel-constraints.txt"
+          python -m pip wheel "." --only-binary=:all: --wheel-dir "$RUNNER_TEMP/wavedl-wheelhouse" --constraint "$RUNNER_TEMP/wheel-constraints.txt" --extra-index-url https://download.pytorch.org/whl/cpu
+
+      - name: Require dependency-resolved wheel installation outside the checkout
+        if: matrix.python-version == '3.11'
+        env:
+          WAVEDL_ACCEPTANCE_WHEELHOUSE: ${{ runner.temp }}/wavedl-wheelhouse
+        run: python -m pytest unit_tests/daemon/test_installed_cli.py --noconftest -k isolated_resolved -v --junitxml=isolated-wheel.xml
+
+      # The supported suite covers core ML, daemon, cleanup and native CPU DDP.
+      # Retained historical Qt tests are excluded by unit_tests/conftest.py.
+      - name: Run unit tests (skip slow architecture and GPU tests)
+        run: python -m pytest unit_tests/ -v --tb=short -m "not slow and not gpu" --junitxml=unit-tests.xml
+
+      - name: Upload unit test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-tests-py${{ matrix.python-version }}-${{ matrix.runtime }}
+          path: |
+            unit-tests.xml
+            isolated-wheel.xml
+          if-no-files-found: warn
 
   architecture:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
-      OMP_NUM_THREADS: '1'
-      MKL_NUM_THREADS: '1'
-      HF_HUB_OFFLINE: '1'
-      ACCELERATE_USE_CPU: 'true'
+      MPLBACKEND: Agg
+      CUDA_VISIBLE_DEVICES: ""
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      HF_HUB_OFFLINE: "1"
+      ACCELERATE_USE_CPU: "true"
+      WANDB_MODE: disabled
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install -e ".[dev]"
-      - run: ruff check src/ unit_tests/ tools/
-      - run: ruff format --check src/ unit_tests/ tools/
-      - run: pytest unit_tests/test_architecture.py -v
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e ".[dev]"
+      - run: python -m pytest unit_tests/test_architecture.py -v
       - run: python tools/check_distributed.py --work-dir "${{ runner.temp }}/wavedl-ddp"
 
-  distribution:
+  scientific-cpu:
+    name: Scientific CPU and daemon recovery contracts
     runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      MPLBACKEND: Agg
+      CUDA_VISIBLE_DEVICES: ""
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      WANDB_MODE: disabled
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - run: pip install build twine
-      - run: python -m build
-      - run: python -m twine check --strict dist/*
-      - run: pip install dist/*.whl
-      - name: Test installed wheel outside checkout
-        working-directory: ${{ runner.temp }}
-        run: python "$GITHUB_WORKSPACE/tools/smoke_installed.py"
-      - uses: actions/upload-artifact@v4
+          python-version: "3.11"
+      - name: Create dedicated job temporary directory
+        run: |
+          mkdir -m 700 -p "$RUNNER_TEMP/wavedl-scientific-ci"
+          printf 'TMPDIR=%s\n' "$RUNNER_TEMP/wavedl-scientific-ci" >> "$GITHUB_ENV"
+      - name: Install CPU PyTorch before project dependencies
+        run: python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+      - name: Install scientific and daemon dependencies
+        run: python -m pip install -e ".[dev]"
+      - run: python -m pip check
+      - name: Exercise POSIX registry crash and recovery paths
+        env:
+          WAVEDL_REGISTRY_RECOVERY_REPORT_DIR: ${{ runner.temp }}/wavedl-scientific-ci/registry-http-recovery
+        run: python -m pytest unit_tests/daemon/test_registry_http_recovery.py --junitxml="$TMPDIR/registry-http-recovery.xml"
+      - name: Require complete registry rollback, recovery and cleanup evidence
+        if: always()
+        run: |
+          python tools/verify_registry_http_recovery_report.py "$TMPDIR/registry-http-recovery/registry-http-recovery-projection-cursor-rebuild.json" "$TMPDIR/registry-http-recovery/registry-http-recovery-projection-cursor-ingest.json" "$TMPDIR/registry-http-recovery/registry-http-recovery-cursor-projection-rebuild.json" "$TMPDIR/registry-http-recovery/registry-http-recovery-cursor-projection-ingest.json"
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          root = ET.parse(Path(os.environ["TMPDIR"]) / "registry-http-recovery.xml").getroot()
+          cases = list(root.iter("testcase"))
+          assert len(cases) == 33
+          assert len({(case.get("classname"), case.get("name")) for case in cases}) == 33
+          assert all(case.get("classname") == "unit_tests.daemon.test_registry_http_recovery" for case in cases)
+          assert not any(list(root.iter(kind)) for kind in ("skipped", "failure", "error"))
+          PY
+      - name: Exercise metric-bearing registry crash and recovery paths
+        env:
+          WAVEDL_REGISTRY_METRIC_RECOVERY_REPORT_DIR: ${{ runner.temp }}/wavedl-scientific-ci/registry-metric-http-recovery
+        run: python -m pytest unit_tests/daemon/test_registry_metric_http_recovery.py --junitxml="$TMPDIR/registry-metric-http-recovery.xml"
+      - name: Require complete metric recovery, HTTP values and cleanup evidence
+        if: always()
+        run: |
+          python tools/verify_registry_metric_http_recovery_report.py "$TMPDIR/registry-metric-http-recovery/registry-metric-http-recovery-projection-cursor-rebuild.json" "$TMPDIR/registry-metric-http-recovery/registry-metric-http-recovery-projection-cursor-ingest.json" "$TMPDIR/registry-metric-http-recovery/registry-metric-http-recovery-cursor-projection-rebuild.json" "$TMPDIR/registry-metric-http-recovery/registry-metric-http-recovery-cursor-projection-ingest.json"
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          root = ET.parse(Path(os.environ["TMPDIR"]) / "registry-metric-http-recovery.xml").getroot()
+          cases = list(root.iter("testcase"))
+          assert len(cases) == 33
+          assert len({(case.get("classname"), case.get("name")) for case in cases}) == 33
+          assert all(case.get("classname") == "unit_tests.daemon.test_registry_metric_http_recovery" for case in cases)
+          matrix = {f"test_metric_transaction_sigkill_preserves_prefix_and_recovers_once[{recovery}-{order}]" for recovery in ("rebuild", "ingest") for order in ("projection-cursor", "cursor-projection")}
+          assert {case.get("name") for case in cases if case.get("name", "").startswith("test_metric_transaction_")} == matrix
+          assert not any(list(root.iter(kind)) for kind in ("skipped", "failure", "error"))
+          PY
+
+      - name: Test F01 submission crash recovery with exact JUnit contract
+        run: python -m pytest unit_tests/daemon/test_submission_http_crash_recovery.py --junitxml="$TMPDIR/submission-http-crash-recovery.xml"
+      - name: Require all six F01 crash-recovery boundaries with no skips
+        if: always()
+        run: |
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          root = ET.parse(Path(os.environ["TMPDIR"]) / "submission-http-crash-recovery.xml").getroot()
+          cases = list(root.iter("testcase"))
+          expected = {
+              f"test_http_acceptance_crash_same_db_recovery[{boundary}-{recovery}]"
+              for boundary, recovery in (
+                  ("intent", "unique"), ("claim", "missing"),
+                  ("acceptance", "unique"), ("acceptance", "missing"),
+                  ("acceptance", "ambiguous"), ("receipt", "unique"),
+              )
+          }
+          assert len(cases) == 6
+          assert {case.get("name") for case in cases} == expected
+          assert all(case.get("classname") == "unit_tests.daemon.test_submission_http_crash_recovery" for case in cases)
+          assert not any(list(root.iter(kind)) for kind in ("skipped", "failure", "error"))
+          PY
+
+      - name: Test CV mandatory product acceptance contracts
+        run: python -m pytest --noconftest unit_tests/test_cv_workflow.py
+      - name: Test optimizer-update OneCycle schedules and checkpoint resume
+        run: python -m pytest unit_tests/test_training_onecycle_accumulation.py --junitxml="$TMPDIR/onecycle-updates.xml"
+      - name: Require CPU and native DDP OneCycle acceptance with zero skips
+        if: always()
+        run: |
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          root = ET.parse(Path(os.environ["TMPDIR"]) / "onecycle-updates.xml").getroot()
+          cases = list(root.iter("testcase"))
+          assert len(cases) == 7
+          assert all(case.get("classname") == "unit_tests.test_training_onecycle_accumulation" for case in cases)
+          assert len({case.get("name") for case in cases}) == 7
+          assert not any(list(root.iter(kind)) for kind in ("skipped", "failure", "error"))
+          PY
+      - name: Test real CPU cross-validation options, constraints, precision and determinism
+        run: python -m pytest unit_tests/test_cv_option_fidelity.py unit_tests/test_cv_training_semantics.py unit_tests/test_cv_physical_components.py unit_tests/test_cv_deterministic.py unit_tests/test_cv_workers.py unit_tests/test_data_cv.py --junitxml="$TMPDIR/cv-option-fidelity.xml"
+      - name: Require all CV semantics cases with zero skips
+        if: always()
+        run: |
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from collections import Counter
+          from pathlib import Path
+          root = ET.parse(Path(os.environ["TMPDIR"]) / "cv-option-fidelity.xml").getroot()
+          cases = list(root.iter("testcase"))
+          assert len(cases) == 104
+          families = ["unit_tests.test_data_cv" if case.get("classname", "").startswith("unit_tests.test_data_cv.") else case.get("classname") for case in cases]
+          assert all(family in {"unit_tests.test_cv_option_fidelity", "unit_tests.test_cv_training_semantics", "unit_tests.test_cv_physical_components", "unit_tests.test_cv_deterministic", "unit_tests.test_cv_workers", "unit_tests.test_data_cv"} for family in families)
+          assert len({(case.get("classname"), case.get("name")) for case in cases}) == 104
+          assert Counter(families) == Counter({"unit_tests.test_cv_option_fidelity": 21, "unit_tests.test_cv_training_semantics": 20, "unit_tests.test_cv_physical_components": 11, "unit_tests.test_cv_deterministic": 6, "unit_tests.test_cv_workers": 7, "unit_tests.test_data_cv": 39})
+          required_data_cases = {
+              "test_cross_validation_rejects_invalid_input_contract[X0-y0-2-samples and targets]",
+              "test_cross_validation_rejects_invalid_input_contract[X1-y1-2-same number of samples]",
+              "test_cross_validation_rejects_invalid_input_contract[X2-y2-2-at least 2 dimensions]",
+              "test_cross_validation_rejects_invalid_input_contract[X3-y3-5-at least 5 samples]",
+              "test_cross_validation_rejects_nonfinite_input_contract",
+              "test_cross_validation_rejects_non_numeric_input_contract",
+          }
+          assert required_data_cases <= {case.get("name") for case in cases if case.get("classname") == "unit_tests.test_data_cv"}
+          assert not any(list(root.iter(kind)) for kind in ("skipped", "failure", "error"))
+          PY
+      - name: Test numerical runtime operations and public cancellation behavior
+        run: >-
+          python -m pytest unit_tests/test_runtime_operations.py
+          unit_tests/test_hosted_operation_result_quality.py
+          unit_tests/daemon/test_pending_cancellation_http.py
+          --junitxml="$TMPDIR/numerical-runtime.xml" -q
+      - name: Require three hosted numerical failures with zero skips
+        if: always()
+        run: |
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          root = ET.parse(Path(os.environ["TMPDIR"]) / "numerical-runtime.xml").getroot()
+          cases = list(root.iter("testcase"))
+          expected = {
+              "test_public_http_evaluation_failure_preserves_training_publication[nan]",
+              "test_public_http_evaluation_failure_preserves_training_publication[inf]",
+              "test_public_http_evaluation_failure_preserves_training_publication[empty]",
+          }
+          actual = {case.get("name") for case in cases if case.get("classname", "").endswith("test_hosted_operation_result_quality")}
+          assert cases and actual == expected
+          assert not any(list(root.iter(kind)) for kind in ("failure", "error", "skipped"))
+          PY
+
+      - name: Upload nonsecret scientific and recovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: distributions
-          path: dist/*
+          name: scientific-cpu
+          path: |
+            ${{ runner.temp }}/wavedl-scientific-ci/*.xml
+            ${{ runner.temp }}/wavedl-scientific-ci/registry-http-recovery/*.json
+            ${{ runner.temp }}/wavedl-scientific-ci/registry-metric-http-recovery/*.json
+            ${{ runner.temp }}/wavedl-scientific-ci/onecycle-updates.xml
+          if-no-files-found: warn

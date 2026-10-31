@@ -30,154 +30,14 @@
 
 </div>
 
----
-
-## 💡 What is WaveDL?
-
-WaveDL is a **deep learning framework** built for **wave-based inverse problems** — from ultrasonic NDE and geophysics to biomedical tissue characterization. It provides a robust, scalable training pipeline for mapping multi-dimensional data (1D/2D/3D) to physical quantities or dense 2D property fields.
-
-```
-Input: Waveforms, spectrograms, B-scans, dispersion curves, ...
-   ↓
-Output: Material properties, defect dimensions, elasticity/velocity maps, ...
-```
-
-The framework handles the engineering challenges of large-scale deep learning — big datasets, distributed training, and HPC deployment — so you can focus on the science, not the infrastructure.
-
-**Built for researchers who need:**
-- 📊 Vector and dense 2D regression with reproducibility and fair benchmarking
-- 🚀 Seamless multi-GPU training on HPC clusters
-- 💾 Memory-efficient handling of large-scale datasets
-- 🔧 Easy integration of custom model architectures
-
----
-
-## ✨ Features
-
-<div align="center">
-<table width="100%">
-<tr>
-<td width="50%" valign="top">
-
-**⚡ Dataset Caching**
-
-Prepare data for repeated training:
-- Memory-mapped training caches
-- Chunked HDF5 and MATLAB v7.3 preprocessing
-- NPZ loading and cross-validation require host memory
-
-</td>
-<td width="50%" valign="top">
-
-**🧠 Models? We've Got Options**
-
-20+ architectures (70+ variants), ready to go:
-- CNNs, ResNets, ViTs, SSMs, WaveNets...
-- Vector regression plus a [dense-output U-Net](#dense-2d-field-regression)
-- [Add your own](#adding-custom-models) in one line
-
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top">
-
-**🛡️ Distributed Training**
-
-Coordinate training across ranks:
-- Synchronized early stopping
-- Collective epoch checkpoints
-- Global validation metric aggregation
-
-</td>
-<td width="50%" valign="top">
-
-**🔬 Physics-Constrained Training**
-
-Make your model respect the laws:
-- Enforce bounds, positivity, equations
-- Simple expression syntax or Python
-- [Custom constraints](#physical-constraints) for various laws
-
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top">
-
-**🖥️ HPC-Native Design**
-
-Built for high-performance clusters:
-- Automatic GPU detection
-- WandB experiment tracking
-- BF16/FP16 mixed precision
-
-</td>
-<td width="50%" valign="top">
-
-**🔄 Training Recovery**
-
-Resume interrupted experiments:
-- Model, optimizer, and scheduler checkpoints
-- Epoch-boundary resume
-- Best-effort emergency saves on interrupt
-
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top">
-
-**🎛️ Flexible & Reproducible Training**
-
-Fully configurable via CLI flags or YAML:
-- Loss functions, optimizers, schedulers
-- K-fold cross-validation
-- See [Configuration](#️-configuration) for details
-
-</td>
-<td width="50%" valign="top">
-
-**📦 ONNX Export**
-
-Deploy models anywhere:
-- One-command export to ONNX
-- LabVIEW, MATLAB, C++ compatible
-- Validated PyTorch↔ONNX outputs
-
-</td>
-</tr>
-</table>
-</div>
-
----
-
-## 🚀 Getting Started
-
-### Installation
-
-#### From PyPI (recommended for all users)
+### Web GUI
 
 ```bash
-pip install --upgrade wavedl
+pip install wavedl
+wavedl serve
 ```
 
-This installs the training, inference, HPO, and ONNX export dependencies.
-The unreleased source requires Python 3.11+, PyTorch 2.13+, torchvision 0.28+,
-and ONNX 1.22+. Install a compatible PyTorch/torchvision pair for your CPU or
-CUDA/ROCm platform in a dedicated environment. Changes under `[Unreleased]`
-are available from source until the next package release.
-
-See [security and deployment boundaries](.github/SECURITY.md) for vulnerability
-reporting procedures, safe deserialization practices, and secure data handling guidelines.
-
-#### From Source (for development)
-
-```bash
-git clone https://github.com/ductho-le/WaveDL.git
-cd WaveDL
-pip install -e ".[dev]"
-```
-
-> [!NOTE]
-> Python 3.11+ required. For contributor setup (pre-commit hooks), see [CONTRIBUTING.md](.github/CONTRIBUTING.md).
+WaveDL opens in your browser, already signed in. If it doesn't, open the link printed in the terminal; that link keeps working until you stop WaveDL with Ctrl+C. Only one WaveDL can run at a time. Run `wavedl serve --help` for options such as `--port`, `--run-root`, and `--browse-root`.
 
 ### Quick Start
 
@@ -241,6 +101,10 @@ accelerate launch --num_machines 2 --main_process_ip <ip> -m wavedl.train --mode
 ```bash
 # Basic inference
 wavedl-test --checkpoint <checkpoint_folder> --data_path <test_data>
+
+# Custom architectures need explicit registration in each fresh inference process
+wavedl-test --checkpoint <checkpoint_folder> --data_path <test_data> \
+  --import my_model.py --model my_model --device cpu
 
 # With visualization, prediction export, and multiple plot formats
 wavedl-test --checkpoint <checkpoint_folder> --data_path <test_data> \
@@ -381,6 +245,13 @@ class MyModel(BaseModel):
 ```bash
 wavedl-train --import my_model.py --model my_model --data_path train.npz
 ```
+
+Use the same trusted `--import` modules or `.py` files for inference, plotting,
+and ONNX export. Daemon plans resolve registration files against the submission
+directory and apply explicit host/execution storage mappings; named modules
+must be available in the selected interpreter. Imports execute Python code and
+are never inferred from checkpoint metadata. The browser Results form exposes
+the import list explicitly; automatic plots retain the captured training list.
 
 WaveDL handles everything else: training loop, logging, checkpoints, multi-GPU, early stopping, etc.
 

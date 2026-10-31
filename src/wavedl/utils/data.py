@@ -31,7 +31,9 @@ from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 
-from .distributed import wait_for_everyone
+from wavedl.core.data_keys import INPUT_KEYS, OUTPUT_KEYS
+from wavedl.runtime import wait_for_workers
+
 from .targets import (
     SpatialTargetScaler,
     canonical_target_shape,
@@ -52,10 +54,6 @@ except ImportError:
 # ==============================================================================
 # DATA SOURCE ABSTRACTION
 # ==============================================================================
-
-# Supported key names for input/output arrays (priority order, pairwise aligned)
-INPUT_KEYS = ["input_train", "input_test", "X", "data", "inputs", "features", "x"]
-OUTPUT_KEYS = ["output_train", "output_test", "Y", "labels", "outputs", "targets", "y"]
 
 
 def _as_finite_float32(values: Any, name: str) -> np.ndarray:
@@ -1612,7 +1610,7 @@ def prepare_data(
     # stale metadata while rank 0 was recreating an interrupted dense cache.
     if not cache_exists and accelerator.is_main_process and os.path.exists(META_FILE):
         os.remove(META_FILE)
-    wait_for_everyone(accelerator)
+    wait_for_workers(accelerator)
 
     if not cache_exists:
         if accelerator.is_main_process:
@@ -1942,7 +1940,7 @@ def prepare_data(
     # ==========================================================================
     # PHASE 2: SYNCHRONIZED LOADING (All Ranks)
     # ==========================================================================
-    wait_for_everyone(accelerator)
+    wait_for_workers(accelerator)
 
     # Load metadata
     with open(META_FILE, "rb") as f:

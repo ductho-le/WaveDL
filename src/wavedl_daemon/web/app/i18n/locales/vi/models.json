@@ -1,0 +1,641 @@
+{
+  "cnn": {
+    "description": "Mạng nơ-ron tích chập cơ bản xếp chồng các khối Conv-BN-ReLU với phép gộp cực đại để giảm kích thước không gian. Bắt nguồn từ công trình nền tảng của LeCun về học dựa trên gradient (1989), kiến trúc này là mô hình cơ sở học sâu đơn giản nhất. Nó không có các cải tiến hiện đại như kết nối tắt hay cơ chế chú ý, đánh đổi khả năng biểu diễn để đạt độ phức tạp tối thiểu và tốc độ thử nghiệm nhanh.",
+    "bestFor": "Xây dựng mô hình cơ sở nhanh và thử nghiệm nguyên mẫu trên mọi loại dữ liệu",
+    "shortDescription": "Mạng tích chập đơn giản, nhanh và linh hoạt",
+    "pros": {
+      "first": "Huấn luyện và suy luận cực nhanh",
+      "second": "Chiếm rất ít bộ nhớ"
+    }
+  },
+  "resnet18": {
+    "description": "ResNet-18 đưa vào các kết nối tắt đồng nhất, cho phép gradient truyền trực tiếp qua mạng và giải quyết vấn đề suy giảm ở mạng sâu. Với 18 lớp được tổ chức thành 4 giai đoạn dư dùng BasicBlock (hai phép tích chập 3*3 mỗi khối), nó cho thấy mạng sâu hơn có thể được huấn luyện ổn định. Kiến trúc tiêu biểu năm 2015 này chiến thắng cuộc thi ImageNet và vẫn là một trong những mạng nền được dùng rộng rãi nhất trong thị giác máy tính.",
+    "bestFor": "Trích xuất đặc trưng đa dụng cho tập dữ liệu cỡ vừa",
+    "shortDescription": "Mạng dư với kết nối tắt (18 lớp)",
+    "pros": {
+      "first": "Độ tin cậy đã được chứng minh qua hàng nghìn ứng dụng",
+      "second": "Kết nối tắt giúp huấn luyện mạng sâu ổn định"
+    }
+  },
+  "resnet34": {
+    "description": "ResNet-34 mở rộng họ ResNet lên 34 lớp nhưng vẫn dùng các đơn vị dư BasicBlock. Độ sâu tăng thêm mang lại khả năng mô hình hóa lớn hơn thông qua nhiều phép biến đổi phi tuyến, giúp mạng học các phân cấp đặc trưng chi tiết hơn. Nó nằm ở điểm cân bằng giữa ResNet-18 gọn nhẹ và ResNet-50 dùng khối nút thắt, tăng khả năng biểu diễn mà không cần độ phức tạp kiến trúc của tích chập chiếu 1*1.",
+    "bestFor": "Tập dữ liệu lớn hơn cần mô hình có khả năng biểu diễn cao hơn",
+    "shortDescription": "Mạng dư sâu hơn (34 lớp)",
+    "pros": {
+      "first": "Khả năng biểu diễn cao hơn ResNet-18 với cùng loại khối",
+      "second": "Mở rộng đơn giản từ kiến trúc đã được kiểm chứng"
+    }
+  },
+  "resnet50": {
+    "description": "ResNet-50 giới thiệu thiết kế khối Bottleneck — chuỗi tích chập 1*1→3*3→1*1 giảm rồi khôi phục số chiều kênh, cho phép xây dựng 50 lớp chỉ với số tham số nhỉnh hơn ResNet-34. Cải tiến kiến trúc này giúp việc tính toán mạng sâu trở nên khả thi đồng thời tăng mạnh khả năng biểu diễn. ResNet-50 vẫn là mạng nền tiêu chuẩn thực tế cho học chuyển giao và là một trong những mô hình được đánh giá nhiều nhất trong lịch sử học sâu.",
+    "bestFor": "Phân cấp đặc trưng phức tạp và tác vụ quy mô lớn",
+    "shortDescription": "Mạng dư dạng nút thắt (50 lớp)",
+    "pros": {
+      "first": "Thiết kế nút thắt sử dụng tham số rất hiệu quả",
+      "second": "Mạng nền tiêu chuẩn trong ngành để đánh giá so sánh"
+    }
+  },
+  "resnet18_pretrained": {
+    "description": "Phiên bản ResNet-18 này được khởi tạo sẵn bằng trọng số học từ ImageNet-1K (1,28 triệu ảnh, 1000 lớp). Học chuyển giao từ những đặc trưng đã huấn luyện này giảm mạnh lượng dữ liệu có nhãn cần cho tác vụ mới, vì các lớp đầu đã mã hóa những thành phần thị giác phổ quát như cạnh, kết cấu và hình dạng. Tinh chỉnh thường được thực hiện bằng cách thay đầu phân loại và huấn luyện với tốc độ học thấp hơn.",
+    "bestFor": "Dữ liệu ảnh 2D có ít mẫu huấn luyện",
+    "shortDescription": "ResNet-18 khởi tạo bằng trọng số ImageNet",
+    "pros": {
+      "first": "Giảm mạnh nhu cầu dữ liệu nhờ học chuyển giao",
+      "second": "Hội tụ nhanh hơn nhiều so với huấn luyện từ đầu"
+    }
+  },
+  "resnet50_pretrained": {
+    "description": "ResNet-50 huấn luyện sẵn trên ImageNet-1K kết hợp kiến trúc Bottleneck mạnh với các biểu diễn phong phú đã học. Đặc trưng huấn luyện sẵn nắm bắt các phân cấp thị giác phức tạp từ hàng triệu ảnh tự nhiên, khiến nó trở thành một trong những điểm khởi đầu hiệu quả nhất cho học chuyển giao trong tác vụ thị giác 2D. Cấu trúc nút thắt sâu hơn trích xuất các đặc trưng phân biệt tốt hơn ResNet-18, mang lại độ chính xác cao hơn khi tinh chỉnh trên tác vụ tiếp theo.",
+    "bestFor": "Tác vụ 2D cần độ chính xác cao với học chuyển giao",
+    "shortDescription": "ResNet-50 khởi tạo bằng trọng số ImageNet",
+    "pros": {
+      "first": "Đặc trưng huấn luyện sẵn phong phú từ thiết kế nút thắt sâu",
+      "second": "Mô hình cơ sở học chuyển giao hàng đầu"
+    }
+  },
+  "densenet121": {
+    "description": "DenseNet-121 nối mỗi lớp với mọi lớp phía sau trong một khối kết nối dày đặc, tối đa hóa việc tái sử dụng đặc trưng và luồng gradient. Khác với ResNet cộng các kết nối tắt, DenseNet nối ghép các bản đồ đặc trưng, giúp mạng học biểu diễn gọn với ít tham số hơn. Các lớp chuyển tiếp giữa những khối dày đặc dùng tích chập 1*1 và gộp trung bình để giảm số chiều, khiến kiến trúc có hiệu quả tham số cao.",
+    "bestFor": "Huấn luyện tiết kiệm tham số với kết nối dày đặc",
+    "shortDescription": "Mạng kết nối dày đặc — tái sử dụng đặc trưng mạnh",
+    "pros": {
+      "first": "Hiệu quả tham số vượt trội nhờ tái sử dụng đặc trưng",
+      "second": "Luồng gradient mạnh nhờ kết nối dày đặc"
+    }
+  },
+  "densenet169": {
+    "description": "DenseNet-169 mở rộng kiến trúc DenseNet lên 169 lớp với nhiều khối dày đặc hơn và nhiều lớp hơn trong mỗi khối, tăng khả năng mô hình hóa trong khi giữ kiểu kết nối dày đặc cốt lõi. Kiến trúc sâu hơn có thể nắm bắt tương tác đặc trưng phức tạp hơn qua chuỗi bản đồ đặc trưng được nối ghép dài hơn. Đây là bước nâng cấp đáng kể so với DenseNet-121 cho tác vụ mà phiên bản nhỏ hơn chưa đủ khả năng biểu diễn.",
+    "bestFor": "Khi khả năng biểu diễn của DenseNet-121 chưa đủ",
+    "shortDescription": "DenseNet lớn hơn với 169 lớp",
+    "pros": {
+      "first": "Khả năng biểu diễn cao hơn DenseNet-121 với cùng triết lý thiết kế",
+      "second": "Sử dụng tham số hiệu quả nhờ kết nối dày đặc"
+    }
+  },
+  "densenet121_pretrained": {
+    "description": "DenseNet-121 huấn luyện sẵn trên ImageNet-1K kết hợp việc tái sử dụng đặc trưng nhờ kết nối dày đặc với các biểu diễn thị giác phong phú đã học. Kiểu kết nối dày đặc giúp mọi lớp phía sau sử dụng được các đặc trưng huấn luyện sẵn từ tất cả lớp trước, tạo không gian đặc trưng đặc biệt phong phú cho học chuyển giao. Chỉ với 7 triệu tham số, nó có một trong những tỷ lệ độ chính xác trên số tham số tốt nhất trong các mô hình huấn luyện sẵn.",
+    "bestFor": "Học chuyển giao hiệu quả cho tác vụ ảnh 2D",
+    "shortDescription": "DenseNet-121 khởi tạo bằng ImageNet",
+    "pros": {
+      "first": "Độ chính xác trên mỗi tham số rất tốt cho học chuyển giao",
+      "second": "Đặc trưng đa tỷ lệ huấn luyện sẵn phong phú nhờ kết nối dày đặc"
+    }
+  },
+  "mobilenet_v3_small": {
+    "description": "MobileNetV3-Small được thiết kế bằng cách kết hợp tìm kiếm kiến trúc nơ-ron có xét phần cứng (NAS) với thuật toán NetAdapt để tối ưu cho CPU di động. Nó dùng các khối dư đảo ngược với tích chập tách biệt theo chiều sâu gọn nhẹ, cơ chế chú ý squeeze-and-excitation và hàm kích hoạt hard-swish. Kiến trúc đạt độ chính xác đáng kể với số tham số rất nhỏ, phù hợp cho suy luận trực tiếp trên thiết bị.",
+    "bestFor": "Triển khai trên thiết bị biên, tập dữ liệu 2D rất nhỏ và suy luận nhanh",
+    "shortDescription": "Kiến trúc siêu nhẹ cho thiết bị di động",
+    "pros": {
+      "first": "Kích thước mô hình cực nhỏ, phù hợp thiết bị di động/biên",
+      "second": "Tối ưu theo phần cứng nhờ NAS"
+    }
+  },
+  "mobilenet_v3_large": {
+    "description": "MobileNetV3-Large mở rộng kiến trúc tìm được bằng NAS với lớp rộng hơn và nhiều khối dư đảo ngược hơn, tăng đáng kể độ chính xác trong khi giữ tốc độ suy luận phù hợp thiết bị di động. Nó dùng hàm kích hoạt h-swish ở các lớp sau và mô-đun squeeze-and-excitation để hiệu chỉnh lại các kênh. Kiến trúc đạt cân bằng tối ưu giữa độ chính xác và độ trễ trong các tình huống triển khai di động.",
+    "bestFor": "Triển khai di động cần độ chính xác tốt hơn phiên bản Small",
+    "shortDescription": "Kiến trúc di động hiệu quả với khả năng biểu diễn cao hơn",
+    "pros": {
+      "first": "Độ chính xác cao đối với mô hình dành cho di động",
+      "second": "Tối ưu tốt cho suy luận trên GPU và CPU di động"
+    }
+  },
+  "efficientnet_b0": {
+    "description": "EfficientNet-B0 là mô hình cơ sở tìm được bằng tìm kiếm kiến trúc nơ-ron, giới thiệu cách mở rộng kết hợp — đồng thời tăng độ rộng, độ sâu và độ phân giải đầu vào theo các tỷ lệ cố định. Xây dựng từ các khối tích chập nút thắt đảo ngược di động (MBConv) với squeeze-and-excitation, nó đạt độ chính xác hàng đầu với số tham số ít hơn 8,4 lần so với các mô hình tốt nhất trước đó. Kiến trúc năm 2019 này làm thay đổi căn bản cách cộng đồng nghĩ về mở rộng mô hình.",
+    "bestFor": "Tập dữ liệu 2D nhỏ đến vừa với tính toán hiệu quả",
+    "shortDescription": "CNN mở rộng kết hợp — cân bằng độ rộng, độ sâu, độ phân giải",
+    "pros": {
+      "first": "Độ chính xác trên mỗi FLOP rất tốt nhờ mở rộng kết hợp",
+      "second": "Kiến trúc nền tảng được tìm ra bằng NAS"
+    }
+  },
+  "efficientnet_b2": {
+    "description": "EfficientNet-B2 áp dụng các hệ số mở rộng kết hợp để tăng đồng đều độ rộng, độ sâu và độ phân giải từ mô hình cơ sở B0. Với số tham số khoảng 1,7 lần B0, nó xử lý đầu vào có độ phân giải lớn hơn (260*260 so với 224*224) và dùng các khối MBConv rộng, sâu hơn. Cách mở rộng cân bằng này cải thiện đáng kể độ chính xác trong khi duy trì nguyên tắc hiệu quả của họ EfficientNet.",
+    "bestFor": "Tập dữ liệu 2D cỡ vừa cần khả năng biểu diễn cao hơn",
+    "shortDescription": "EfficientNet mở rộng với khả năng biểu diễn cao hơn",
+    "pros": {
+      "first": "Mở rộng cân bằng giúp độ chính xác tăng đều",
+      "second": "Vẫn tương đối gọn nhẹ và hiệu quả"
+    }
+  },
+  "efficientnet_b4": {
+    "description": "EfficientNet-B4 tiếp tục mở rộng kiến trúc với đầu vào 380*380, tăng đáng kể độ chính xác nhưng cũng tăng chi phí tính toán. Đây là điểm trong họ EfficientNet mà độ chính xác bắt đầu sánh với các mô hình lớn hơn nhiều như ResNet-152, trong khi dùng ít tham số hơn hẳn. Mở rộng kết hợp bảo đảm khả năng biểu diễn tăng thêm được phân bổ đều theo độ rộng, độ sâu và độ phân giải.",
+    "bestFor": "Tập dữ liệu 2D lớn hơn ưu tiên độ chính xác",
+    "shortDescription": "Biến thể EfficientNet có khả năng biểu diễn cao hơn",
+    "pros": {
+      "first": "Độ chính xác cao, sánh với mô hình lớn hơn nhiều",
+      "second": "Sử dụng tham số hiệu quả nhờ mở rộng kết hợp"
+    }
+  },
+  "efficientnet_b7": {
+    "description": "EfficientNet-B7 đẩy mở rộng kết hợp đến giới hạn thực tiễn với đầu vào 600*600, 66 triệu tham số và cấu hình MBConv sâu, rộng nhất. Nó đạt độ chính xác top-1 84,3% trên ImageNet — hàng đầu tại thời điểm ra mắt — trong khi nhỏ hơn 8,4 lần so với GPipe, mô hình tốt nhất trước đó. Tuy nhiên, độ phân giải và độ sâu rất lớn khiến đây là một trong những mô hình đòi hỏi nhiều tài nguyên nhất của họ EfficientNet.",
+    "bestFor": "Tập dữ liệu 2D lớn với bộ nhớ GPU dồi dào",
+    "shortDescription": "EfficientNet lớn nhất — độ chính xác tối đa",
+    "pros": {
+      "first": "Độ chính xác cao nhất trong họ EfficientNet",
+      "second": "Độ chính xác ImageNet hàng đầu tại thời điểm ra mắt"
+    }
+  },
+  "efficientnet_v2_s": {
+    "description": "EfficientNetV2-S giới thiệu các khối Fused-MBConv thay kiểu tích chập theo chiều sâu cộng tích chập điểm bằng một phép tích chập hợp nhất ở các giai đoạn đầu, tăng mạnh tốc độ huấn luyện trên bộ tăng tốc hiện đại. Kết hợp với học tiến triển — tăng dần độ phân giải ảnh và điều chuẩn trong quá trình huấn luyện — nó huấn luyện nhanh hơn EfficientNetV1 5–11 lần đồng thời đạt độ chính xác tốt hơn. Kiến trúc năm 2021 này là bước phát triển đáng kể trong thiết kế mô hình hiệu quả.",
+    "bestFor": "Huấn luyện nhanh và chính xác trên tập dữ liệu 2D cỡ vừa",
+    "shortDescription": "Học tiến triển + MBConv hợp nhất giúp huấn luyện nhanh hơn",
+    "pros": {
+      "first": "Huấn luyện nhanh hơn EfficientNetV1 5-11 lần",
+      "second": "Fused-MBConv cải thiện mức tận dụng phần cứng"
+    }
+  },
+  "efficientnet_v2_m": {
+    "description": "EfficientNetV2-M mở rộng kiến trúc V2 với nhiều khối Fused-MBConv và MBConv hơn, tăng đáng kể độ chính xác trong khi giữ lợi thế tốc độ huấn luyện của học tiến triển. Nó kết hợp tích chập hợp nhất ở giai đoạn đầu với tích chập tách biệt theo chiều sâu ở giai đoạn sau, tối ưu cả thông lượng huấn luyện lẫn chất lượng mô hình. Phiên bản tầm trung này mang lại sự cân bằng tốt cho khối lượng công việc sản xuất chuyên sâu.",
+    "bestFor": "Tác vụ 2D cần độ chính xác cao và hiệu quả huấn luyện tốt",
+    "shortDescription": "EfficientNetV2 cỡ vừa — cải thiện tốc độ huấn luyện",
+    "pros": {
+      "first": "Cân bằng rất tốt giữa độ chính xác và tốc độ huấn luyện",
+      "second": "Học tiến triển giúp điều chuẩn hiệu quả"
+    }
+  },
+  "efficientnet_v2_l": {
+    "description": "EfficientNetV2-L là phiên bản lớn nhất trong họ V2, đẩy kiến trúc Fused-MBConv lên quy mô tối đa với 117 triệu tham số. Dù lớn, nó huấn luyện nhanh hơn đáng kể so với các mô hình V1 có độ chính xác tương đương nhờ học tiến triển và thiết kế khối tối ưu. Nó đạt độ chính xác ImageNet gần mức hàng đầu trong khi duy trì các nguyên tắc hiệu quả đặc trưng của dòng EfficientNet.",
+    "bestFor": "Độ chính xác tối đa trên tập dữ liệu 2D lớn",
+    "shortDescription": "EfficientNetV2 lớn — hiệu quả hàng đầu",
+    "pros": {
+      "first": "Độ chính xác gần mức hàng đầu",
+      "second": "Huấn luyện nhanh hơn nhiều so với mô hình V1 có độ chính xác tương đương"
+    }
+  },
+  "regnet_y_400mf": {
+    "description": "RegNet-Y 400MF thuộc không gian thiết kế RegNet — họ mạng được tìm ra bằng cách khảo sát có hệ thống các kiểu độ rộng mạng, độ sâu và độ rộng nhóm. Phiên bản Y thêm mô-đun squeeze-and-excitation để chú ý theo kênh. Với ngân sách 400 triệu FLOP, nó đạt độ chính xác cao trong nhóm chi phí tính toán của mình. Triết lý RegNet nhấn mạnh cấu trúc mạng đơn giản, đều đặn và mở rộng dễ dự đoán, được tìm ra qua phân tích ở cấp quần thể các không gian thiết kế mạng.",
+    "bestFor": "Suy luận 2D gọn nhẹ với hiệu năng nhất quán",
+    "shortDescription": "Mạng được điều chuẩn — ngân sách 400M FLOPs",
+    "pros": {
+      "first": "Khả năng mở rộng dễ dự đoán nhờ phân tích không gian thiết kế",
+      "second": "Squeeze-and-excitation bổ sung chú ý theo kênh"
+    }
+  },
+  "regnet_y_800mf": {
+    "description": "RegNet-Y 800MF tăng gấp đôi ngân sách tính toán của phiên bản 400MF, dùng các lớp rộng hơn và nhiều nhóm hơn để tăng khả năng biểu diễn. Phương pháp không gian thiết kế bảo đảm mở rộng tối ưu — mỗi FLOP tăng thêm được phân bổ nhằm tối đa hóa độ chính xác. Với chú ý squeeze-and-excitation và tích chập nhóm được điều chỉnh tốt, đây là một trong những mô hình hiệu quả nhất ở mức tính toán của nó.",
+    "bestFor": "Cân bằng tốc độ và độ chính xác cho tác vụ 2D",
+    "shortDescription": "Mạng được điều chuẩn — ngân sách 800M FLOPs",
+    "pros": {
+      "first": "Độ chính xác rất tốt với ngân sách tính toán 800MF",
+      "second": "Phân bổ FLOP tối ưu nhờ tìm kiếm không gian thiết kế"
+    }
+  },
+  "regnet_y_1_6gf": {
+    "description": "RegNet-Y 1.6GF hoạt động ở ngân sách tính toán tầm trung, cung cấp khả năng mô hình hóa đáng kể với đặc tính hiệu năng dễ dự đoán. Cấu trúc mạng đều đặn — độ rộng tăng tuyến tính và độ rộng nhóm không đổi — đặc biệt phù hợp để tối ưu phần cứng và suy luận theo lô. Với 10,3 triệu tham số, nó là lựa chọn thay thế đáng chú ý cho EfficientNet-B0/B2 với đặc tính độ trễ dễ dự đoán hơn.",
+    "bestFor": "Tác vụ 2D tầm trung với khả năng mở rộng dễ dự đoán",
+    "shortDescription": "Mạng được điều chuẩn — ngân sách 1.6G FLOPs",
+    "pros": {
+      "first": "Độ trễ dễ dự đoán giúp lập kế hoạch triển khai dễ hơn",
+      "second": "Độ chính xác cao ở mức tính toán tầm trung"
+    }
+  },
+  "regnet_y_3_2gf": {
+    "description": "RegNet-Y 3.2GF mở rộng lên mức tính toán cao hơn với 17,9 triệu tham số, mang lại khả năng trích xuất đặc trưng mạnh cho tác vụ 2D khó. Cách tiếp cận không gian thiết kế có hệ thống giúp kiến trúc tránh các vấn đề mở rộng thường gặp — độ rộng và độ sâu của từng giai đoạn được cân bằng tối ưu. Kết hợp với chú ý SE, nó đạt độ chính xác cạnh tranh với kiến trúc thiết kế thủ công như ResNet-50 ở ngân sách tính toán tương tự.",
+    "bestFor": "Trích xuất đặc trưng 2D với khả năng biểu diễn cao hơn",
+    "shortDescription": "Mạng được điều chuẩn — ngân sách 3.2G FLOPs",
+    "pros": {
+      "first": "Cạnh tranh với ResNet-50 ở mức tính toán tương tự",
+      "second": "Kiến trúc tối ưu nhờ khảo sát có hệ thống không gian thiết kế"
+    }
+  },
+  "regnet_y_8gf": {
+    "description": "RegNet-Y 8GF là phiên bản RegNet-Y lớn nhất trong bộ này, dùng 8 tỷ FLOP với 37,4 triệu tham số. Ở quy mô này, nó cạnh tranh trực tiếp về độ chính xác với ConvNet lớn và cả một số mô hình dựa trên Transformer. Cấu trúc đều đặn và tích chập nhóm cho phép huấn luyện phân tán hiệu quả, còn ngân sách 8GF hỗ trợ phân cấp đặc trưng sâu, phong phú phù hợp tác vụ nhận dạng thị giác quy mô lớn.",
+    "bestFor": "Tác vụ 2D quy mô lớn cần biểu diễn mạnh",
+    "shortDescription": "Mạng được điều chuẩn — ngân sách 8G FLOPs",
+    "pros": {
+      "first": "Cạnh tranh với ConvNet lớn hơn và một số ViT",
+      "second": "Huấn luyện phân tán hiệu quả nhờ cấu trúc đều đặn"
+    }
+  },
+  "convnext_tiny": {
+    "description": "ConvNeXt hiện đại hóa có hệ thống ResNet tiêu chuẩn bằng các nguyên tắc thiết kế Transformer: tầng đầu chia thành mảnh, khối nút thắt đảo ngược, tích chập tách biệt theo chiều sâu 7*7, ít hàm kích hoạt hơn, LayerNorm thay BatchNorm và kích hoạt GELU. Kiến trúc năm 2022 từ Meta AI này chứng minh mạng thuần tích chập có thể ngang bằng hoặc vượt độ chính xác của Swin Transformer khi huấn luyện theo các phương pháp hiện đại, thách thức giả định rằng mô hình dựa trên chú ý luôn vượt trội.",
+    "bestFor": "Lựa chọn thay thế ViT mạnh trên dữ liệu ở mọi số chiều",
+    "shortDescription": "ConvNet thuần hiện đại hóa, lấy cảm hứng từ Transformer",
+    "pros": {
+      "first": "Cạnh tranh với Swin Transformer chỉ bằng tích chập",
+      "second": "Phương pháp huấn luyện hiện đại với điều chuẩn mạnh"
+    }
+  },
+  "convnext_small": {
+    "description": "ConvNeXt Small tăng số chiều kênh ở cả bốn giai đoạn so với Tiny, nâng khả năng mô hình hóa trong khi giữ triết lý thiết kế ConvNet hiện đại hóa. Độ rộng tăng thêm cho phép biểu diễn đặc trưng phong phú hơn ở từng độ phân giải không gian, phù hợp hơn với tập dữ liệu có độ phức tạp thị giác cao hoặc cần phân biệt chi tiết.",
+    "bestFor": "Khi khả năng biểu diễn của ConvNeXt Tiny chưa đủ",
+    "shortDescription": "ConvNeXt lớn hơn với các lớp rộng hơn",
+    "pros": {
+      "first": "Khả năng biểu diễn cao hơn Tiny với cùng thiết kế hiệu quả",
+      "second": "ConvNet thuần đạt độ chính xác ngang Swin-S Transformer"
+    }
+  },
+  "convnext_base": {
+    "description": "ConvNeXt Base đạt số tham số và độ chính xác ngang ViT-Base nhưng chỉ dùng phép tích chập. Với 87,6 triệu tham số, đây là cấu hình ConvNeXt lớn nhất trong bộ này, có khả năng học các phân cấp đặc trưng rất phức tạp. Thiết kế phân cấp nhiều giai đoạn tạo đặc trưng đa tỷ lệ một cách tự nhiên, là lợi thế so với biểu diễn đơn tỷ lệ của ViT trong tác vụ dự đoán dày đặc.",
+    "bestFor": "Tập dữ liệu lớn cần hiệu năng ở mức Transformer",
+    "shortDescription": "ConvNeXt cỡ Base — cạnh tranh với ViT-B",
+    "pros": {
+      "first": "Đạt độ chính xác ngang ViT-Base chỉ bằng tích chập",
+      "second": "Đặc trưng phân cấp lý tưởng cho dự đoán dày đặc"
+    }
+  },
+  "convnext_tiny_pretrained": {
+    "description": "ConvNeXt Tiny huấn luyện sẵn trên ImageNet-1K kết hợp kiến trúc ConvNet hiện đại hóa với các biểu diễn mạnh đã học. Các đặc trưng huấn luyện sẵn hưởng lợi từ phương pháp huấn luyện hiện đại gồm RandAugment, Mixup, CutMix và điều chuẩn mạnh, tạo đặc trưng học chuyển giao tốt hơn đáng kể so với ResNet cổ điển huấn luyện sẵn. Điều này khiến nó trở thành một trong những mạng nền học chuyển giao 2D mạnh nhất ở cùng số tham số.",
+    "bestFor": "Học chuyển giao 2D chất lượng cao",
+    "shortDescription": "ConvNeXt Tiny khởi tạo bằng ImageNet-1K",
+    "pros": {
+      "first": "Đặc trưng học chuyển giao tốt hơn ResNet huấn luyện sẵn",
+      "second": "Phương pháp huấn luyện hiện đại tạo biểu diễn vững chắc"
+    }
+  },
+  "convnext_v2_tiny": {
+    "description": "ConvNeXt V2 cải tiến ConvNeXt gốc bằng Global Response Normalization (GRN) — lớp mới giải quyết hiện tượng sụp đổ đặc trưng trong học tự giám sát bằng cách chuẩn hóa và hiệu chỉnh đáp ứng kênh dựa trên thống kê toàn cục. Được đồng thiết kế với khung tiền huấn luyện Fully Convolutional Masked Autoencoder (FCMAE), mô hình V2 đạt biểu diễn tốt hơn đáng kể, đặc biệt khi tiền huấn luyện với mục tiêu tự giám sát, thu hẹp khoảng cách giữa ConvNet và ViT mô hình hóa ảnh che khuất.",
+    "bestFor": "Cải thiện độ ổn định huấn luyện ở mọi số chiều",
+    "shortDescription": "ConvNeXt V2 với Global Response Normalization",
+    "pros": {
+      "first": "GRN ngăn sụp đổ đặc trưng trong học tự giám sát",
+      "second": "Đồng thiết kế với FCMAE để tiền huấn luyện tối ưu"
+    }
+  },
+  "convnext_v2_small": {
+    "description": "ConvNeXt V2 Small mở rộng kiến trúc V2 với kênh rộng hơn trong khi giữ các lớp GRN xuyên suốt. Khả năng biểu diễn lớn hơn hưởng lợi rõ rệt từ tiền huấn luyện tự giám sát qua FCMAE, vì các tham số bổ sung khai thác tốt hơn những biểu diễn phong phú học từ dữ liệu không nhãn. Phiên bản này đặc biệt đáng chú ý khi có tập dữ liệu không nhãn lớn để tiền huấn luyện.",
+    "bestFor": "Biểu diễn được cải thiện nhờ tiền huấn luyện tự giám sát",
+    "shortDescription": "ConvNeXt V2 lớn hơn với các lớp GRN",
+    "pros": {
+      "first": "Rất hiệu quả khi tiền huấn luyện tự giám sát bằng FCMAE",
+      "second": "GRN cải thiện tính đa dạng giữa các kênh"
+    }
+  },
+  "convnext_v2_base": {
+    "description": "ConvNeXt V2 Base đại diện cho đỉnh cao thiết kế kiến trúc thuần tích chập, kết hợp 87,7 triệu tham số với chuẩn hóa GRN và khả năng tương thích FCMAE. Khi tiền huấn luyện bằng FCMAE trên ImageNet, nó đạt độ chính xác cạnh tranh hoặc vượt mô hình ViT dùng bộ tự mã hóa che khuất, cho thấy mô hình ConvNet có thể sánh với học tự giám sát dựa trên Transformer nếu được thiết kế phù hợp.",
+    "bestFor": "Tác vụ quy mô lớn với kiến trúc ConvNet hiện đại",
+    "shortDescription": "ConvNeXt V2 Base — hiệu năng ConvNet hàng đầu",
+    "pros": {
+      "first": "Đạt độ chính xác ngang MAE-ViT chỉ bằng tích chập",
+      "second": "ConvNet hàng đầu với tiền huấn luyện tự giám sát"
+    }
+  },
+  "convnext_v2_tiny_pretrained": {
+    "description": "ConvNeXt V2 Tiny huấn luyện sẵn kết hợp kiến trúc tăng cường GRN với trọng số học bằng các mô hình huấn luyện hiện đại. Các đặc trưng huấn luyện sẵn nắm bắt biểu diễn thị giác vững chắc, chuyển giao rất tốt sang tác vụ 2D tiếp theo, đặc biệt nhờ sự đa dạng đặc trưng được cải thiện bởi Global Response Normalization trong tiền huấn luyện.",
+    "bestFor": "Học chuyển giao 2D ở mức hàng đầu",
+    "shortDescription": "ConvNeXt V2 Tiny với trọng số huấn luyện sẵn",
+    "pros": {
+      "first": "Đặc trưng huấn luyện sẵn tăng cường bằng GRN giúp học chuyển giao vượt trội",
+      "second": "Kiến trúc hiện đại với biểu diễn vững chắc"
+    }
+  },
+  "unireplknet_tiny": {
+    "description": "UniRepLKNet đẩy kích thước nhân tích chập lên rất lớn (đến 31*31 hoặc hơn) bằng tái tham số hóa cấu trúc, giúp tích chập nắm bắt phụ thuộc rất xa vốn thường dành cho cơ chế chú ý. Kiến trúc dùng các khối tái tham số hóa giãn cách để phân rã nhân lớn thành các nhánh song song hiệu quả khi huấn luyện, rồi hợp nhất thành một nhân lớn khi suy luận. Điều này mang lại trường tiếp nhận toàn cục như Transformer với đặc tính tính toán của CNN.",
+    "bestFor": "Tác vụ cần trường tiếp nhận hiệu dụng rất lớn",
+    "shortDescription": "ConvNet nhân lớn với khả năng cảm nhận đa dụng",
+    "pros": {
+      "first": "Trường tiếp nhận rất lớn, sánh với cơ chế chú ý",
+      "second": "Hiệu quả nhờ tái tham số hóa cấu trúc"
+    }
+  },
+  "unireplknet_small": {
+    "description": "UniRepLKNet Small mở rộng độ rộng kênh và có thể cả kích thước nhân so với Tiny, tăng khả năng nắm bắt quan hệ không gian phức tạp. Kỹ thuật tái tham số hóa cấu trúc bảo đảm suy luận vẫn hiệu quả dù kích thước nhân hiệu dụng rất lớn, nhờ hợp nhất các nhánh song song. Phiên bản này phù hợp tác vụ mà quan hệ không gian trải trên phần lớn đầu vào.",
+    "bestFor": "Mẫu không gian phức tạp ở mọi số chiều",
+    "shortDescription": "UniRepLKNet rộng hơn với nhân lớn hơn",
+    "pros": {
+      "first": "Trường tiếp nhận hiệu dụng rất lớn",
+      "second": "Suy luận hiệu quả nhờ nhân được tái tham số hóa"
+    }
+  },
+  "unireplknet_base": {
+    "description": "UniRepLKNet Base là phiên bản lớn nhất, tối đa hóa cả độ rộng kênh lẫn kích thước nhân để đạt trường tiếp nhận rộng nhất có thể trong kiến trúc thuần tích chập. Với 97,6 triệu tham số, nó cho thấy nhân tích chập cực lớn có thể cạnh tranh với chú ý toàn cục ở các tác vụ cần hiểu ngữ cảnh toàn ảnh, như phân đoạn ngữ nghĩa và phát hiện đối tượng quy mô lớn.",
+    "bestFor": "Tác vụ quy mô lớn cần nắm bắt ngữ cảnh toàn cục",
+    "shortDescription": "UniRepLKNet Base — trường tiếp nhận tối đa",
+    "pros": {
+      "first": "Trường tiếp nhận lớn nhất trong ConvNet",
+      "second": "Cạnh tranh với chú ý toàn cục trên tác vụ dày đặc"
+    }
+  },
+  "vit_tiny": {
+    "description": "ViT Tiny là phiên bản gọn của Vision Transformer, chia ảnh đầu vào thành các mảnh kích thước cố định, nhúng tuyến tính rồi xử lý chuỗi bằng các khối mã hóa Transformer tiêu chuẩn với tự chú ý nhiều đầu (MHSA). Được Google Brain giới thiệu năm 2020, ViT chứng minh kiến trúc thuần Transformer — ban đầu thiết kế cho xử lý ngôn ngữ tự nhiên — có thể đạt kết quả rất tốt trong phân loại ảnh khi được huấn luyện với đủ dữ liệu, thách thức ưu thế của CNN.",
+    "bestFor": "Tập dữ liệu nhỏ mà cơ chế chú ý hữu ích",
+    "shortDescription": "Vision Transformer gọn nhẹ với nhúng mảnh ảnh",
+    "pros": {
+      "first": "Tự chú ý toàn cục nắm bắt phụ thuộc xa",
+      "second": "Gọn nhẹ so với kiến trúc Transformer"
+    }
+  },
+  "vit_small": {
+    "description": "ViT Small dùng phép nhúng 384 chiều với 6 đầu chú ý qua 12 lớp mã hóa Transformer, tạo cân bằng tốt giữa khả năng biểu diễn và yêu cầu tính toán. Mỗi lớp áp dụng tự chú ý nhiều đầu, sau đó là khối MLP với kích hoạt GELU và LayerNorm. Cấu hình tầm trung này nắm bắt tương tác token phức tạp mà vẫn có thể huấn luyện trên một GPU với tập dữ liệu cỡ vừa.",
+    "bestFor": "Tập dữ liệu cỡ vừa với đủ dữ liệu huấn luyện",
+    "shortDescription": "Kiến trúc Vision Transformer tiêu chuẩn",
+    "pros": {
+      "first": "Cân bằng tốt khả năng biểu diễn và tính toán trong họ ViT",
+      "second": "Mô hình hóa đặc trưng toàn cục mạnh"
+    }
+  },
+  "vit_base": {
+    "description": "ViT Base (ViT-B/16) dùng phép nhúng 768 chiều với 12 đầu chú ý qua 12 lớp, ngang quy mô kiến trúc BERT-Base. Với 85,3 triệu tham số, đây là cấu hình đầu tiên chứng minh ViT có thể vượt độ chính xác của CNN khi tiền huấn luyện trên tập dữ liệu lớn (JFT-300M). Tự chú ý toàn cục ở mỗi lớp cho phép mô hình học các kiểu tổng hợp đặc trưng động phụ thuộc đầu vào, điều mà tích chập nhân cố định không làm được.",
+    "bestFor": "Tập dữ liệu lớn mà tự chú ý toàn cục hữu ích",
+    "shortDescription": "Vision Transformer quy mô đầy đủ",
+    "pros": {
+      "first": "Mẫu chú ý động phụ thuộc đầu vào",
+      "second": "Độ chính xác cao khi có đủ dữ liệu huấn luyện"
+    }
+  },
+  "swin_t": {
+    "description": "Swin Transformer đổi mới Transformer thị giác bằng tự chú ý cửa sổ dịch chuyển (Swin), tính chú ý trong các cửa sổ cục bộ rồi dịch chúng giữa các lớp để kết nối xuyên cửa sổ. Cách này đạt độ phức tạp tính toán tuyến tính theo kích thước ảnh (so với bậc hai của ViT) trong khi giữ tháp đặc trưng phân cấp tương tự CNN. Kiến trúc năm 2021 nhận giải khuyến khích bài báo xuất sắc tại ICCV và trở thành mạng nền phổ biến cho phát hiện và phân đoạn.",
+    "bestFor": "Tác vụ 2D cần trích xuất đặc trưng phân cấp",
+    "shortDescription": "Transformer cửa sổ dịch chuyển — chú ý cục bộ hiệu quả",
+    "pros": {
+      "first": "Độ phức tạp tuyến tính cho phép đầu vào độ phân giải cao",
+      "second": "Đặc trưng phân cấp lý tưởng cho phát hiện/phân đoạn"
+    }
+  },
+  "swin_s": {
+    "description": "Swin Small tăng gấp đôi độ sâu của giai đoạn thứ ba so với Swin Tiny, nâng đáng kể khả năng học mẫu thị giác phức tạp ở mức độ phân giải 1/16. Với 48,8 triệu tham số, nó cải thiện đáng kể độ chính xác trong khi giữ cơ chế chú ý cửa sổ dịch chuyển hiệu quả. Phiên bản này phù hợp tác vụ cần biểu diễn đặc trưng trung gian phong phú hơn.",
+    "bestFor": "Tập dữ liệu 2D vừa đến lớn với mẫu phức tạp",
+    "shortDescription": "Swin Transformer lớn hơn với khả năng biểu diễn cao hơn",
+    "pros": {
+      "first": "Giai đoạn thứ ba sâu hơn cho đặc trưng trung gian phong phú hơn",
+      "second": "Chú ý cửa sổ dịch chuyển hiệu quả, mở rộng tốt"
+    }
+  },
+  "swin_b": {
+    "description": "Swin Base là phiên bản Swin tiêu chuẩn lớn nhất với 86,7 triệu tham số và phép nhúng ban đầu 128 chiều, cung cấp khả năng biểu diễn tối đa trong họ kiến trúc Swin. Thiết kế phân cấp bốn giai đoạn với giảm lấy mẫu dần tạo bản đồ đặc trưng đa tỷ lệ phong phú. Kết hợp với độ phức tạp tuyến tính của chú ý cửa sổ dịch chuyển, nó xử lý ảnh độ phân giải cao hiệu quả và nắm bắt cả chi tiết cục bộ lẫn ngữ cảnh toàn cục qua tương tác xuyên cửa sổ.",
+    "bestFor": "Tập dữ liệu 2D lớn với đặc trưng phân cấp",
+    "shortDescription": "Swin Transformer Base — hiệu năng 2D mạnh",
+    "pros": {
+      "first": "Khả năng biểu diễn cao nhất trong họ Swin",
+      "second": "Đặc trưng đa tỷ lệ cho tác vụ dự đoán dày đặc"
+    }
+  },
+  "maxvit_tiny": {
+    "description": "MaxViT giới thiệu cơ chế chú ý đa trục mới, kết hợp chú ý cục bộ theo khối (trong cửa sổ không gian) và chú ý toàn cục giãn cách (trên lưới token lấy mẫu thưa) ở các lớp luân phiên. Thiết kế chú ý kép nắm bắt cả mẫu cục bộ chi tiết lẫn phụ thuộc toàn cục xa với độ phức tạp tuyến tính. Mỗi khối MaxViT còn có các lớp MBConv, tạo kiến trúc lai CNN-Transformer hưởng lợi từ cả thiên hướng quy nạp tích chập lẫn chú ý toàn cục.",
+    "bestFor": "Tác vụ 2D cần cả chú ý cục bộ và toàn cục",
+    "shortDescription": "Chú ý đa trục với chú ý cục bộ theo khối + toàn cục giãn cách",
+    "pros": {
+      "first": "Nắm bắt hiệu quả cả phụ thuộc cục bộ và toàn cục",
+      "second": "Độ phức tạp tuyến tính nhờ chú ý theo khối + giãn cách"
+    }
+  },
+  "maxvit_small": {
+    "description": "MaxViT Small tăng số chiều kênh và số khối so với MaxViT Tiny, nâng khả năng học đặc trưng thị giác đa tỷ lệ phức tạp. Cơ chế chú ý đa trục mở rộng có thể nắm bắt quan hệ không gian đa dạng hơn, còn khả năng biểu diễn MBConv tăng thêm làm phong phú việc trích xuất đặc trưng cục bộ. Phiên bản này hướng tới tác vụ cần độ chính xác cao hơn với phụ thuộc không gian phức tạp.",
+    "bestFor": "Tác vụ 2D phức tạp cần đặc trưng đa tỷ lệ",
+    "shortDescription": "MaxViT lớn hơn với khả năng biểu diễn mở rộng",
+    "pros": {
+      "first": "Chú ý đa trục tăng cường cho mẫu phức tạp",
+      "second": "Kết hợp đặc trưng cục bộ + toàn cục mạnh hơn"
+    }
+  },
+  "maxvit_base": {
+    "description": "MaxViT Base là phiên bản lớn nhất với 119,1 triệu tham số, tối đa hóa khả năng biểu diễn của cơ chế chú ý đa trục. Ở quy mô này, sự kết hợp chú ý cục bộ theo khối, chú ý toàn cục giãn cách và các lớp MBConv tạo một trong những kiến trúc thị giác giàu khả năng biểu diễn nhất. Nó cho kết quả đặc biệt tốt trong tác vụ tạo ảnh (làm mạng nền cho mô hình khuếch tán), bên cạnh các bài đánh giá phân loại và phát hiện tiêu chuẩn.",
+    "bestFor": "Tập dữ liệu 2D lớn với tài nguyên GPU dồi dào",
+    "shortDescription": "MaxViT quy mô đầy đủ — chú ý đa trục hàng đầu",
+    "pros": {
+      "first": "Khả năng biểu diễn chú ý đa trục cao nhất",
+      "second": "Đạt mức hàng đầu trên nhiều bộ đánh giá thị giác"
+    }
+  },
+  "fastvit_t8": {
+    "description": "FastViT-T8 giới thiệu RepMixer — lớp trộn token có thể tái tham số hóa, dùng tích chập theo chiều sâu khi huấn luyện rồi hợp nhất thành một phép toán hiệu quả khi suy luận. Kết hợp với kiến trúc lai dùng giai đoạn tích chập ở đầu và chú ý ở sau, FastViT đạt sự cân bằng đáng kể giữa độ trễ và độ chính xác. Được Apple phát triển để triển khai trên thiết bị, đây là một trong những mô hình thị giác lai nhanh nhất.",
+    "bestFor": "Suy luận 2D thời gian thực với tài nguyên tối thiểu",
+    "shortDescription": "Mô hình lai CNN-ViT cực nhanh với RepMixer",
+    "pros": {
+      "first": "Suy luận cực nhanh nhờ tái tham số hóa cấu trúc",
+      "second": "Cân bằng rất tốt giữa độ trễ và độ chính xác"
+    }
+  },
+  "fastvit_t12": {
+    "description": "FastViT-T12 tăng khả năng biểu diễn so với T8 bằng kênh rộng hơn và nhiều khối RepMixer hơn, cải thiện độ chính xác trong khi giữ đặc tính suy luận rất nhanh của họ FastViT. Khả năng tăng thêm giúp nó nắm bắt mẫu thị giác phức tạp hơn, phù hợp ứng dụng mà độ chính xác T8 hơi thiếu nhưng tốc độ thời gian thực vẫn thiết yếu.",
+    "bestFor": "Tác vụ 2D ưu tiên tốc độ nhưng cần độ chính xác tốt hơn",
+    "shortDescription": "Mô hình lai nhanh với khả năng biểu diễn nhỉnh hơn",
+    "pros": {
+      "first": "Độ chính xác tốt hơn T8 với đặc tính tốc độ tương tự",
+      "second": "RepMixer giúp suy luận hiệu quả"
+    }
+  },
+  "fastvit_s12": {
+    "description": "FastViT-S12 chuyển sang nhóm mô hình Small với 8,8 triệu tham số, dùng kênh rộng hơn dòng T trong khi giữ cách trộn token hiệu quả của RepMixer. Phiên bản này cân bằng tốc độ suy luận với khả năng mô hình hóa, phù hợp triển khai sản xuất khi yêu cầu độ trễ và độ chính xác đều ở mức vừa phải. Thiết kế lai CNN-chú ý nắm bắt mẫu cục bộ qua tích chập và quan hệ toàn cục qua giai đoạn chú ý phía sau.",
+    "bestFor": "Tác vụ 2D hiệu quả cần độ phức tạp vừa phải",
+    "shortDescription": "FastViT nhỏ cân bằng tốc độ và độ chính xác",
+    "pros": {
+      "first": "Cân bằng tốt tốc độ và độ chính xác trong họ FastViT",
+      "second": "Thiết kế lai CNN-chú ý hiệu quả"
+    }
+  },
+  "fastvit_sa12": {
+    "description": "FastViT-SA12 thêm các giai đoạn tự chú ý (SA) tường minh bên cạnh trộn token RepMixer, tạo mô hình có khả năng biểu diễn cao hơn để nắm bắt tương tác toàn cục phức tạp. Hậu tố SA chỉ các khối chú ý bổ sung ở giai đoạn sau của mạng, tăng đáng kể độ chính xác so với S12 với mức tăng độ trễ vừa phải. Thiết kế này tối ưu khi có thêm một chút ngân sách tính toán để cải thiện chất lượng đặc trưng.",
+    "bestFor": "Tác vụ 2D hưởng lợi từ chú ý ở độ phân giải cao hơn",
+    "shortDescription": "FastViT với các giai đoạn tự chú ý",
+    "pros": {
+      "first": "Các giai đoạn tự chú ý bổ sung khả năng suy luận toàn cục",
+      "second": "Tăng đáng kể độ chính xác so với S12"
+    }
+  },
+  "caformer_s18": {
+    "description": "CAFormer (Convolution-Attention Former) dựa trên giả thuyết MetaFormer — kiến trúc Transformer tổng quát quan trọng hơn bộ trộn token cụ thể. Nó dùng tích chập tách biệt theo chiều sâu ở giai đoạn đầu để trích xuất đặc trưng cục bộ và tự chú ý cơ bản ở giai đoạn sau để suy luận toàn cục. Thiết kế lai có cơ sở này, được kiểm chứng bằng khung MetaFormer của Sea AI Lab, đạt độ chính xác rất tốt nhờ tận dụng thiên hướng quy nạp phù hợp ở từng độ phân giải không gian.",
+    "bestFor": "Tác vụ 2D cần chiến lược trộn token mạnh",
+    "shortDescription": "MetaFormer với chú ý và tích chập tách biệt",
+    "pros": {
+      "first": "Thiết kế có cơ sở từ khung MetaFormer",
+      "second": "Bộ trộn token tối ưu ở mỗi giai đoạn độ phân giải"
+    }
+  },
+  "caformer_s36": {
+    "description": "CAFormer-S36 tăng gấp đôi độ sâu của S18 lên 36 khối, thêm đáng kể số lớp cho cả trộn token dựa trên tích chập lẫn chú ý. Độ sâu tăng giúp mô hình học phép biến đổi đặc trưng phức tạp hơn và mẫu chú ý tinh tế hơn ở các giai đoạn sau. Phiên bản sâu hơn này nổi bật ở tác vụ cần phân biệt chi tiết hoặc suy luận không gian phức tạp.",
+    "bestFor": "Mẫu 2D phức tạp cần xử lý sâu hơn",
+    "shortDescription": "CAFormer sâu hơn với 36 khối transformer",
+    "pros": {
+      "first": "Độ sâu gấp đôi S18 cho đặc trưng phức tạp hơn",
+      "second": "Hiệu năng cao trong nhận dạng chi tiết"
+    }
+  },
+  "caformer_m36": {
+    "description": "CAFormer-M36 kết hợp độ sâu 36 khối với số chiều kênh rộng hơn (độ rộng Medium), tạo phiên bản CAFormer có khả năng cao nhất trong bộ này. Độ rộng tăng mang lại biểu diễn đặc trưng phong phú hơn ở mọi giai đoạn, còn độ sâu cho phép suy luận phức tạp nhiều bước. Phiên bản này cho thấy thiết kế MetaFormer có thể mở rộng hiệu quả cả độ rộng lẫn độ sâu.",
+    "bestFor": "Trích xuất đặc trưng 2D với khả năng biểu diễn cao",
+    "shortDescription": "CAFormer độ rộng vừa với 36 khối",
+    "pros": {
+      "first": "Khả năng biểu diễn cao nhất trong họ CAFormer",
+      "second": "Đặc trưng phong phú nhờ mở rộng cả độ sâu lẫn độ rộng"
+    }
+  },
+  "poolformer_s12": {
+    "description": "PoolFormer là kiến trúc đột phá kiểm chứng giả thuyết MetaFormer bằng cách thay cơ chế chú ý bằng phép gộp trung bình đơn giản làm bộ trộn token mà vẫn đạt độ chính xác cạnh tranh. Thử nghiệm năm 2021 cho thấy kiến trúc tổng quát kiểu Transformer (chuẩn hóa → trộn → chuẩn hóa → MLP) quan trọng hơn cơ chế trộn cụ thể. Dù không có tham số học trong bộ trộn token, PoolFormer-S12 đạt độ chính xác tương đương DeiT-Small.",
+    "bestFor": "Tác vụ 2D hiệu quả — cho thấy kiến trúc quan trọng hơn",
+    "shortDescription": "MetaFormer dùng phép gộp thay cho chú ý",
+    "pros": {
+      "first": "Kiểm chứng đột phá cho giả thuyết MetaFormer",
+      "second": "Trộn token cực đơn giản và hiệu quả"
+    }
+  },
+  "efficientvit_m1": {
+    "description": "EfficientViT-M1 thay chú ý softmax có độ phức tạp bậc hai bằng chú ý tuyến tính (xấp xỉ nhân dựa trên ReLU), giảm cả bộ nhớ lẫn tính toán xuống độ phức tạp tuyến tính theo độ dài chuỗi. Được phát triển tại MIT, kiến trúc này được thiết kế riêng cho thiết bị hạn chế bộ nhớ. Thiết kế gọn nhẹ dùng chú ý nhóm nối tầng để giảm dư thừa giữa các đầu chú ý, tối đa hóa hiệu năng trên mỗi tham số.",
+    "bestFor": "Suy luận 2D cực gọn nhẹ trên phần cứng hạn chế",
+    "shortDescription": "ViT tiết kiệm bộ nhớ với chú ý tuyến tính",
+    "pros": {
+      "first": "Độ phức tạp chú ý tuyến tính giúp giảm mạnh bộ nhớ",
+      "second": "Chú ý nhóm xếp tầng loại bỏ sự dư thừa giữa các đầu"
+    }
+  },
+  "efficientvit_b1": {
+    "description": "EfficientViT-B1 mở rộng dòng M bằng kiến trúc cân bằng dùng chú ý nhóm nối tầng để trộn token hiệu quả theo các chiều không gian. Dòng B có kênh rộng hơn và nhiều giai đoạn hơn trong khi giữ cơ chế chú ý độ phức tạp tuyến tính. Phiên bản này cân bằng tốt độ chính xác với tốc độ, phù hợp GPU biên và thiết bị di động có thể xử lý mô hình hơi lớn hơn dòng M.",
+    "bestFor": "Tác vụ 2D hiệu quả với cân bằng tốt giữa độ chính xác và tốc độ",
+    "shortDescription": "EfficientViT cân bằng với chú ý xếp tầng",
+    "pros": {
+      "first": "Cân bằng tốt giữa độ chính xác và độ trễ",
+      "second": "Chú ý tuyến tính mở rộng được tới độ phân giải cao hơn"
+    }
+  },
+  "efficientvit_b2": {
+    "description": "EfficientViT-B2 tiếp tục mở rộng dòng B với kênh rộng hơn và các giai đoạn sâu hơn, nâng giới hạn độ chính xác trong khi giữ chú ý độ phức tạp tuyến tính. Với 21,8 triệu tham số, nó thuộc nhóm mô hình tầm trung, cạnh tranh với ViT-Small tiêu chuẩn và EfficientNet-B2 nhưng có tốc độ suy luận tốt hơn nhờ cơ chế chú ý hiệu quả. Kiến trúc cho thấy chú ý tuyến tính có thể mở rộng tới quy mô mô hình đáng kể mà không hy sinh chất lượng.",
+    "bestFor": "Tập dữ liệu 2D cỡ vừa với chú ý tiết kiệm bộ nhớ",
+    "shortDescription": "EfficientViT lớn hơn cho độ chính xác cao hơn",
+    "pros": {
+      "first": "Độ chính xác tầm trung với chú ý tuyến tính hiệu quả",
+      "second": "Cạnh tranh với ViT-Small nhưng suy luận nhanh hơn"
+    }
+  },
+  "efficientvit_l2": {
+    "description": "EfficientViT-L2 là phiên bản lớn nhất trong họ EfficientViT của MIT, mở rộng chú ý tuyến tính lên 60,5 triệu tham số. Ở quy mô này, kiến trúc đạt độ chính xác cạnh tranh với Transformer chú ý bậc hai tiêu chuẩn trong khi giữ thông lượng suy luận nhanh hơn đáng kể. Dòng L bổ sung tối ưu kiến trúc cho triển khai quy mô lớn, phù hợp suy luận phía máy chủ khi thông lượng ở độ trễ vừa phải là ưu tiên chính.",
+    "bestFor": "Tác vụ 2D quy mô lớn ưu tiên tốc độ suy luận",
+    "shortDescription": "EfficientViT lớn — độ chính xác cao, suy luận hiệu quả",
+    "pros": {
+      "first": "Độ chính xác cao, tương đương ViT lớn tiêu chuẩn",
+      "second": "Suy luận nhanh hơn đáng kể so với mô hình chú ý bậc hai"
+    }
+  },
+  "mamba_1d": {
+    "description": "Mamba giới thiệu không gian trạng thái chọn lọc — bước phát triển đột phá của SSM có cấu trúc, trong đó ma trận chuyển trạng thái phụ thuộc đầu vào, giúp mô hình chọn lọc tập trung hoặc bỏ qua thông tin dọc chuỗi. Kết hợp với thuật toán quét song song có xét phần cứng, Mamba xử lý chuỗi trong thời gian tuyến tính với khả năng biểu diễn như cơ chế chú ý. Kiến trúc năm 2023 này nhanh chóng trở thành lựa chọn thay thế Transformer hàng đầu cho mô hình hóa chuỗi dài.",
+    "bestFor": "Chuỗi 1D dài với xử lý thời gian tuyến tính",
+    "shortDescription": "Mô hình không gian trạng thái chọn lọc cho chuỗi 1D",
+    "pros": {
+      "first": "Xử lý chuỗi trong thời gian tuyến tính thay vì chú ý bậc hai",
+      "second": "Chọn trạng thái theo đầu vào để lọc động"
+    }
+  },
+  "s4d_small": {
+    "description": "S4D (Structured State Space for Sequences — Diagonal) đơn giản hóa mô hình S4 gốc bằng ma trận trạng thái đường chéo thay cho ma trận DPLR đầy đủ khởi tạo theo HiPPO. Tham số hóa đường chéo này tương đương về toán học trong nhiều trường hợp thực tế nhưng dễ triển khai và tính toán nhanh hơn đáng kể. Chỉ với 0,8 triệu tham số, S4D Small là một trong những mô hình nhỏ nhất có thể nắm bắt phụ thuộc rất xa trong dữ liệu tuần tự.",
+    "bestFor": "Tín hiệu 1D rất dài với số tham số tối thiểu",
+    "shortDescription": "Mô hình không gian trạng thái có cấu trúc đường chéo gọn nhẹ",
+    "pros": {
+      "first": "Mô hình cực nhỏ nắm bắt phụ thuộc xa",
+      "second": "Tham số hóa đường chéo đơn giản, dễ triển khai"
+    }
+  },
+  "s4d": {
+    "description": "S4D là mô hình không gian trạng thái đường chéo cỡ tiêu chuẩn, mô hình hóa dữ liệu tuần tự bằng truy hồi tuyến tính thời gian liên tục được rời rạc hóa để xử lý số. Ma trận trạng thái đường chéo cho phép tính toán song song hiệu quả qua tích chập khi huấn luyện và xử lý hồi quy khi suy luận. S4D nắm bắt phụ thuộc qua hàng nghìn bước thời gian, đặc biệt hiệu quả cho âm thanh, tín hiệu khoa học và các tác vụ tuần tự có phụ thuộc xa khác.",
+    "bestFor": "Phụ thuộc xa trong 1D với chi phí dưới bậc hai",
+    "shortDescription": "Mô hình không gian trạng thái có cấu trúc đường chéo",
+    "pros": {
+      "first": "Mô hình hóa hiệu quả phụ thuộc xa",
+      "second": "Hai chế độ tính toán: tích chập (huấn luyện) và truy hồi (suy luận)"
+    }
+  },
+  "s4d_large": {
+    "description": "S4D Large mở rộng số chiều trạng thái và độ rộng kênh của S4D tiêu chuẩn, tăng khả năng nắm bắt mẫu thời gian xa phức tạp. Không gian trạng thái lớn hơn cho phép biểu diễn động lực học chuỗi tinh tế hơn, còn kênh rộng hơn giúp trích xuất đặc trưng phong phú ở mỗi bước thời gian. Phiên bản này hướng tới tác vụ 1D khó mà khả năng biểu diễn của S4D tiêu chuẩn chưa đủ.",
+    "bestFor": "Mẫu 1D phức tạp cần khả năng biểu diễn cao hơn",
+    "shortDescription": "S4D lớn với số chiều trạng thái mở rộng",
+    "pros": {
+      "first": "Không gian trạng thái mở rộng cho động lực học thời gian phức tạp",
+      "second": "Khả năng biểu diễn cao hơn S4D tiêu chuẩn"
+    }
+  },
+  "vim_tiny": {
+    "description": "Vision Mamba (Vim) đưa mô hình không gian trạng thái chọn lọc vào thị giác 2D bằng cách trải các mảnh ảnh thành chuỗi rồi xử lý bằng khối Mamba hai chiều. Quét hai chiều — xử lý các mảnh từ trái sang phải và phải sang trái — giúp nắm bắt quan hệ không gian theo cả hai hướng, phần nào bù cho việc mất cấu trúc không gian 2D. Vim đạt độ chính xác cạnh tranh với ViT trong khi mở rộng tuyến tính theo độ phân giải ảnh thay vì bậc hai.",
+    "bestFor": "Tác vụ 2D có phụ thuộc không gian xa",
+    "shortDescription": "Kiến trúc dựa trên Mamba điều chỉnh cho thị giác 2D",
+    "pros": {
+      "first": "Độ phức tạp tuyến tính cho phép xử lý ảnh độ phân giải cao",
+      "second": "Quét hai chiều nắm bắt ngữ cảnh không gian"
+    }
+  },
+  "vim_small": {
+    "description": "Vision Mamba Small mở rộng kiến trúc Vim với số chiều trạng thái rộng hơn và nhiều khối Mamba hơn, tăng khả năng học biểu diễn thị giác 2D phức tạp qua xử lý chuỗi dựa trên SSM. Quy mô lớn hơn cho phép mẫu quét hai chiều phong phú hơn và động lực học trạng thái giàu khả năng biểu diễn hơn. Với 51,1 triệu tham số, nó cạnh tranh với ViT-Small và Swin-Tiny đồng thời mở rộng tốt hơn với đầu vào độ phân giải cao.",
+    "bestFor": "Tập dữ liệu 2D vừa đến lớn với mở rộng dưới bậc hai",
+    "shortDescription": "Vision Mamba lớn hơn với quét SSM",
+    "pros": {
+      "first": "Mở rộng dưới bậc hai cho đầu vào 2D độ phân giải cao",
+      "second": "Động lực học trạng thái phong phú hơn Vim Tiny"
+    }
+  },
+  "vim_base": {
+    "description": "Vision Mamba Base là phiên bản Vim lớn nhất với 201,4 triệu tham số, đẩy xử lý thị giác dựa trên SSM tới giới hạn hiện tại của nó. Không gian trạng thái rất lớn và kênh rộng giúp mô hình học biểu diễn hai chiều rất phong phú qua chuyển trạng thái chọn lọc. Dù cần nhiều tài nguyên, nó cho thấy tiềm năng mở rộng SSM thành mô hình thị giác lớn, cung cấp cách tính toán căn bản khác thị giác dựa trên Transformer.",
+    "bestFor": "Tập dữ liệu 2D lớn với phụ thuộc rất xa",
+    "shortDescription": "Vision Mamba quy mô đầy đủ — khả năng biểu diễn SSM tối đa",
+    "pros": {
+      "first": "Khả năng biểu diễn SSM cao nhất cho tác vụ thị giác",
+      "second": "Lợi thế độ phức tạp tuyến tính ở độ phân giải rất cao"
+    }
+  },
+  "tcn_small": {
+    "description": "TCN Small là mạng tích chập thời gian gọn, dùng tích chập nhân quả giãn cách — các phép tích chập tăng hệ số giãn theo cấp số nhân ở mỗi lớp để tạo trường tiếp nhận lớn dần theo cấp số nhân. Kết hợp kết nối dư và chuẩn hóa trọng số, TCN chứng minh năm 2018 rằng kiến trúc tích chập có thể ngang bằng hoặc vượt RNN/LSTM trên các bài đánh giá mô hình hóa chuỗi, đồng thời dễ song song hóa hơn và có gradient ổn định hơn.",
+    "bestFor": "Chuỗi thời gian 1D ngắn với ngân sách tính toán hạn chế",
+    "shortDescription": "Mạng tích chập thời gian gọn nhẹ",
+    "pros": {
+      "first": "Cực gọn nhẹ khi xử lý chuỗi thời gian",
+      "second": "Có thể song song hóa — nhanh hơn RNN nhiều"
+    }
+  },
+  "tcn": {
+    "description": "TCN tiêu chuẩn dùng nhiều khối dư tích chập 1D nhân quả giãn cách với hệ số giãn tăng theo cấp số nhân (1, 2, 4, 8, ...), tạo trường tiếp nhận hiệu dụng lớn trong khi giữ số tham số ở mức hợp lý. Mỗi khối có chuẩn hóa trọng số, kích hoạt ReLU và dropout để điều chuẩn. Kiến trúc là mô hình cơ sở đa dụng mạnh cho hồi quy và phân loại chuỗi thời gian 1D.",
+    "bestFor": "Hồi quy chuỗi thời gian 1D đa dụng",
+    "shortDescription": "Mạng tích chập thời gian tiêu chuẩn",
+    "pros": {
+      "first": "Mô hình chuỗi 1D đa dụng mạnh",
+      "second": "Trường tiếp nhận tăng theo hàm mũ với độ sâu"
+    }
+  },
+  "tcn_large": {
+    "description": "TCN Large mở rộng TCN tiêu chuẩn bằng kênh rộng hơn và nhiều khối dư hơn, tăng đáng kể cả trường tiếp nhận lẫn khả năng biểu diễn. Các tích chập giãn cách rộng hơn nắm bắt mẫu thời gian phức tạp hơn ở từng tỷ lệ giãn, còn khối bổ sung mở rộng trường tiếp nhận tối đa. Phiên bản này được thiết kế cho tác vụ thời gian khó với phụ thuộc xa phức tạp.",
+    "bestFor": "Mẫu thời gian 1D phức tạp ở phạm vi xa hơn",
+    "shortDescription": "TCN lớn với tích chập giãn rộng hơn",
+    "pros": {
+      "first": "Trường tiếp nhận mở rộng cho mẫu phụ thuộc xa hơn",
+      "second": "Kênh rộng hơn nắm bắt đặc trưng thời gian phức tạp hơn"
+    }
+  },
+  "wavenet_small": {
+    "description": "WaveNet Small là phiên bản gọn của kiến trúc WaveNet từ DeepMind, dùng tích chập nhân quả giãn cách có cổng — chia đầu ra mỗi lớp thành nhánh tanh (bộ lọc) và sigmoid (cổng), rồi nhân theo từng phần tử. Cơ chế cổng lấy cảm hứng từ cổng LSTM giúp mạng học đặc trưng thời gian nào cần truyền qua. Ban đầu được thiết kế để tạo dạng sóng âm thanh thô, kiến trúc này nổi bật trong các tác vụ xử lý tín hiệu 1D.",
+    "bestFor": "Tín hiệu dạng sóng ngắn với tài nguyên hạn chế",
+    "shortDescription": "Mạng tích chập giãn có cổng gọn nhẹ",
+    "pros": {
+      "first": "Hàm kích hoạt có cổng cho phép học cách chọn đặc trưng",
+      "second": "Xử lý nhân quả hiệu quả cho dữ liệu luồng"
+    }
+  },
+  "wavenet": {
+    "description": "WaveNet dùng các tầng tích chập nhân quả giãn cách có cổng xếp chồng cùng kết nối tắt cộng đầu ra từ mọi lớp, tạo biểu diễn thời gian đa độ phân giải phong phú. Kiểu tăng gấp đôi độ giãn (1, 2, 4, ..., 512) qua nhiều chồng lớp tạo trường tiếp nhận lớn theo cấp số nhân, có thể mô hình hóa hàng nghìn bước thời gian. Ban đầu đạt chất lượng chuyển văn bản thành giọng nói hàng đầu năm 2016, kiến trúc WaveNet đã chứng minh hiệu quả cho hồi quy thời gian và xử lý tín hiệu 1D đa dụng.",
+    "bestFor": "Tín hiệu 1D giống âm thanh với trường tiếp nhận tăng theo cấp số nhân",
+    "shortDescription": "Tích chập giãn có cổng để mô hình hóa chuỗi",
+    "pros": {
+      "first": "Trường tiếp nhận tăng theo hàm mũ nhờ các lớp tích chập giãn xếp chồng",
+      "second": "Hàm kích hoạt có cổng cùng kết nối tắt tạo đặc trưng phong phú"
+    }
+  },
+  "wavenet_large": {
+    "description": "WaveNet Large thêm nhiều chồng lớp giãn cách và kênh rộng hơn vào WaveNet tiêu chuẩn, mở rộng mạnh cả trường tiếp nhận hiệu dụng lẫn khả năng nắm bắt mẫu thời gian phức tạp. Việc xếp sâu hơn các tích chập giãn cách có cổng giúp mô hình xử lý dạng sóng rất dài với nhiều mẫu trường tiếp nhận chồng lấn. Phiên bản này phù hợp tác vụ cần ngữ cảnh thời gian rộng nhất có thể trong dữ liệu 1D.",
+    "bestFor": "Dạng sóng 1D dài cần phạm vi thời gian rộng",
+    "shortDescription": "WaveNet lớn với các lớp giãn xếp chồng sâu hơn",
+    "pros": {
+      "first": "Trường tiếp nhận rất lớn nhờ các lớp giãn xếp chồng sâu",
+      "second": "Tích chập có cổng với khả năng biểu diễn cao cho tín hiệu phức tạp"
+    }
+  },
+  "resnet3d_18": {
+    "description": "3D ResNet-18 mở rộng ResNet bằng cách thay mọi tích chập 2D bằng tích chập 3D, cho phép xử lý trực tiếp dữ liệu thể tích (độ sâu * chiều cao * chiều rộng). Mỗi nhân tích chập 3D hoạt động đồng thời trên cả ba chiều không gian, nắm bắt mẫu trải khắp thể tích. Ban đầu được phát triển để hiểu video (xem thời gian là chiều thứ ba), nó cũng áp dụng cho ảnh y khoa (CT/MRI), mô phỏng khoa học và các tập dữ liệu thể tích khác.",
+    "bestFor": "Thể tích 3D như ảnh CT hoặc mô phỏng thể tích",
+    "shortDescription": "ResNet với tích chập 3D cho dữ liệu thể tích",
+    "pros": {
+      "first": "Tích chập 3D nguyên bản nắm bắt mẫu thể tích",
+      "second": "Kết nối tắt ResNet hoạt động tốt trong 3D"
+    }
+  },
+  "mc3_18": {
+    "description": "MC3-18 (Mixed Convolution 3D) dùng tích chập 3D ở các lớp đầu để nắm bắt đặc trưng không gian-thời gian mức thấp, rồi chuyển sang tích chập 2D ở các lớp sau để trích xuất đặc trưng mức cao hiệu quả. Cách kết hợp này, được Facebook AI giới thiệu cùng R(2+1)D, giảm đáng kể tính toán so với tích chập 3D toàn phần trong khi giữ phần lớn lợi ích biểu diễn. Ý tưởng cốt lõi là có thể phân tách hiệu quả các đặc trưng thời gian và không gian ở các lớp sâu hơn.",
+    "bestFor": "Dữ liệu 3D khi tích chập 3D toàn phần quá tốn kém",
+    "shortDescription": "Mạng tích chập hỗn hợp 3D/2D — xử lý 3D hiệu quả",
+    "pros": {
+      "first": "Hiệu quả hơn nhiều so với tích chập 3D hoàn toàn",
+      "second": "Thiết kế hỗn hợp 3D/2D cân bằng độ chính xác và tính toán"
+    }
+  },
+  "unet_regression": {
+    "description": "U-Net có kiến trúc mã hóa-giải mã đối xứng, nối bằng kết nối tắt ở mỗi mức độ phân giải, giúp định vị chính xác bằng cách kết hợp đặc trưng ngữ nghĩa sâu với chi tiết không gian nông. Ban đầu được thiết kế cho phân đoạn ảnh y sinh (2015), phiên bản hồi quy này thay đầu phân loại bằng đầu ra liên tục, phù hợp dự đoán dày đặc như ước lượng độ sâu, siêu phân giải và hồi quy trường. Kết nối tắt là cải tiến chủ chốt, giúp bộ giải mã khôi phục chi tiết không gian nhỏ bị mất trong mã hóa.",
+    "bestFor": "Tác vụ cần ngữ cảnh không gian đa tỷ lệ",
+    "shortDescription": "Bộ mã hóa-giải mã hình chữ U cho hồi quy dày đặc",
+    "pros": {
+      "first": "Kết nối tắt giữ chi tiết không gian cho đầu ra chính xác",
+      "second": "Bộ mã hóa-giải mã đối xứng nắm bắt ngữ cảnh đa tỷ lệ"
+    }
+  }
+}

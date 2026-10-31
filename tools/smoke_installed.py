@@ -27,6 +27,7 @@ def main():
         subprocess.run([sys.executable, "-m", f"wavedl.{module}", "--help"], check=True)
     for command in ("wavedl-train", "wavedl-test", "wavedl-hpo"):
         subprocess.run([command, "--help"], check=True)
+    subprocess.run(["wavedl", "serve", "--help"], check=True)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,186 @@
+{
+  "model": {
+    "label": "Mô hình",
+    "description": "Kiến trúc mô hình cần huấn luyện. Chọn mô hình từ danh mục hoặc chỉ định ID tùy chỉnh."
+  },
+  "import_modules": {
+    "label": "Mô-đun nhập",
+    "description": "Các mô-đun Python được nhập trước khi huấn luyện (cho mô hình tùy chỉnh)."
+  },
+  "pretrained": {
+    "label": "Trọng số huấn luyện trước",
+    "description": "Dùng trọng số ImageNet đã huấn luyện trước (chỉ với biến thể *_pretrained). Mặc định: huấn luyện từ đầu."
+  },
+  "batch_size": {
+    "label": "Kích thước lô",
+    "description": "Kích thước lô trên mỗi GPU."
+  },
+  "lr": {
+    "label": "Tốc độ học",
+    "description": "Tốc độ học ban đầu."
+  },
+  "epochs": {
+    "label": "Số epoch",
+    "description": "Số epoch huấn luyện tối đa."
+  },
+  "patience": {
+    "label": "Ngưỡng chờ dừng sớm",
+    "description": "Số epoch chờ trước khi dừng sớm."
+  },
+  "weight_decay": {
+    "label": "Suy giảm trọng số",
+    "description": "Hệ số suy giảm trọng số."
+  },
+  "grad_clip": {
+    "label": "Cắt gradient",
+    "description": "Chuẩn giới hạn khi cắt gradient."
+  },
+  "grad_accum_steps": {
+    "label": "Bước tích lũy gradient",
+    "description": "Số bước tích lũy gradient. Lô hiệu dụng = batch_size x grad_accum_steps x num_gpus."
+  },
+  "loss": {
+    "label": "Hàm mất mát",
+    "description": "Hàm mất mát dùng khi huấn luyện."
+  },
+  "huber_delta": {
+    "label": "Delta Huber",
+    "description": "Tham số delta cho hàm mất mát Huber."
+  },
+  "loss_weights": {
+    "label": "Trọng số mất mát",
+    "description": "Các trọng số phân cách bằng dấu phẩy cho weighted_mse (ví dụ: '1.0,2.0,1.0')."
+  },
+  "optimizer": {
+    "label": "Bộ tối ưu",
+    "description": "Bộ tối ưu dùng khi huấn luyện."
+  },
+  "momentum": {
+    "label": "Động lượng",
+    "description": "Hệ số động lượng cho SGD/RMSprop."
+  },
+  "nesterov": {
+    "label": "Động lượng Nesterov",
+    "description": "Dùng động lượng Nesterov (SGD)."
+  },
+  "betas": {
+    "label": "Hệ số beta",
+    "description": "Các hệ số beta cho biến thể Adam (phân cách bằng dấu phẩy)."
+  },
+  "scheduler": {
+    "label": "Lịch tốc độ học",
+    "description": "Bộ lập lịch tốc độ học."
+  },
+  "scheduler_patience": {
+    "label": "Ngưỡng chờ giảm tốc độ học",
+    "description": "Số epoch chờ cho ReduceLROnPlateau."
+  },
+  "min_lr": {
+    "label": "Tốc độ học tối thiểu",
+    "description": "Tốc độ học tối thiểu."
+  },
+  "scheduler_factor": {
+    "label": "Hệ số giảm tốc độ học",
+    "description": "Hệ số giảm tốc độ học."
+  },
+  "warmup_epochs": {
+    "label": "Số epoch khởi động",
+    "description": "Số epoch khởi động cho linear_warmup."
+  },
+  "step_size": {
+    "label": "Khoảng bước giảm tốc độ học",
+    "description": "Khoảng bước cho StepLR."
+  },
+  "milestones": {
+    "label": "Mốc epoch",
+    "description": "Các mốc epoch phân cách bằng dấu phẩy cho MultiStepLR (ví dụ: '30,60,90')."
+  },
+  "data_path": {
+    "label": "Đường dẫn bộ dữ liệu",
+    "description": "Đường dẫn đến bộ dữ liệu NPZ trên máy chủ daemon."
+  },
+  "workers": {
+    "label": "Tiến trình tải dữ liệu",
+    "description": "Số tiến trình DataLoader mỗi GPU (-1 = tự xác định theo số lõi CPU)."
+  },
+  "seed": {
+    "label": "Hạt giống ngẫu nhiên",
+    "description": "Hạt giống cho bộ sinh số ngẫu nhiên."
+  },
+  "deterministic": {
+    "label": "Chế độ xác định",
+    "description": "Bật chế độ xác định để tái lập kết quả (chậm hơn, tắt TF32/cuDNN benchmark)."
+  },
+  "cache_validate": {
+    "label": "Kiểm tra bộ nhớ đệm",
+    "description": "Chế độ kiểm tra bộ nhớ đệm: sha256 (băm đầy đủ), fast (một phần), size (nhanh)."
+  },
+  "single_channel": {
+    "label": "Dữ liệu đơn kênh",
+    "description": "Xác nhận dữ liệu đơn kênh (ẩn cảnh báo hình dạng không rõ ràng cho thể tích 3D nông)."
+  },
+  "cv": {
+    "label": "Số phần kiểm định chéo",
+    "description": "Bật kiểm định chéo K phần với K phần (0 = tắt)."
+  },
+  "cv_stratify": {
+    "label": "Chia phân tầng khi kiểm định chéo",
+    "description": "Dùng cách chia phân tầng cho kiểm định chéo."
+  },
+  "cv_bins": {
+    "label": "Số nhóm phân tầng",
+    "description": "Số nhóm cho kiểm định chéo phân tầng (chỉ khi bật --cv_stratify)."
+  },
+  "resume": {
+    "label": "Khôi phục checkpoint",
+    "description": "Thư mục checkpoint để tiếp tục huấn luyện."
+  },
+  "save_every": {
+    "label": "Chu kỳ lưu checkpoint",
+    "description": "Lưu checkpoint mỗi N epoch (0 = tắt)."
+  },
+  "fresh": {
+    "label": "Huấn luyện mới",
+    "description": "Buộc huấn luyện mới, bỏ qua checkpoint hiện có."
+  },
+  "compile": {
+    "label": "Biên dịch mô hình",
+    "description": "Bật torch.compile (PyTorch 2.x)."
+  },
+  "precision": {
+    "label": "Độ chính xác hỗn hợp",
+    "description": "Chế độ độ chính xác hỗn hợp."
+  },
+  "constraint": {
+    "label": "Biểu thức ràng buộc",
+    "description": "Biểu thức ràng buộc mềm: 'y0 - y1*y2' (phạt vi phạm)."
+  },
+  "constraint_file": {
+    "label": "Tệp ràng buộc",
+    "description": "Tệp Python chứa hàm constraint(pred, inputs)."
+  },
+  "constraint_weight": {
+    "label": "Trọng số ràng buộc",
+    "description": "Trọng số ràng buộc mềm (mỗi ràng buộc một trọng số, hoặc dùng chung một trọng số)."
+  },
+  "constraint_reduction": {
+    "label": "Cách tính phạt ràng buộc",
+    "description": "Cách tổng hợp mức phạt ràng buộc."
+  },
+  "wandb": {
+    "label": "Ghi nhật ký W&B",
+    "description": "Bật ghi nhật ký Weights & Biases."
+  },
+  "wandb_watch": {
+    "label": "Theo dõi gradient W&B",
+    "description": "Bật theo dõi gradient WandB (tăng chi phí, hữu ích khi gỡ lỗi)."
+  },
+  "project_name": {
+    "label": "Tên dự án W&B",
+    "description": "Tên dự án WandB."
+  },
+  "run_name": {
+    "label": "Tên lần chạy W&B",
+    "description": "Tên lần chạy WandB."
+  }
+}

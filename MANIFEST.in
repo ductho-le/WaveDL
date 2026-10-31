@@ -4,3 +4,4 @@ recursive-include src/wavedl *.py
 recursive-include unit_tests *.py
 recursive-include configs *.yaml
 recursive-include tools *.py
+prune src/wavedl_daemon/web

@@ -1,0 +1,4 @@
+# BEGIN oh-my-opencode-slim deepwork
+!.slim/deepwork/
+!.slim/deepwork/**
+# END oh-my-opencode-slim deepwork

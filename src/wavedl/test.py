@@ -43,6 +43,7 @@ import argparse  # noqa: E402
 import inspect  # noqa: E402
 import logging  # noqa: E402
 import pickle  # noqa: E402
+import sys  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any  # noqa: E402
 
@@ -61,7 +62,21 @@ from torch.utils.data import DataLoader, TensorDataset  # noqa: E402
 from tqdm.auto import tqdm  # noqa: E402
 
 # Local imports
+from wavedl.core.checkpoint_selection import resolve_checkpoint_path  # noqa: E402
+from wavedl.core.events import MetricPayload  # noqa: E402
+from wavedl.core.inference_cli import (  # noqa: E402
+    parse_inference_args,
+    validate_import_modules,
+)
+from wavedl.core.layout import OperationKind  # noqa: E402
+from wavedl.core.stdio import configure_utf8_stdio  # noqa: E402
 from wavedl.models import build_model, get_model, list_models  # noqa: E402
+from wavedl.operations import (  # noqa: E402
+    emit_operation_artifact,
+    open_operation_runtime,
+    operation_lifecycle,
+    operation_selection,
+)
 from wavedl.utils import (  # noqa: E402
     FIGURE_DPI,
     SpatialTargetScaler,
@@ -104,145 +119,7 @@ except ImportError:
 # ==============================================================================
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments for testing."""
-    parser = argparse.ArgumentParser(
-        description="WaveDL Testing & Inference Pipeline",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-
-    # Required
-    parser.add_argument(
-        "--checkpoint",
-        type=str,
-        required=True,
-        help="Path to checkpoint directory (e.g., ./cnn_test/best_checkpoint)",
-    )
-    parser.add_argument(
-        "--data_path",
-        type=str,
-        required=True,
-        help="Path to test data (NPZ, HDF5, or MAT v7.3 format)",
-    )
-
-    # Model specification
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=None,
-        help=f"Model architecture (auto-detect if not specified). Available: {list_models()}",
-    )
-
-    # Data format
-    parser.add_argument(
-        "--format",
-        type=str,
-        default="auto",
-        choices=["auto", "npz", "mat", "hdf5"],
-        help="Data format (auto-detect by extension)",
-    )
-    parser.add_argument(
-        "--input_key",
-        type=str,
-        default=None,
-        help="Custom key name for input data in MAT/HDF5/NPZ files (e.g., 'X', 'waveforms')",
-    )
-    parser.add_argument(
-        "--output_key",
-        type=str,
-        default=None,
-        help="Custom key name for output data in MAT/HDF5/NPZ files (e.g., 'Y', 'labels')",
-    )
-    parser.add_argument(
-        "--param_names",
-        type=str,
-        nargs="+",
-        default=None,
-        help="Parameter/channel names for output (e.g., 'h' 'v11' 'v12')",
-    )
-    parser.add_argument(
-        "--input_channels",
-        type=int,
-        default=None,
-        help="Explicit number of input channels. Bypasses auto-detection heuristics "
-        "for ambiguous 4D shapes (e.g., 3D volumes with small depth).",
-    )
-
-    parser.add_argument(
-        "--allow_pickle",
-        action="store_true",
-        help="Allow trusted legacy NPZ object arrays (can execute arbitrary code).",
-    )
-
-    parser.add_argument(
-        "--import",
-        dest="import_modules",
-        nargs="+",
-        default=[],
-        help="Trusted custom model modules or Python files to import.",
-    )
-
-    # Inference options
-    parser.add_argument(
-        "--batch_size", type=int, default=128, help="Batch size for inference"
-    )
-    parser.add_argument("--workers", type=int, default=0, help="DataLoader workers")
-
-    # Output options
-    parser.add_argument(
-        "--output_dir", type=str, default=".", help="Directory for saving results"
-    )
-    parser.add_argument(
-        "--save_predictions",
-        action="store_true",
-        help="Save vector predictions to CSV or dense fields to compressed NPZ",
-    )
-    parser.add_argument("--plot", action="store_true", help="Generate diagnostic plots")
-    parser.add_argument(
-        "--plot_format",
-        type=str,
-        nargs="+",
-        default=["png"],
-        help="Output format(s) for plots: png, pdf, svg, eps, tiff (default: png)",
-    )
-    parser.add_argument(
-        "--verbose", action="store_true", help="Print per-sample predictions"
-    )
-
-    # Export options
-    parser.add_argument(
-        "--export",
-        type=str,
-        default=None,
-        choices=["onnx"],
-        help="Export model format (onnx)",
-    )
-    parser.add_argument(
-        "--export_path",
-        type=str,
-        default=None,
-        help="Output path for exported model (default: {model_name}.onnx)",
-    )
-    parser.add_argument(
-        "--export_opset",
-        type=int,
-        default=17,
-        help="ONNX opset version (11-17, higher = newer ops)",
-    )
-    parser.add_argument(
-        "--no_denorm",
-        action="store_true",
-        help="Disable de-normalization in ONNX (output normalized values instead)",
-    )
-    parser.add_argument(
-        "--out_size",
-        type=int,
-        default=None,
-        help=(
-            "Override vector target count or field channel count "
-            "(inferred from scaler.pkl if targets are missing)"
-        ),
-    )
-
-    return parser.parse_args()
+    return parse_inference_args(models=list_models())
 
 
 # ==============================================================================
@@ -335,7 +212,8 @@ def load_checkpoint(
     Load model and scaler from Accelerate checkpoint directory.
 
     Args:
-        checkpoint_dir: Path to checkpoint directory
+        checkpoint_dir: Legacy checkpoint, published generation, or run directory.
+            Run directories select the latest explicitly marked best generation.
         in_shape: Input spatial shape - (L,) for 1D, (H, W) for 2D, or (D, H, W) for 3D
         out_size: Number of vector parameters or dense field channels
         model_name: Model architecture name (auto-detect if None)
@@ -345,7 +223,7 @@ def load_checkpoint(
         model: Loaded model in eval mode
         scaler: Fitted vector or spatial target scaler for inverse transform
     """
-    checkpoint_dir = Path(checkpoint_dir)
+    checkpoint_dir = resolve_checkpoint_path(checkpoint_dir, purpose="best")
 
     if not checkpoint_dir.exists():
         raise FileNotFoundError(f"Checkpoint directory not found: {checkpoint_dir}")
@@ -458,8 +336,8 @@ def load_checkpoint(
         "model.safetensors",
         "model.bin",
         "pytorch_model.bin",
-        "model.pth",
         "model_weights.pth",
+        "model.pth",
     ]:
         candidate = checkpoint_dir / fname
         if candidate.exists():
@@ -470,7 +348,7 @@ def load_checkpoint(
         raise FileNotFoundError(
             f"No model weights found in {checkpoint_dir}. "
             "Expected one of: model.safetensors, model.bin, "
-            "pytorch_model.bin, model.pth, model_weights.pth"
+            "pytorch_model.bin, model_weights.pth, model.pth"
         )
 
     if HAS_SAFETENSORS and weight_path.suffix == ".safetensors":
@@ -511,10 +389,12 @@ def load_checkpoint(
     logging.info(f"   ✔ Loaded weights from: {weight_path.name}")
 
     # Load scaler
-    # Prefer the checkpoint-local scaler so copied/moved checkpoints remain
-    # self-contained even when their new parent has an unrelated scaler.
+    # A published generation must carry its own hash-covered preprocessing state.
+    # Otherwise prefer the checkpoint-local scaler so copied/moved checkpoints
+    # remain self-contained even when their new parent has an unrelated scaler.
+    published = (checkpoint_dir / "COMPLETE.json").is_file()
     scaler_path = checkpoint_dir / "scaler.pkl"
-    if not scaler_path.exists():
+    if not scaler_path.exists() and not published:
         scaler_path = checkpoint_dir.parent / "scaler.pkl"
 
     if not scaler_path.exists():
@@ -689,13 +569,15 @@ def export_to_onnx(
         - Comprehensive validation with numerical comparison
         - Embedded metadata (input/output names, descriptions)
         - Compatibility testing with ONNX runtime
+        - Self-contained single-file exports (external-data models are refused)
 
     Args:
         model: Trained PyTorch model in eval mode
         sample_input: Sample input tensor for tracing (N, C, *spatial_dims)
         output_path: Path to save the ONNX model
         opset_version: ONNX opset version (11-17, default 17)
-        validate: Whether to validate the exported model
+        validate: Whether to compare numerical outputs. Single-file structure and
+            exact requested opset are always checked before replacing output.
         model_name: Model name embedded in ONNX metadata
 
     Returns:
@@ -711,6 +593,14 @@ def export_to_onnx(
         with the appropriate ONNX runtime for your target platform.
     """
     import warnings
+    from tempfile import TemporaryDirectory
+
+    from wavedl.utils.onnx_export import (
+        MAX_ONNX_BYTES,
+        ExportCommitUnknown,
+        replace_export,
+        validate_self_contained_onnx,
+    )
 
     # Wrap model with de-normalization if requested
     if include_denorm:
@@ -748,92 +638,64 @@ def export_to_onnx(
     logging.info(f"📦 Exporting model to ONNX (opset {opset_version})...")
     logging.info(f"   Input shape: {tuple(sample_input.shape)} ({spatial_desc})")
 
-    import tempfile
-
-    output = Path(output_path)
     try:
-        output.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(
-            prefix=".wavedl-export-", dir=output.parent
-        ) as staging_dir:
-            staged_path = str(Path(staging_dir) / output.name)
-            return _export_staged_onnx(
+        tensor_bytes = sum(
+            tensor.numel() * tensor.element_size()
+            for tensor in (*model.parameters(), *model.buffers())
+        )
+        if tensor_bytes >= MAX_ONNX_BYTES:
+            raise ValueError(
+                "ONNX models requiring external data (2GiB+) are unsupported"
+            )
+        # Export with comprehensive settings
+        destination = Path(output_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with (
+            TemporaryDirectory(
+                prefix=".onnx-export-", dir=destination.parent
+            ) as temporary,
+            warnings.catch_warnings(),
+        ):
+            warnings.simplefilter("ignore")
+            staged = Path(temporary) / destination.name
+            options = {}
+            export_parameters = inspect.signature(torch.onnx.export).parameters
+            if "external_data" in export_parameters:
+                options["external_data"] = False
+            # The torch.export-based exporter may upgrade old opsets to 18+.
+            # Keep the documented 11-17 contract with the legacy exporter;
+            # older PyTorch versions already use it and have no dynamo option.
+            if "dynamo" in export_parameters:
+                options["dynamo"] = False
+            torch.onnx.export(
                 model,
                 sample_input,
-                staged_path,
-                output,
-                opset_version,
-                dynamic_axes,
-                validate,
-                model_name,
-                include_denorm,
+                str(staged),
+                export_params=True,
+                opset_version=opset_version,
+                do_constant_folding=True,  # Optimize for inference
+                input_names=["input"],
+                output_names=["predictions"],
+                dynamic_axes=dynamic_axes,
+                verbose=False,
+                **options,
             )
+            validate_self_contained_onnx(staged, expected_opset=opset_version)
+            if validate and not _validate_onnx_export(model, sample_input, str(staged)):
+                return False
+            with staged.open("rb") as file:
+                os.fsync(file.fileno())
+            replace_export(staged, destination)
+
+        logging.info(f"   ✔ Export completed: {output_path}")
+
+        return True
+
+    except ExportCommitUnknown:
+        raise
     except Exception as e:
         logging.error(f"   ✘ ONNX export failed: {e}")
         return False
-
-
-def _export_staged_onnx(
-    model,
-    sample_input,
-    staged_path,
-    output,
-    opset_version,
-    dynamic_axes,
-    validate,
-    model_name,
-    include_denorm,
-):
-    import warnings
-
-    import onnx
-
-    # Export with comprehensive settings
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-
-        # PyTorch 2.9 made the dynamo exporter the default. Its
-        # ``dynamic_axes`` compatibility path can leave dense output batch
-        # metadata fixed, and Resize models may remain at opset 18 after a
-        # failed conversion to the requested opset. The TorchScript exporter
-        # honors both contracts across WaveDL's supported PyTorch versions.
-        export_kwargs = {}
-        if "dynamo" in inspect.signature(torch.onnx.export).parameters:
-            export_kwargs["dynamo"] = False
-
-        torch.onnx.export(
-            model,
-            sample_input,
-            staged_path,
-            export_params=True,
-            opset_version=opset_version,
-            do_constant_folding=True,  # Optimize for inference
-            input_names=["input"],
-            output_names=["predictions"],
-            dynamic_axes=dynamic_axes,
-            verbose=False,
-            **export_kwargs,
-        )
-
-    onnx_model = onnx.load(staged_path)
-    onnx.helper.set_model_props(
-        onnx_model,
-        {
-            "model_name": model_name,
-            "output_units": "physical" if include_denorm else "normalized",
-            "input_shape": str(tuple(sample_input.shape[1:])),
-        },
-    )
-    onnx.checker.check_model(onnx_model)
-    # Re-save with embedded tensors, avoiding dangling temporary external-data files.
-    onnx.save_model(onnx_model, staged_path, save_as_external_data=False)
-
-    # Validate exported model
-    if validate and not _validate_onnx_export(model, sample_input, staged_path):
-        return False
-    os.replace(staged_path, output)
-    logging.info(f"   ✔ Export completed: {output}")
-    return True
 
 
 def _validate_onnx_export(
@@ -1347,11 +1209,92 @@ def plot_results(
 # MAIN
 # ==============================================================================
 def main():
+    configure_utf8_stdio()
     args = parse_args()
-    from wavedl.models import import_model_modules
+    operation, runtime = operation_selection(args)
+    requested = runtime.device if args.device == "auto" else args.device
+    if requested == "auto":
+        requested = (
+            "cuda"
+            if torch.cuda.is_available()
+            else "mps"
+            if torch.backends.mps.is_available()
+            else "cpu"
+        )
+    actual = requested
+    if requested == "cuda" and not torch.cuda.is_available():
+        actual = "cpu"
+    if requested == "mps" and not torch.backends.mps.is_available():
+        actual = "cpu"
+    device = torch.device(actual)
+    allocation = []
+    if device.type == "cuda":
+        visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+        allocation = (
+            visible.split(",")
+            if visible is not None
+            else [str(index) for index in range(torch.cuda.device_count())]
+        )
+    elif device.type == "mps":
+        allocation = ["mps"]
+    journal = open_operation_runtime(
+        args,
+        operation=operation,
+        runtime=runtime,
+        device=device.type,
+        allocated_devices=allocation,
+    )
+    with operation_lifecycle(journal):
+        if runtime.device != "auto" and runtime.device != device.type:
+            raise ValueError("Requested operation device differs from actual device")
+        if requested != device.type:
+            raise ValueError(f"Selected {requested} device is unavailable")
+        if device.type == "cuda" and not torch.cuda.is_available():
+            raise ValueError("Selected CUDA device is unavailable")
+        if device.type == "mps" and not torch.backends.mps.is_available():
+            raise ValueError("Selected MPS device is unavailable")
+        _import_operation_modules(
+            journal.bootstrap.request_manifest.resolved_config.get("import_modules", [])
+        )
+        _run_operation(args, device, journal, operation)
 
-    import_model_modules(args.import_modules)
 
+def _import_operation_modules(modules):
+    """Load only registration modules explicitly recorded in approved config."""
+    import importlib
+    import importlib.util
+
+    for name in validate_import_modules(modules):
+        if not name.endswith(".py"):
+            importlib.import_module(name)
+            continue
+        module_name = f"wavedl_custom_{Path(name).stem}"
+        spec = importlib.util.spec_from_file_location(module_name, name)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Cannot import custom module from: {name}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+
+
+def _run_operation(args, device, journal, operation):
+    if operation == OperationKind.PLOT:
+        args.plot = True
+        if args.export:
+            raise ValueError("Plot operations cannot export models")
+    source = journal.bootstrap.request_manifest.checkpoint_source
+    if source is not None:
+        from wavedl.core.checkpoint_source import snapshot_checkpoint_source
+
+        # Explicit approved sources validate only their pinned publication. Do
+        # not enumerate/hash unrelated generations through legacy discovery.
+        with snapshot_checkpoint_source(Path(args.checkpoint), source) as captured:
+            return _run_operation_checkpoint(args, device, journal, operation, captured)
+    checkpoint_dir = resolve_checkpoint_path(args.checkpoint, purpose="best")
+    return _run_operation_checkpoint(args, device, journal, operation, checkpoint_dir)
+
+
+def _run_operation_checkpoint(args, device, journal, operation, checkpoint_dir):
     # Setup logging
     logging.basicConfig(
         level=logging.INFO,
@@ -1360,14 +1303,10 @@ def main():
     )
     logger = logging.getLogger("Tester")
 
-    # Device (CUDA > MPS > CPU)
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
     logger.info(f"Using device: {device}")
+    journal.log(
+        f"Using device: {device}; checkpoint: {checkpoint_dir}", stream="system"
+    )
 
     # Load test data
     X_test, y_test = load_data_for_inference(
@@ -1382,7 +1321,7 @@ def main():
     # This prevents shallow 3D volumes from being misinterpreted as multi-channel 2D.
     meta_in_shape = None
     meta_target_shape = None
-    meta_path = Path(args.checkpoint) / "training_meta.pkl"
+    meta_path = checkpoint_dir / "training_meta.pkl"
     if meta_path.exists():
         try:
             with open(meta_path, "rb") as f:
@@ -1443,9 +1382,12 @@ def main():
         out_size = y_test.shape[1]
     else:
         # Infer from scaler.pkl
-        scaler_path = Path(args.checkpoint) / "scaler.pkl"
-        if not scaler_path.exists():
-            scaler_path = Path(args.checkpoint).parent / "scaler.pkl"
+        scaler_path = checkpoint_dir / "scaler.pkl"
+        if (
+            not scaler_path.exists()
+            and not (checkpoint_dir / "COMPLETE.json").is_file()
+        ):
+            scaler_path = checkpoint_dir.parent / "scaler.pkl"
         if scaler_path.exists():
             with open(scaler_path, "rb") as f:
                 temp_scaler = pickle.load(f)
@@ -1461,16 +1403,19 @@ def main():
     # Load model and scaler
     logger.info(f"Loading checkpoint from: {args.checkpoint}")
     if target_shape is None:
-        scaler_path = Path(args.checkpoint) / "scaler.pkl"
-        if not scaler_path.exists():
-            scaler_path = Path(args.checkpoint).parent / "scaler.pkl"
+        scaler_path = checkpoint_dir / "scaler.pkl"
+        if (
+            not scaler_path.exists()
+            and not (checkpoint_dir / "COMPLETE.json").is_file()
+        ):
+            scaler_path = checkpoint_dir.parent / "scaler.pkl"
         if scaler_path.exists():
             with open(scaler_path, "rb") as f:
                 shape_scaler = pickle.load(f)
             target_shape = scaler_target_shape(shape_scaler, out_size)
     target_shape = target_shape or (out_size,)
     model, scaler = load_checkpoint(
-        args.checkpoint,
+        str(checkpoint_dir),
         in_shape,
         out_size,
         args.model,
@@ -1515,7 +1460,11 @@ def main():
                     f"   📊 Output: {info['output_name']} {info['output_shape']}"
                 )
             logger.info(f"✅ ONNX export completed: {export_path}")
+            emit_operation_artifact(
+                journal, export_path, kind="other", label="ONNX model"
+            )
         else:
+            logger.error("❌ ONNX export failed")
             raise RuntimeError("ONNX export failed; no validated model was produced.")
 
         # If only export was requested (no other outputs), exit early
@@ -1524,6 +1473,9 @@ def main():
                 "Export-only mode. Use --save_predictions or --plot for inference."
             )
             return
+
+    if len(X_test) == 0:
+        raise ValueError("Evaluation and prediction require nonempty input data")
 
     # Run inference with timing
     logger.info(f"Running inference on {len(X_test)} samples...")
@@ -1547,10 +1499,14 @@ def main():
         f"   Inference time: {inference_time:.2f}s ({ms_per_sample:.2f} ms/sample, {samples_per_sec:.1f} samples/s)"
     )
 
-    # Guard: empty dataset — nothing to evaluate or plot
-    if n_samples == 0:
-        logger.warning("No samples in test set — skipping evaluation.")
-        return
+    if (
+        y_pred_scaled.ndim < 2
+        or len(y_pred_scaled) != n_samples
+        or y_pred_scaled.shape[1] != out_size
+    ):
+        raise ValueError("Model prediction shape does not match input and output sizes")
+    if not np.isfinite(y_pred_scaled).all():
+        raise ValueError("Model predictions contain nonfinite values")
 
     if tuple(y_pred_scaled.shape[1:]) != tuple(target_shape):
         raise ValueError(
@@ -1568,8 +1524,10 @@ def main():
 
     # Inverse transform predictions
     y_pred = scaler.inverse_transform(y_pred_scaled)
+    if y_pred.shape != y_pred_scaled.shape:
+        raise ValueError("Inverse-scaled prediction shape differs from model output")
     if not np.isfinite(y_pred).all():
-        raise FloatingPointError("De-normalization produced non-finite predictions.")
+        raise ValueError("Inverse-scaled predictions contain nonfinite values")
 
     # Validate param_names length if provided
     if args.param_names and len(args.param_names) != y_pred.shape[1]:
@@ -1585,6 +1543,16 @@ def main():
 
         # Compute metrics
         metrics = compute_metrics(y_true, y_pred)
+        journal.emit(
+            "metric",
+            MetricPayload(
+                "evaluation",
+                metrics.get("r2_score"),
+                0,
+                metrics=metrics
+                | {"samples": n_samples, "inference_time": inference_time},
+            ),
+        )
 
         # Print results
         print_results(y_true, y_pred, metrics, args.param_names, args.verbose)
@@ -1595,6 +1563,9 @@ def main():
                 "predictions.npz" if y_true.ndim > 2 else "predictions.csv"
             )
             save_predictions(y_true, y_pred, str(output_path), args.param_names)
+            emit_operation_artifact(
+                journal, output_path, kind="other", label="Predictions"
+            )
 
         # Generate plots
         if args.plot:
@@ -1606,7 +1577,29 @@ def main():
                 args.param_names,
                 formats=args.plot_format,
             )
+            for basename in (
+                "scatter_all",
+                "error_histogram",
+                "residuals",
+                "bland_altman",
+                "qq_plot",
+                "error_correlation",
+                "relative_error",
+                "error_cdf",
+                "prediction_vs_index",
+                "error_boxplot",
+            ):
+                if basename == "error_correlation" and y_true.shape[1] < 2:
+                    continue
+                for fmt in args.plot_format:
+                    path = output_dir / f"{basename}.{fmt.lower().strip('.')}"
+                    if path.is_file():
+                        emit_operation_artifact(
+                            journal, path, kind="plot", label=basename
+                        )
     else:
+        if operation == OperationKind.PLOT:
+            raise ValueError("Plot operation requires ground truth targets")
         # === MODE: Predictions only (no ground truth) ===
         logger.info("No ground truth targets - skipping metrics and comparison plots")
 
@@ -1644,6 +1637,9 @@ def main():
                 df = pd.DataFrame(y_pred, columns=columns)
                 df.to_csv(output_path, index=False)
             logger.info(f"   ✔ Predictions saved to: {output_path}")
+            emit_operation_artifact(
+                journal, output_path, kind="other", label="Predictions"
+            )
 
         if args.plot:
             logger.warning(

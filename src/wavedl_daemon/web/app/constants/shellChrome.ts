@@ -1,0 +1,1 @@
+export const SHELL_CANVAS_HEADER_HEIGHT = 56;

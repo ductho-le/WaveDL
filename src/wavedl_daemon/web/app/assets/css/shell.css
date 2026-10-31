@@ -1,0 +1,811 @@
+/*
+ * =================================================================
+ * Shell (v2)
+ *
+ * The floating-panel app shell: a lightly tinted ground with
+ * warm-white panels resting on it.
+ *
+ * Accent tokens inherit from WaveDL appearance preferences.
+ * =================================================================
+ */
+
+/* Accent tokens inherit from WaveDL appearance preferences on html. */
+
+/*
+ * The atmospheric ground every panel floats on. It is a shade of its own
+ * rather than `--background`, because the panels sit at `--card` and the two
+ * need daylight between them — in dark mode especially, where the stock
+ * background and card are only four lightness points apart.
+ */
+[data-shell] {
+  --shell-ground: oklch(0.965 0.006 268);
+}
+
+.dark [data-shell] {
+  --shell-ground: oklch(0.13 0.016 265);
+}
+
+/*
+ * The rail's glass can only refract what sits behind it, and the rail runs the
+ * full height of the left edge — so the ground carries a colour field at the
+ * bottom-left as well as the top. Without it the lower pills frost empty space
+ * and read grey while the upper ones glow.
+ */
+.shell-ground {
+  background:
+    radial-gradient(
+      120% 90% at 12% 4%,
+      color-mix(in oklab, var(--primary) 16%, transparent),
+      transparent 58%
+    ),
+    radial-gradient(
+      70% 45% at 2% 88%,
+      color-mix(in oklab, oklch(0.85 0.08 158) 22%, transparent),
+      transparent 64%
+    ),
+    radial-gradient(
+      100% 80% at 92% 96%,
+      color-mix(in oklab, oklch(0.82 0.09 220) 18%, transparent),
+      transparent 60%
+    ),
+    var(--shell-ground);
+}
+
+.dark .shell-ground {
+  background:
+    radial-gradient(
+      120% 90% at 12% 4%,
+      color-mix(in oklab, var(--primary) 10%, transparent),
+      transparent 58%
+    ),
+    radial-gradient(
+      70% 45% at 2% 88%,
+      color-mix(in oklab, oklch(0.6 0.09 168) 16%, transparent),
+      transparent 64%
+    ),
+    radial-gradient(
+      100% 80% at 92% 96%,
+      color-mix(in oklab, oklch(0.55 0.1 250) 16%, transparent),
+      transparent 60%
+    ),
+    var(--shell-ground);
+}
+
+/*
+ * Panels read as paper, not as elevated cards: a faint border carries the
+ * edge and the shadow only grounds them against the wash.
+ */
+.shell-panel {
+  border: 1px solid color-mix(in oklab, var(--border) 50%, transparent);
+  border-radius: var(--radius-3xl);
+  background: var(--card);
+  box-shadow: var(--shadow-card);
+}
+
+.dark .shell-panel {
+  border-color: color-mix(in oklab, var(--border) 70%, transparent);
+}
+
+/*
+ * The rail is made of three small glass islands instead of one opaque sidebar.
+ * Keeping the seams open lets the ambient ground show through and makes the
+ * navigation feel lighter next to the reading canvas.
+ */
+.shell-rail {
+  /*
+   * White, not `--card`. The pill is meant to read as glass, so its own fill
+   * stays low and `backdrop-filter` does the work — a card-coloured fill makes
+   * it an opaque panel that happens to sit near a blur.
+   */
+  --shell-rail-border: color-mix(in oklab, white 88%, transparent);
+  --shell-rail-surface: color-mix(in oklab, white 32%, transparent);
+  --shell-rail-hover: color-mix(in oklab, white 58%, transparent);
+  /*
+   * Thickness, in three cues: a lit bevel along the top rim where the light
+   * lands, a shaded inner floor for the far wall of the glass, and a soft glow
+   * falling off from the rim into the body. Together they read as a pill with
+   * depth; any one of them alone just looks like a flat tinted shape.
+   */
+  --shell-rail-depth:
+    inset 0 1.5px 1px -0.5px color-mix(in oklab, white 90%, transparent),
+    inset 0 -1.5px 1px -0.5px color-mix(in oklab, oklch(0.35 0.03 265) 14%, transparent),
+    inset 0 0 16px -5px color-mix(in oklab, white 60%, transparent);
+  --shell-rail-shadow:
+    0 1px 1px color-mix(in oklab, white 42%, transparent),
+    0 8px 20px color-mix(in oklab, oklch(0.2 0.02 265) 6%, transparent);
+  position: relative;
+  isolation: isolate;
+  /*
+   * The navigation island's icons magnify out past the pill and into the gutter,
+   * so the rail is the one piece of chrome that deliberately paints outside its
+   * own box. `.shell-panel` is positioned too and comes later in the DOM, so on
+   * an auto z-index it wins the seam and shears the swell off.
+   */
+  z-index: 20;
+}
+
+.shell-rail > * {
+  position: relative;
+  z-index: 1;
+}
+
+/*
+ * True frosted glass: the pill carries almost no fill of its own and lets
+ * `backdrop-filter` pull the ground's colour through it. `saturate` is pushed
+ * well past 1 so that refracted colour stays alive instead of washing grey
+ * behind the blur.
+ *
+ * An earlier version painted the colour onto the rail as two big
+ * pseudo-elements, but they spanned the whole rail while the pills covered only
+ * part of it, so the raw gradient showed in the gaps. The colour belongs on the
+ * ground, where the glass can refract it and the gaps read as page background.
+ */
+.shell-rail-island {
+  /* border: 0.5px solid var(--shell-rail-border); */
+  border-radius: 999px;
+  background-color: var(--shell-rail-surface);
+  color: var(--muted-foreground);
+  box-shadow: var(--shell-rail-depth), var(--shell-rail-shadow);
+  -webkit-backdrop-filter: blur(26px) saturate(2);
+  backdrop-filter: blur(26px) saturate(2);
+}
+
+/*
+ * A 220px labeled column cannot stay a capsule: 999px rounding turns it into a
+ * lozenge and pinches the group titles. Same glass, less extreme corners.
+ */
+.shell-rail-context .shell-rail-island {
+  border-radius: 1.5rem;
+}
+
+.dark .shell-rail {
+  --shell-rail-border: color-mix(in oklab, white 15%, transparent);
+  --shell-rail-surface: color-mix(in oklab, white 5%, transparent);
+  --shell-rail-hover: color-mix(in oklab, white 11%, transparent);
+  --shell-rail-depth:
+    inset 0 1.5px 1px -0.5px color-mix(in oklab, white 24%, transparent),
+    inset 0 -1.5px 1px -0.5px color-mix(in oklab, black 34%, transparent),
+    inset 0 0 16px -5px color-mix(in oklab, white 12%, transparent);
+  --shell-rail-shadow:
+    0 1px 1px color-mix(in oklab, white 6%, transparent),
+    0 8px 20px color-mix(in oklab, black 24%, transparent);
+}
+
+.shell-rail-control {
+  isolation: isolate;
+  transition:
+    color 180ms var(--ease-standard),
+    background-color 180ms var(--ease-standard),
+    box-shadow 180ms var(--ease-standard),
+    transform 180ms var(--ease-standard);
+}
+
+/*
+ * Hover is its own smaller pane of frost sitting on the island's glass: a
+ * brighter translucent fill, a lit top edge, and a second blur pass so the
+ * ground's colour intensifies under the cursor rather than the button simply
+ * turning a flat shade lighter.
+ */
+.shell-rail-control:hover {
+  background-color: var(--shell-rail-hover);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, white 82%, transparent),
+    inset 0 -1px 0 color-mix(in oklab, oklch(0.35 0.03 265) 9%, transparent),
+    0 2px 7px color-mix(in oklab, oklch(0.2 0.02 265) 8%, transparent);
+  -webkit-backdrop-filter: blur(10px) saturate(1.6);
+  backdrop-filter: blur(10px) saturate(1.6);
+  transform: translateY(-1px);
+}
+
+.dark .shell-rail-control:hover {
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, white 20%, transparent),
+    inset 0 -1px 0 color-mix(in oklab, black 30%, transparent),
+    0 2px 7px color-mix(in oklab, black 26%, transparent);
+}
+
+.shell-rail-account {
+  display: grid;
+  place-items: center;
+  padding: 0.125rem;
+  transition:
+    transform 180ms var(--ease-standard),
+    box-shadow 180ms var(--ease-standard);
+}
+
+.shell-rail-account:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--primary) 70%, transparent);
+}
+
+.shell-hide-scrollbar {
+  scrollbar-width: none;
+}
+
+.shell-hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/*
+ * Companion tab bodies fade in on switch; short enough to feel instant.
+ *
+ * Opacity only, deliberately. This element is the direct child of the panel's
+ * `overflow-y: auto` body, so a `translateY` enter pushes its box past the
+ * content edge and creates real scrollable overflow — a scrollbar flashed in
+ * and out on every tab change.
+ */
+.shell-tab-enter {
+  animation: shell-tab-enter 160ms var(--ease-standard) both;
+}
+
+@keyframes shell-tab-enter {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shell-rail-control,
+  .shell-rail-account {
+    transition: none;
+  }
+
+  .shell-rail-control:hover,
+  .shell-rail-account:hover {
+    transform: none;
+  }
+
+  .shell-tab-enter {
+    animation: none;
+  }
+}
+
+/*
+ * Mobile navigation uses one thin pane for the three pinned destinations and
+ * one separate pane for the menu trigger. The low-opacity fill is deliberate:
+ * colour comes from the shell ground through the blur, while the inset light
+ * and dark edges give the material its lens instead of painting a white pill.
+ */
+.shell-mobile-dock-frame {
+  --shell-mobile-glass-border: color-mix(in oklab, white 52%, transparent);
+  --shell-mobile-glass-surface: color-mix(in oklab, white 13%, transparent);
+  --shell-mobile-glass-highlight: color-mix(in oklab, white 76%, transparent);
+  --shell-mobile-glass-shadow: color-mix(in oklab, oklch(0.22 0.025 248) 18%, transparent);
+  --shell-mobile-control-hover: color-mix(in oklab, white 30%, transparent);
+}
+
+.dark .shell-mobile-dock-frame {
+  --shell-mobile-glass-border: color-mix(in oklab, white 18%, transparent);
+  --shell-mobile-glass-surface: color-mix(in oklab, white 6%, transparent);
+  --shell-mobile-glass-highlight: color-mix(in oklab, white 25%, transparent);
+  --shell-mobile-glass-shadow: color-mix(in oklab, black 48%, transparent);
+  --shell-mobile-control-hover: color-mix(in oklab, white 11%, transparent);
+}
+
+.shell-mobile-dock,
+.shell-dock-menu-trigger {
+  position: relative;
+  isolation: isolate;
+  border: 1px solid var(--shell-mobile-glass-border);
+  background:
+    linear-gradient(180deg, color-mix(in oklab, white 20%, transparent), transparent 42%),
+    var(--shell-mobile-glass-surface);
+  box-shadow:
+    inset 0 1px 0 var(--shell-mobile-glass-highlight),
+    inset 0 -1px 0 color-mix(in oklab, oklch(0.32 0.025 248) 12%, transparent),
+    inset 0 0 18px -10px color-mix(in oklab, white 68%, transparent),
+    0 1px 1px color-mix(in oklab, white 38%, transparent),
+    0 12px 32px -12px var(--shell-mobile-glass-shadow);
+  -webkit-backdrop-filter: blur(30px) saturate(1.75) brightness(1.04);
+  backdrop-filter: blur(30px) saturate(1.75) brightness(1.04);
+}
+
+.shell-mobile-dock::after,
+.shell-dock-menu-trigger::after {
+  position: absolute;
+  inset: 1px;
+  z-index: -1;
+  border-radius: inherit;
+  background:
+    radial-gradient(circle at 18% 0%, color-mix(in oklab, white 30%, transparent), transparent 36%),
+    radial-gradient(
+      circle at 84% 112%,
+      color-mix(in oklab, var(--primary) 10%, transparent),
+      transparent 42%
+    );
+  content: '';
+  pointer-events: none;
+}
+
+.shell-mobile-dock {
+  display: grid;
+  min-height: 4.25rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.125rem;
+  overflow: hidden;
+  padding: 0.25rem;
+  border-radius: 1.75rem;
+}
+
+.shell-dock-action,
+.shell-dock-menu-trigger {
+  color: var(--muted-foreground);
+  transition:
+    color 180ms var(--ease-standard),
+    background-color 180ms var(--ease-standard),
+    box-shadow 180ms var(--ease-standard),
+    transform 180ms var(--ease-emphasized);
+}
+
+.shell-dock-action {
+  min-width: 0;
+  white-space: normal;
+}
+
+.shell-dock-action--dock {
+  width: 100%;
+  height: 3.75rem;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.45rem 0.25rem 0.35rem;
+  border-radius: 1.35rem;
+}
+
+.shell-dock-action--dock svg,
+.shell-dock-menu-trigger svg {
+  width: 1.25rem;
+  height: 1.25rem;
+  stroke-width: 1.85;
+}
+
+.shell-dock-action-label {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 0.625rem;
+  font-weight: 650;
+  line-height: 1.08;
+  letter-spacing: -0.015em;
+  text-overflow: ellipsis;
+}
+
+.shell-dock-action[data-active] {
+  background-color: color-mix(in oklab, var(--primary) 13%, white 8%);
+  color: var(--foreground);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, white 62%, transparent),
+    0 4px 12px -8px color-mix(in oklab, var(--primary) 52%, transparent);
+}
+
+.dark .shell-dock-action[data-active] {
+  background-color: color-mix(in oklab, var(--primary) 18%, white 3%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, white 18%, transparent),
+    0 4px 14px -8px color-mix(in oklab, var(--primary) 60%, transparent);
+}
+
+.shell-dock-action[data-active] svg,
+.shell-dock-action[data-dock-action] svg {
+  color: var(--primary);
+}
+
+.shell-dock-menu-trigger {
+  width: 4.25rem;
+  height: 4.25rem;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem 0.35rem 0.4rem;
+  border-radius: 1.55rem;
+}
+
+.shell-dock-menu-trigger[data-state='open'] {
+  background-color: color-mix(in oklab, white 26%, transparent);
+  color: var(--foreground);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, white 74%, transparent),
+    inset 0 0 18px -8px color-mix(in oklab, var(--primary) 20%, transparent),
+    0 10px 30px -12px var(--shell-mobile-glass-shadow);
+  transform: scale(0.97);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .shell-dock-action:hover,
+  .shell-dock-menu-trigger:hover {
+    background-color: var(--shell-mobile-control-hover);
+    color: var(--foreground);
+    transform: translateY(-1px);
+  }
+}
+
+.shell-dock-action:active,
+.shell-dock-menu-trigger:active {
+  transform: scale(0.95);
+}
+
+.shell-dock-action:focus-visible,
+.shell-dock-menu-trigger:focus-visible,
+.shell-dock-menu-close:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--primary) 72%, white 18%);
+  outline-offset: 2px;
+}
+
+/*
+ * The menu is the same material at a thicker scale. A larger glass object bends
+ * more of its surroundings, so it gets stronger blur, a deeper shadow, and a
+ * broader specular field than the dock. The origin sits toward the trailing
+ * edge to make the dialog's zoom feel attached to the menu control below it.
+ */
+.shell-dock-popover {
+  --shell-popover-border: color-mix(in oklab, white 58%, transparent);
+  --shell-popover-surface: color-mix(in oklab, white 34%, transparent);
+  height: min(78dvh, 42rem);
+  border: 1px solid var(--shell-popover-border);
+  border-radius: 2.125rem;
+  background:
+    radial-gradient(
+      circle at 12% -8%,
+      color-mix(in oklab, white 38%, transparent),
+      transparent 35%
+    ),
+    radial-gradient(
+      circle at 96% 108%,
+      color-mix(in oklab, var(--primary) 9%, transparent),
+      transparent 38%
+    ),
+    var(--shell-popover-surface);
+  color: var(--foreground);
+  box-shadow:
+    inset 0 1.5px 0.5px -0.5px color-mix(in oklab, white 82%, transparent),
+    inset 0 -1px 0 color-mix(in oklab, oklch(0.3 0.025 248) 15%, transparent),
+    inset 0 0 36px -18px color-mix(in oklab, white 70%, transparent),
+    0 2px 3px color-mix(in oklab, white 28%, transparent),
+    0 28px 80px -24px color-mix(in oklab, oklch(0.18 0.025 248) 48%, transparent);
+  -webkit-backdrop-filter: blur(44px) saturate(1.65) brightness(1.035);
+  backdrop-filter: blur(44px) saturate(1.65) brightness(1.035);
+  transform-origin: calc(100% - 2.25rem) calc(100% + 3rem);
+}
+
+.dark .shell-dock-popover {
+  --shell-popover-border: color-mix(in oklab, white 18%, transparent);
+  --shell-popover-surface: color-mix(in oklab, oklch(0.18 0.018 248) 48%, transparent);
+  box-shadow:
+    inset 0 1.5px 0.5px -0.5px color-mix(in oklab, white 24%, transparent),
+    inset 0 -1px 0 color-mix(in oklab, black 44%, transparent),
+    inset 0 0 36px -18px color-mix(in oklab, white 16%, transparent),
+    0 2px 3px color-mix(in oklab, white 5%, transparent),
+    0 30px 90px -24px color-mix(in oklab, black 72%, transparent);
+}
+
+.shell-dock-popover-body {
+  display: grid;
+  min-height: 0;
+  height: 100%;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.shell-dock-popover-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-direction: row;
+  gap: 1rem;
+  padding: 1.35rem 1.35rem 1rem;
+  text-align: left;
+}
+
+.shell-dock-popover-header [data-slot='dialog-title'] {
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.035em;
+}
+
+.shell-dock-popover-header [data-slot='dialog-description'] {
+  margin-top: 0.3rem;
+  max-width: 30ch;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.shell-dock-popover-kicker {
+  margin-bottom: 0.35rem;
+  color: var(--muted-foreground);
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.shell-dock-menu-close {
+  border: 1px solid color-mix(in oklab, white 32%, transparent);
+  background-color: color-mix(in oklab, white 12%, transparent);
+  color: var(--muted-foreground);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 42%, transparent);
+}
+
+.shell-dock-popover-scroll {
+  min-height: 0;
+  height: 100%;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    black 0.75rem,
+    black calc(100% - 1rem),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    black 0.75rem,
+    black calc(100% - 1rem),
+    transparent
+  );
+}
+
+.shell-dock-menu-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.45rem;
+  padding: 0.5rem 1rem 1.4rem;
+}
+
+.shell-dock-action--menu {
+  width: 100%;
+  height: 6.1rem;
+  align-items: flex-start;
+  justify-content: flex-start;
+  flex-direction: column;
+  gap: 0.65rem;
+  padding: 0.85rem 0.75rem;
+  border-radius: 1.25rem;
+  text-align: left;
+}
+
+.shell-dock-action--menu svg {
+  width: 1.4rem;
+  height: 1.4rem;
+  stroke-width: 1.75;
+}
+
+.shell-dock-action--menu .shell-dock-action-label {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 0.7rem;
+  font-weight: 650;
+  line-height: 1.25;
+  text-overflow: clip;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .shell-mobile-dock,
+  .shell-dock-menu-trigger {
+    background-color: color-mix(in oklab, var(--background) 94%, var(--primary) 6%);
+  }
+
+  .shell-dock-popover {
+    background-color: color-mix(in oklab, var(--background) 96%, var(--primary) 4%);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .shell-mobile-dock,
+  .shell-dock-menu-trigger,
+  .shell-dock-popover {
+    background-image: none;
+    background-color: color-mix(in oklab, var(--background) 94%, var(--primary) 6%);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .shell-mobile-dock,
+  .shell-dock-menu-trigger,
+  .shell-dock-popover {
+    border-color: var(--foreground);
+    background-color: var(--background);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shell-dock-action,
+  .shell-dock-menu-trigger {
+    transition: none;
+  }
+
+  .shell-dock-action:hover,
+  .shell-dock-action:active,
+  .shell-dock-menu-trigger:hover,
+  .shell-dock-menu-trigger:active,
+  .shell-dock-menu-trigger[data-state='open'] {
+    transform: none;
+  }
+}
+
+/* WaveDL owns the document bounds and daemon-specific overlays. */
+html,
+body,
+#__nuxt {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+body {
+  overscroll-behavior: none;
+}
+.app-safe-frame {
+  padding-top: max(var(--safe-gutter, 0px), env(safe-area-inset-top, 0px));
+  padding-right: max(var(--safe-gutter, 0px), env(safe-area-inset-right, 0px));
+  padding-left: max(var(--safe-gutter, 0px), env(safe-area-inset-left, 0px));
+}
+.shell-companion {
+  max-width: 100%;
+}
+.shell-status-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--muted-foreground);
+}
+.shell-status-dot[data-status='connected'] {
+  background: var(--success);
+}
+.shell-status-dot[data-status='connecting'] {
+  background: var(--warning);
+}
+.shell-skip-link {
+  position: fixed;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 100;
+  transform: translateY(-200%);
+  border-radius: var(--radius);
+  padding: 0.5rem 1rem;
+  background: var(--background);
+}
+.shell-skip-link:focus {
+  transform: translateY(0);
+}
+.shell-overlay {
+  display: flex;
+  min-height: 0;
+  max-height: calc(100dvh - 2rem);
+  flex-direction: column;
+  overflow: hidden;
+}
+.shell-overlay-wide {
+  width: min(60rem, calc(100vw - 2rem));
+  max-width: 60rem;
+}
+.shell-overlay-header {
+  display: flex;
+  justify-content: flex-end;
+}
+.shell-overlay-close {
+  margin-left: auto;
+}
+.shell-overlay-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.shell-command-palette {
+  width: min(36rem, calc(100vw - 2rem));
+  max-height: calc(100dvh - 2rem);
+  overflow-y: auto;
+}
+.shell-command-results {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.shell-command-item {
+  justify-content: flex-start;
+}
+.shell-command-item[aria-selected='true'] {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+.shell-command-empty {
+  padding: 1rem;
+  color: var(--muted-foreground);
+}
+
+/* Batch R: runs, datasets, misc — shared elevation and utility-referenced keyframes.
+ * Keyframes are global so Vue's scoped-name rewriting cannot disconnect the
+ * Tailwind animation utilities from their definitions. */
+@layer utilities {
+  .batch-r-surface-shadow {
+    box-shadow:
+      0 0 0 0.5px color-mix(in srgb, var(--foreground) 10%, transparent),
+      0 1px 2px rgb(0 0 0 / 0.04);
+  }
+}
+
+@keyframes connect-shake {
+  20%,
+  60% {
+    transform: translateX(-6px);
+  }
+  40%,
+  80% {
+    transform: translateX(6px);
+  }
+}
+
+@keyframes run-stream-blink {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+@keyframes run-glyph-pulse {
+  from {
+    opacity: 0.7;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.6);
+  }
+}
+
+@keyframes reader-skeleton-shimmer {
+  0% {
+    transform: translate3d(-140%, 0, 0) skewX(-12deg);
+    opacity: 0;
+  }
+  18% {
+    opacity: 0.72;
+  }
+  54% {
+    opacity: 0.62;
+  }
+  100% {
+    transform: translate3d(140%, 0, 0) skewX(-12deg);
+    opacity: 0;
+  }
+}
+
+/* Phase 2 batch P: project authoring animations.
+ * Global keyframe names are required by the animation utilities in the templates.
+ */
+@keyframes inspector-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+@keyframes draft-saved-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+@keyframes run-message-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.99);
+  }
+}
+@keyframes training-find-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+}
+@keyframes reset-in {
+  from {
+    opacity: 0;
+    transform: rotate(-90deg) scale(0.6);
+  }
+}

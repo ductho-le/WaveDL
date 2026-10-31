@@ -1,0 +1,379 @@
+[
+  {
+    "name": "model",
+    "kind": "string",
+    "multiple": false,
+    "choices": [],
+    "default": "cnn",
+    "description": "Model architecture to train. Available: ()"
+  },
+  {
+    "name": "import_modules",
+    "kind": "string",
+    "multiple": true,
+    "choices": [],
+    "default": [],
+    "description": "Python modules to import before training (for custom models)"
+  },
+  {
+    "name": "pretrained",
+    "kind": "boolean",
+    "multiple": false,
+    "choices": [],
+    "default": false,
+    "description": "Use ImageNet pretrained weights (only for *_pretrained model variants). Default: train from scratch."
+  },
+  {
+    "name": "batch_size",
+    "kind": "integer",
+    "multiple": false,
+    "choices": [],
+    "default": 128,
+    "description": "Batch size per GPU"
+  },
+  {
+    "name": "lr",
+    "kind": "number",
+    "multiple": false,
+    "choices": [],
+    "default": 0.001,
+    "description": "Initial learning rate"
+  },
+  {
+    "name": "epochs",
+    "kind": "integer",
+    "multiple": false,
+    "choices": [],
+    "default": 1000,
+    "description": "Maximum training epochs"
+  },
+  {
+    "name": "patience",
+    "kind": "integer",
+    "multiple": false,
+    "choices": [],
+    "default": 20,
+    "description": "Early stopping patience"
+  },
+  {
+    "name": "weight_decay",
+    "kind": "number",
+    "multiple": false,
+    "choices": [],
+    "default": 0.0001,
+    "description": "Weight decay"
+  },
+  {
+    "name": "grad_clip",
+    "kind": "number",
+    "multiple": false,
+    "choices": [],
+    "default": 1.0,
+    "description": "Gradient clipping norm"
+  },
+  {
+    "name": "grad_accum_steps",
+    "kind": "integer",
+    "multiple": false,
+    "choices": [],
+    "default": 1,
+    "description": "Gradient accumulation steps. Effective batch = batch_size x grad_accum_steps x num_gpus"
+  },
+  {
+    "name": "loss",
+    "kind": "string",
+    "multiple": false,
+    "choices": ["mse", "mae", "huber", "smooth_l1", "log_cosh", "weighted_mse"],
+    "default": "mse",
+    "description": "Loss function for training. Available: ()"
+  },
+  {
+    "name": "huber_delta",
+    "kind": "number",
+    "multiple": false,
+    "choices": [],
+    "default": 1.0,
+    "description": "Delta for Huber loss"
+  },
+  {
+    "name": "loss_weights",
+    "kind": "string",
+    "multiple": false,
+    "choices": [],
+    "default": null,
+    "description": "Comma-separated weights for weighted_mse (e.g., '1.0,2.0,1.0')"
+  },
+  {
+    "name": "optimizer",
+    "kind": "string",
+    "multiple": false,
+    "choices": ["adamw", "adam", "sgd", "nadam", "radam", "rmsprop"],
+    "default": "adamw",
+    "description": "Optimizer for training. Available: ()"
+  },
+  {
+    "name": "momentum",
+    "kind": "number",
+    "multiple": false,
+    "choices": [],
+    "default": 0.9,
+    "description": "Momentum for SGD/RMSprop"
+  },
+  {
+    "name": "nesterov",
+    "kind": "boolean",
+    "multiple": false,
+    "choices": [],
+    "default": false,
+    "description": "Use Nesterov momentum (SGD)"
+  },
+  {
+    "name": "betas",
+    "kind": "string",
+    "multiple": false,
+    "choices": [],
+    "default": "0.9,0.999",
+    "description": "Betas for Adam variants (comma-separated)"
+  },
+  {
+    "name": "scheduler",
+    "kind": "string",
+    "multiple": false,
+    "choices": [
+      "plateau",
+      "cosine",
+      "cosine_restarts",
+      "onecycle",
+      "step",
+      "multistep",
+      "exponential",
+      "linear_warmup"
+    ],
+    "default": "plateau",
+    "description": "LR scheduler. Available: ()"
+  },
+  {
+    "name": "scheduler_patience",
+    "kind": "integer",
+    "multiple": false,
+    "choices": [],
+    "default": 10,
+    "description": "Patience for ReduceLROnPlateau"
+  },
+  {
+    "name": "min_lr",
+    "kind": "number",
+    "multiple": false,
+    "choices": [],
+    "default": 1e-6,
+    "description": "Minimum learning rate"
+  },
+  {
+    "name": "scheduler_factor",
+    "kind": "number",
+    "multiple": false,
+    "choices": [],
+    "default": 0.5,
+    "description": "LR reduction factor"
+  },
+  {
+    "name": "warmup_epochs",
+    "kind": "integer",
+    "multiple": false,
+    "choices": [],
+    "default": 5,
+    "description": "Warmup epochs for linear_warmup"
+  },
+  {
+    "name": "step_size",
+    "kind": "integer",
+    "multiple": false,
+    "choices": [],
+    "default": 30,
+    "description": "Step size for StepLR"
+  },
+  {
+    "name": "milestones",
+    "kind": "string",
+    "multiple": false,
+    "choices": [],
+    "default": null,
+    "description": "Comma-separated epochs for MultiStepLR (e.g., '30,60,90')"
+  },
+  {
+    "name": "data_path",
+    "kind": "string",
+    "multiple": false,
+    "choices": [],
+    "default": "train_data.npz",
+    "description": "Path to NPZ dataset"
+  },
+  {
+    "name": "workers",
+    "kind": "integer",
+    "multiple": false,
+    "choices": [],
+    "default": -1,
+    "description": "DataLoader workers per GPU (-1=auto-detect based on CPU cores)"
+  },
+  {
+    "name": "seed",
+    "kind": "integer",
+    "multiple": false,
+    "choices": [],
+    "default": 2025,
+    "description": "Random seed"
+  },
+  {
+    "name": "deterministic",
+    "kind": "boolean",
+    "multiple": false,
+    "choices": [],
+    "default": false,
+    "description": "Enable deterministic mode for reproducibility (slower, disables TF32/cuDNN benchmark)"
+  },
+  {
+    "name": "cache_validate",
+    "kind": "string",
+    "multiple": false,
+    "choices": ["sha256", "fast", "size"],
+    "default": "sha256",
+    "description": "Cache validation mode: sha256 (full hash), fast (partial), size (quick)"
+  },
+  {
+    "name": "single_channel",
+    "kind": "boolean",
+    "multiple": false,
+    "choices": [],
+    "default": false,
+    "description": "Confirm data is single-channel (suppress ambiguous shape warnings for shallow 3D volumes)"
+  },
+  {
+    "name": "cv",
+    "kind": "integer",
+    "multiple": false,
+    "choices": [],
+    "default": 0,
+    "description": "Enable K-fold cross-validation with K folds (0=disabled)"
+  },
+  {
+    "name": "cv_stratify",
+    "kind": "boolean",
+    "multiple": false,
+    "choices": [],
+    "default": false,
+    "description": "Use stratified splitting for cross-validation"
+  },
+  {
+    "name": "cv_bins",
+    "kind": "integer",
+    "multiple": false,
+    "choices": [],
+    "default": 10,
+    "description": "Number of bins for stratified CV (only with --cv_stratify)"
+  },
+  {
+    "name": "resume",
+    "kind": "string",
+    "multiple": false,
+    "choices": [],
+    "default": null,
+    "description": "Checkpoint directory to resume from"
+  },
+  {
+    "name": "save_every",
+    "kind": "integer",
+    "multiple": false,
+    "choices": [],
+    "default": 50,
+    "description": "Save checkpoint every N epochs (0=disable)"
+  },
+  {
+    "name": "fresh",
+    "kind": "boolean",
+    "multiple": false,
+    "choices": [],
+    "default": false,
+    "description": "Force fresh training, ignore existing checkpoints"
+  },
+  {
+    "name": "compile",
+    "kind": "boolean",
+    "multiple": false,
+    "choices": [],
+    "default": false,
+    "description": "Enable torch.compile (PyTorch 2.x)"
+  },
+  {
+    "name": "precision",
+    "kind": "string",
+    "multiple": false,
+    "choices": ["bf16", "fp16", "no"],
+    "default": "bf16",
+    "description": "Mixed precision mode"
+  },
+  {
+    "name": "constraint",
+    "kind": "string",
+    "multiple": true,
+    "choices": [],
+    "default": [],
+    "description": "Soft constraint expressions: 'y0 - y1*y2' (penalize violations)"
+  },
+  {
+    "name": "constraint_file",
+    "kind": "string",
+    "multiple": false,
+    "choices": [],
+    "default": null,
+    "description": "Python file with constraint(pred, inputs) function"
+  },
+  {
+    "name": "constraint_weight",
+    "kind": "number",
+    "multiple": true,
+    "choices": [],
+    "default": [0.1],
+    "description": "Weight(s) for soft constraints (one per constraint, or single shared weight)"
+  },
+  {
+    "name": "constraint_reduction",
+    "kind": "string",
+    "multiple": false,
+    "choices": ["mse", "mae"],
+    "default": "mse",
+    "description": "Reduction mode for constraint penalties"
+  },
+  {
+    "name": "wandb",
+    "kind": "boolean",
+    "multiple": false,
+    "choices": [],
+    "default": false,
+    "description": "Enable Weights & Biases logging"
+  },
+  {
+    "name": "wandb_watch",
+    "kind": "boolean",
+    "multiple": false,
+    "choices": [],
+    "default": false,
+    "description": "Enable WandB gradient watching (adds overhead, useful for debugging)"
+  },
+  {
+    "name": "project_name",
+    "kind": "string",
+    "multiple": false,
+    "choices": [],
+    "default": "DL-Training",
+    "description": "WandB project name"
+  },
+  {
+    "name": "run_name",
+    "kind": "string",
+    "multiple": false,
+    "choices": [],
+    "default": null,
+    "description": "WandB run name"
+  }
+]
