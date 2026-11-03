@@ -38,6 +38,7 @@ from wavedl_daemon.runs.model import (
     SourceWarning,
     Submitted,
     Submitting,
+    SupervisionFailed,
     WarningCode,
 )
 
@@ -51,6 +52,7 @@ if TYPE_CHECKING:
         FromFile,
         Handle,
         Lifecycle,
+        LocalPoll,
         PlanId,
         RunEvent,
         RunId,
@@ -328,7 +330,7 @@ def _work(head: RunHead, kind: WorkKind) -> Work:
     return Work(kind, head.ref.run_id, head.revision, head.attempt, head.metrics_offset)
 
 
-def next_work(head: RunHead, *, local_poll: LocalExit | NotOwned | None) -> Step:
+def next_work(head: RunHead, *, local_poll: LocalPoll | None) -> Step:
     """What to do for a head with no work in flight.
 
     A Claimed head with nothing in flight was left by a crash between the
@@ -383,7 +385,7 @@ class AttemptFiles:
 
 def settle(
     head: RunHead,
-    cause: LocalExit | NotOwned | SlurmObservation,
+    cause: LocalPoll | SlurmObservation,
     files: AttemptFiles,
 ) -> tuple[RunEvent, ...]:
     """End the current attempt once its metrics file is drained.
@@ -413,7 +415,7 @@ def settle(
 
 def _ending(
     head: RunHead,
-    cause: LocalExit | NotOwned | SlurmObservation,
+    cause: LocalPoll | SlurmObservation,
     record: ExitRecord | None,
 ) -> tuple[Lifecycle, ...]:
     match cause:
@@ -422,6 +424,8 @@ def _ending(
         case LocalExit(returncode=code, signal=signal):
             outcome = Outcome.CANCELLED if head.cancel_requested else Outcome.FAILED
             return (Exited(outcome, True, exit_code=code, signal=signal),)
+        case SupervisionFailed(detail=detail):
+            return (Exited(Outcome.UNKNOWN, False, detail=detail),)
         case NotOwned():
             detail = "The daemon restarted and no longer supervises this process"
             return (Exited(Outcome.LOST, False, detail=detail),)

@@ -35,6 +35,7 @@ class StubProcess:
         self._lock = threading.Lock()
         self._done = threading.Event()
         self._result = None
+        self._error = None
         if result is not None:
             self._finish(result)
 
@@ -47,6 +48,13 @@ class StubProcess:
     def finish(self, returncode):
         self._finish(ProcessResult(returncode, b"", b""))
 
+    def fail(self, cause):
+        """End supervision without exit evidence, as POSIXProcess.wait does."""
+        with self._lock:
+            if self._result is None:
+                self._error = cause
+                self._done.set()
+
     def cancel(self, grace_seconds=5, *, interrupt=False):
         self.cancels.append((grace_seconds, interrupt))
         self._finish(ProcessResult(130 if interrupt else 143, b"", b"", cancelled=True))
@@ -54,6 +62,8 @@ class StubProcess:
     def wait(self, timeout=None):
         if not self._done.wait(timeout):
             raise RuntimeError("stub process still running")
+        if self._error is not None:
+            raise RuntimeError("process supervision failed") from self._error
         return self._result
 
 

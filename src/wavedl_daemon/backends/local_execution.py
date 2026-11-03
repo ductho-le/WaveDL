@@ -19,7 +19,13 @@ from typing import TYPE_CHECKING
 
 from wavedl_daemon.execution.budget import BudgetExhausted
 from wavedl_daemon.runs.layout import RESULT_OPTIONS
-from wavedl_daemon.runs.model import LocalExit, LocalHandle, NotOwned, Probed
+from wavedl_daemon.runs.model import (
+    LocalExit,
+    LocalHandle,
+    NotOwned,
+    Probed,
+    SupervisionFailed,
+)
 from wavedl_daemon.storage.ownership import require_dispatch
 from wavedl_daemon.supervision.base import (
     ProcessResult,
@@ -32,6 +38,7 @@ from .contracts import UnsupportedPlan
 
 
 if TYPE_CHECKING:
+    from wavedl_daemon.runs.model import LocalPoll
     from wavedl_daemon.storage.ownership import DispatchLock
     from wavedl_daemon.supervision.base import SupervisedProcess, Supervisor
 
@@ -316,7 +323,7 @@ class LocalExecution:
                 None,
             )
 
-    def poll(self, handle: LocalHandle) -> LocalExit | NotOwned | None:
+    def poll(self, handle: LocalHandle) -> LocalPoll | None:
         """Non-blocking. None while the process group still runs."""
         record = self._owned(handle)
         if record is None:
@@ -325,8 +332,9 @@ class LocalExecution:
             return None
         try:
             code = record.result.result().returncode
-        except Exception:
-            return LocalExit(None, None)
+        except Exception as error:
+            cause = error.__cause__ or error
+            return SupervisionFailed(f"Process supervision failed: {cause}"[:1000])
         return LocalExit(code, None) if code >= 0 else LocalExit(None, -code)
 
     def cancel(self, handle: LocalHandle) -> None:

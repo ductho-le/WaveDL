@@ -46,6 +46,7 @@ from wavedl_daemon.runs.model import (
     SourceWarning,
     Submitted,
     Submitting,
+    SupervisionFailed,
     WarningCode,
 )
 
@@ -343,6 +344,7 @@ def test_settle_local_exit_outcomes():
     assert ending(local, LocalExit(1, None)) == (Outcome.FAILED, True)
     assert ending(evolve(local, CancelRequested()), LocalExit(None, 15)) == (Outcome.CANCELLED, True)
     assert ending(local, NotOwned()) == (Outcome.LOST, False)
+    assert ending(local, SupervisionFailed("pipes open")) == (Outcome.UNKNOWN, False)
 
 
 def test_settle_drains_the_file_and_records_a_torn_last_line():

@@ -468,6 +468,25 @@ def test_cancel_of_a_running_process_interrupts_and_ends_cancelled(environment):
     ]
 
 
+def test_a_supervision_failure_is_an_unconfirmed_ending(environment, tmp_path):
+    run_id = planned_and_submitted(environment, "escaped")["run_id"]
+    tick_until(environment, run_id, lambda view: view.state == "running")
+    (environment.service.settings.run_root / run_id / "output" / "best_checkpoint").mkdir(
+        parents=True
+    )
+    environment.supervisor.launches[0].fail(
+        TimeoutError("an escaped descendant may still be alive")
+    )
+    view = tick_until(environment, run_id, lambda view: view.state == "terminal_unknown")
+    assert view.uncertainty is True
+    assert "an escaped descendant may still be alive" in view.evidence["reason"]
+    assert (view.evidence["exit_code"], view.evidence["signal"]) == (None, None)
+    response = request(
+        environment.app, "POST", "/api/runs/plan", body=from_checkpoint(run_id, tmp_path), key="t"
+    )
+    assert response.status_code == 400, response.text
+
+
 def test_a_refused_interpreter_probe_fails_the_run_without_launching(environment):
     environment.supervisor.probe_returncode = 1
     run_id = planned_and_submitted(environment, "probe")["run_id"]

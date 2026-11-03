@@ -40,7 +40,6 @@ from wavedl_daemon.runs.model import (
     BackendKind,
     CancelDelivered,
     Exited,
-    LocalExit,
     LocalHandle,
     ObservationFailed,
     Observed,
@@ -61,7 +60,7 @@ if TYPE_CHECKING:
     from wavedl_daemon.backends.slurm import SlurmBackend
     from wavedl_daemon.execution.pool import BoundedThreadPool, WorkHandle
     from wavedl_daemon.runs.lifecycle import RunHead
-    from wavedl_daemon.runs.model import NotOwned, PlanId, RunEvent, RunId
+    from wavedl_daemon.runs.model import LocalPoll, PlanId, RunEvent, RunId
     from wavedl_daemon.storage.plans import PlanRecord, PlanStore
     from wavedl_daemon.storage.run_log import RunLog
 
@@ -164,7 +163,7 @@ def _tail(head: RunHead) -> Done | None:
     return Done(chunk.rows, Expect(offset=(head.attempt, head.metrics_offset)))
 
 
-def _settle(head: RunHead, cause: LocalExit | NotOwned | SlurmObservation) -> Done:
+def _settle(head: RunHead, cause: LocalPoll | SlurmObservation) -> Done:
     events = settle(head, cause, read_attempt_files(head))
     release = None
     if isinstance(head.stage, Live) and isinstance(head.stage.handle, LocalHandle):
@@ -267,7 +266,7 @@ class RunController:
             case Work(kind=kind):
                 self._run(kind, head)
 
-    def _poll(self, head: RunHead) -> LocalExit | NotOwned | None:
+    def _poll(self, head: RunHead) -> LocalPoll | None:
         stage = head.stage
         if not isinstance(stage, Live) or not isinstance(stage.handle, LocalHandle):
             return None

@@ -350,8 +350,18 @@ class LocalExit:
 
 
 @dataclass(frozen=True)
+class SupervisionFailed:
+    """Supervision ended without exit evidence; the process tree may live on."""
+
+    detail: str
+
+
+@dataclass(frozen=True)
 class NotOwned:
     """The handle's supervisor does not exist in this daemon process."""
+
+
+LocalPoll = LocalExit | SupervisionFailed | NotOwned
 
 
 @dataclass(frozen=True)
