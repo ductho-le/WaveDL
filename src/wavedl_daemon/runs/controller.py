@@ -252,10 +252,8 @@ class RunController:
             step = next_work(head, local_poll=poll)
         match step:
             case Append(events=events, then=then):
-                if then is WorkKind.SPAWN and not self._admits():
+                if then is not None and not self._admits(then):
                     return
-                if then is WorkKind.SBATCH and self._slurm is None:
-                    raise UnsupportedPlan("The Slurm backend is not registered")
                 head = self._log.append(
                     head.ref.run_id, events, expect=Expect(revision=head.revision)
                 )
@@ -277,11 +275,21 @@ class RunController:
             raise UnsupportedPlan("The Local backend is not registered")
         return self._local.poll(stage.handle)
 
-    def _admits(self) -> bool:
-        if self._local is None:
-            return False
-        spawning = sum(kind is WorkKind.SPAWN for kind, _ in self._inflight.values())
-        return self._local.running + spawning < self._local.max_processes
+    def _admits(self, kind: WorkKind) -> bool:
+        """Whether the work a claim fences would start now.
+
+        A claim commits only then, so a claim with nothing in flight is always
+        one a daemon crash left behind.
+        """
+        if kind is WorkKind.SBATCH and self._slurm is None:
+            raise UnsupportedPlan("The Slurm backend is not registered")
+        if kind is WorkKind.SPAWN:
+            if self._local is None:
+                return False
+            spawning = sum(kind is WorkKind.SPAWN for kind, _ in self._inflight.values())
+            if self._local.running + spawning >= self._local.max_processes:
+                return False
+        return self._pool.control_lane.admits
 
     def _backend(self) -> SlurmBackend:
         if self._slurm is None:
@@ -310,14 +318,16 @@ class RunController:
                 record, backend = self._record(head), self._backend()
                 self._submit(kind, run_id, lambda: _recover(backend, record, head))
             case WorkKind.RECOVER:
-                # The claim committed but its spawn result did not. The process
-                # may exist, so it is never started again.
-                ending = Exited(
-                    Outcome.LOST,
-                    False,
-                    detail="The daemon stopped before the launch was recorded",
-                )
-                self._log.append(run_id, [ending], expect=Expect(revision=head.revision))
+                # The claim committed but its spawn result did not. A process
+                # another daemon started may exist, so it is never started again.
+                local = self._local
+                handle = None if local is None else local.started(run_id, head.attempt)
+                if handle is None:
+                    detail = "The daemon stopped before the launch was recorded"
+                    events: tuple[RunEvent, ...] = (Exited(Outcome.LOST, False, detail=detail),)
+                else:
+                    events = (Submitted(handle), Observed(Phase.RUNNING, None, None))
+                self._log.append(run_id, events, expect=Expect(revision=head.revision))
             case WorkKind.CANCEL:
                 self._cancel(head)
             case WorkKind.TAIL:
@@ -373,7 +383,8 @@ class RunController:
     def _submit(
         self, kind: WorkKind, run_id: RunId, work: Callable[[], Done | None]
     ) -> None:
-        self._inflight[run_id] = (kind, self._pool.control_lane.submit(lambda token: work()))
+        handle = self._pool.control_lane.submit(lambda token: work(), deadline=False)
+        self._inflight[run_id] = (kind, handle)
 
     def _harvest(self) -> None:
         for run_id, (kind, handle) in list(self._inflight.items()):

@@ -5,11 +5,15 @@ A deadline requests cancellation. A callback must check its token during work.
 No Python thread can be forcibly stopped: admission remains occupied until the
 callback actually returns, including when it ignores cancellation. A timeout on
 result() only bounds that caller's wait, and does not cancel any work.
+
+Work submitted without a deadline may have effects its caller must record, such
+as a started process, so once it starts its result is always returned.
 """
 
 from __future__ import annotations
 
 import asyncio
+import math
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -67,7 +71,7 @@ class CancellationToken:
                 break
             # Native timed waits may wake early (notably on Windows). Re-wait
             # for the remaining interval, never report an unexpired deadline.
-            self._event.wait(remaining)
+            self._event.wait(None if math.isinf(remaining) else remaining)
         return self.cancelled
 
 
@@ -120,9 +124,21 @@ class WorkLane:
         with self._lock:
             return len(self._tokens)
 
-    def submit(self, callback: Callable[[CancellationToken], T]) -> WorkHandle[T]:
+    @property
+    def admits(self) -> bool:
+        """Whether submit would admit one more operation now.
+
+        Completions only free capacity, so a lane's sole submitter can rely on it.
+        """
+        with self._lock:
+            return not self._closed and len(self._tokens) < self._capacity
+
+    def submit(
+        self, callback: Callable[[CancellationToken], T], *, deadline: bool = True
+    ) -> WorkHandle[T]:
         """Admit at most lane threads + max_pending uncompleted operations."""
-        token = CancellationToken(time.monotonic() + self.budget.timeout_seconds)
+        timeout = self.budget.timeout_seconds if deadline else math.inf
+        token = CancellationToken(time.monotonic() + timeout)
         with self._lock:
             if self._closed:
                 raise RuntimeError("pool is closed")
@@ -130,7 +146,7 @@ class WorkLane:
                 raise BudgetExhausted("blocking worker capacity exhausted")
             self._tokens.add(token)
             try:
-                future = self._executor.submit(self._run, callback, token)
+                future = self._executor.submit(self._run, callback, token, deadline)
             except BaseException:
                 self._tokens.remove(token)
                 self._lock.notify_all()
@@ -144,7 +160,10 @@ class WorkLane:
             self._lock.notify_all()
 
     def _run(
-        self, callback: Callable[[CancellationToken], T], token: CancellationToken
+        self,
+        callback: Callable[[CancellationToken], T],
+        token: CancellationToken,
+        deadline: bool,
     ) -> T:
         token.check()
         while not self._permits.acquire(timeout=0.05):
@@ -157,7 +176,8 @@ class WorkLane:
                 raise StorageWorkError(
                     "blocking operation failed; durability unknown"
                 ) from error
-            token.check()
+            if deadline:
+                token.check()
             return result
         finally:
             self._permits.release()

@@ -157,6 +157,7 @@ class _Owned:
     handle: LocalHandle
     process: SupervisedProcess
     result: Future[ProcessResult]
+    attempt: tuple[str, int]  # (run_id, attempt)
 
 
 class LocalExecution:
@@ -286,7 +287,9 @@ class LocalExecution:
                     process.cancel(grace_seconds=0)
                     process.wait()
                     raise
-                self._records[handle.supervisor_id] = _Owned(handle, process, future)
+                self._records[handle.supervisor_id] = _Owned(
+                    handle, process, future, (plan.run_id, attempt)
+                )
         finally:
             with self._lock:
                 self._starting -= 1
@@ -298,6 +301,20 @@ class LocalExecution:
         with self._lock:
             record = self._records.get(handle.supervisor_id)
         return record if record is not None and record.handle == handle else None
+
+    def started(self, run_id: str, attempt: int) -> LocalHandle | None:
+        """The handle of the process this daemon process started for the attempt."""
+        if self._pid != os.getpid():
+            return None
+        with self._lock:
+            return next(
+                (
+                    record.handle
+                    for record in self._records.values()
+                    if record.attempt == (run_id, attempt)
+                ),
+                None,
+            )
 
     def poll(self, handle: LocalHandle) -> LocalExit | NotOwned | None:
         """Non-blocking. None while the process group still runs."""
