@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `wavedl-train --metrics_jsonl PATH` appends each epoch's metrics as one JSON line, so tools can follow training live
+- `wavedl-test --metrics_json PATH` writes the evaluation metrics as one JSON object
 
 ### Fixed
 
