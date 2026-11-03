@@ -21,11 +21,12 @@ async function setup(
   bytes = new TextEncoder().encode('published'),
   size = bytes.length,
   path = 'best_checkpoint/model weights.bin',
+  listed = size,
 ) {
   const calls: Array<{ path: string; init?: RequestInit }> = [];
 
   const inventory = {
-    files: [{ path, size, modified }],
+    files: [{ path, size: listed, modified }],
     checkpoints: ['best_checkpoint'],
   };
 
@@ -190,6 +191,22 @@ describe('published artifact authority', () => {
       if (!artifact) throw new Error('Missing artifact');
       await expect(client.verifiedBlob(artifact)).rejects.toThrow();
     }
+  });
+  it('downloads a file a live run rewrote since the listing, bounded by its declared length', async () => {
+    const grown = await setup(new TextEncoder().encode('published'), 9, 'training_history.csv', 4);
+    const artifact = (await grown.client.list(run)).files[0];
+
+    if (!artifact) throw new Error('Missing artifact');
+    expect(await (await grown.client.verifiedBlob(artifact)).text()).toBe('published');
+
+    const oversized = await setup(new Uint8Array([1]), BLOB_BUDGET + 1, 'training_history.csv', 1);
+    const listed = (await oversized.client.list(run)).files[0];
+
+    if (!listed) throw new Error('Missing artifact');
+    await expect(oversized.client.verifiedBlob(listed)).rejects.toThrow(
+      'This artifact exceeds the 64 MiB browser memory budget. Use the CLI to export it.',
+    );
+    expect(oversized.session.api).not.toBeNull();
   });
   it('refuses oversized allocation before issuing download and invalidates detached grants', async () => {
     const { client, calls, session } = await setup(new Uint8Array([1]), BLOB_BUDGET + 1);

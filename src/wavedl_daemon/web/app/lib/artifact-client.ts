@@ -114,7 +114,7 @@ export class ArtifactClient {
 
     if (artifact.size > BLOB_BUDGET) throw clientError('artifactMemoryBudget', {});
 
-    return this.session.perform(
+    const blob = await this.session.perform(
       async (api, scoped) => {
         this.assertSelection(artifact);
         const path = artifact.path.split('/').map(encodeURIComponent).join('/');
@@ -124,17 +124,27 @@ export class ArtifactClient {
           scoped,
         );
 
+        // A live run rewrites its files, so the listed size can be stale.
+        const length = response.headers.get('content-length') ?? '';
+        const size = /^\d+$/.test(length) ? Number(length) : Number.NaN;
+
         if (
           !response.body ||
           response.headers.get('content-type') !== 'application/octet-stream' ||
-          response.headers.get('content-length') !== String(artifact.size)
+          !Number.isSafeInteger(size)
         ) {
           await response.body?.cancel();
           throw DaemonApiError.fromKey('response', 'artifactInventoryMismatch');
         }
 
+        // Returned rather than thrown: a failure inside perform ends the session.
+        if (size > BLOB_BUDGET) {
+          await response.body.cancel();
+          return null;
+        }
+
         const reader = response.body.getReader();
-        const bytes = new Uint8Array(artifact.size);
+        const bytes = new Uint8Array(size);
         let offset = 0;
 
         const abort = () => {
@@ -151,13 +161,13 @@ export class ArtifactClient {
 
             if (done) break;
 
-            if (offset + value.length > artifact.size)
+            if (offset + value.length > size)
               throw DaemonApiError.fromKey('response', 'artifactExceedsDeclaredSize');
             bytes.set(value, offset);
             offset += value.length;
           }
 
-          if (offset !== artifact.size)
+          if (offset !== size)
             throw DaemonApiError.fromKey('response', 'artifactIsTruncated');
           scoped.throwIfAborted();
           api.assertResponseCurrent(response);
@@ -172,5 +182,9 @@ export class ArtifactClient {
       },
       { signal, timeoutMs: 60000 },
     );
+
+    if (!blob) throw clientError('artifactMemoryBudget', {});
+
+    return blob;
   }
 }
