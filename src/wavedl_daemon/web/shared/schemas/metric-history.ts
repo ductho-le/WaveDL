@@ -117,13 +117,6 @@ export const metricPayloadSchema = metricHeader.pipe(z.object({
   return { ...payload, numeric };
 });
 
-export const supersedePayloadSchema = z.object({
-  source_attempt: integer.min(1),
-  step: integer,
-  generation: z.string().min(1),
-  source_seq: integer.optional(),
-});
-
 export const metricEventScopeSchema = z.object({
   run_id: z.string(),
   attempt: integer.min(1),

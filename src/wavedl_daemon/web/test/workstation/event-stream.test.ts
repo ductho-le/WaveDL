@@ -16,14 +16,14 @@ const encoder = new TextEncoder();
 
 function event(attempt = 1, seq = 0, overrides: FixtureEventOverrides = {}) {
   return {
-    protocol: 'wavedl-jsonl',
-    version: 1,
+    protocol: 'wavedl-run',
+    version: 2,
     run_id: run,
     attempt,
     seq,
-    type: 'log',
+    type: 'warning',
     ts: '2026-10-05T00:00:00Z',
-    payload: { text: 'wave 🌊' },
+    payload: { code: 'metrics_malformed_line', message: 'wave 🌊' },
     ...overrides,
   };
 }
@@ -96,7 +96,7 @@ describe('attempt aware fetch stream', () => {
       await parser.push(bytes.slice(split));
       await parser.finish();
       expect(received).toHaveLength(1);
-      expect(received[0]?.payload.text).toBe('wave 🌊');
+      expect(received[0]?.payload.message).toBe('wave 🌊');
       expect(parser.cursor).toEqual({ attempt: 1, seq: 0 });
     }
   });
@@ -164,7 +164,9 @@ describe('attempt aware fetch stream', () => {
   });
   it.each([
     frame(1, 0, { run_id: '22222222-2222-2222-2222-222222222222' }),
-    frame(1, 0, { version: 2 }),
+    frame(1, 0, { version: 1 }),
+    frame(1, 0, { protocol: 'wavedl-jsonl' }),
+    frame(1, 0, { type: 'hello' }),
     frame(1, 0, { seq: 9007199254740992 }),
     frame(1, 0).replace('id: 1:0', 'id: 1:1'),
     frame(1, 0, { payload: [] }),

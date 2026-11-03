@@ -3,7 +3,6 @@ import { jsonObjectSchema } from './json';
 import { trainingConfigSchema } from './training-request';
 
 export const approvedTrainingManifestSchema = jsonObjectSchema.and(z.object({
-  schema_version: z.literal(1),
   run_id: z.string(),
   operation: z.literal('train'),
   resolved_config: jsonObjectSchema,
@@ -24,7 +23,6 @@ export const approvedTrainingConfigSchema = jsonObjectSchema.refine((value) =>
 export const sourcePlotManifestSchema = jsonObjectSchema.and(z.object({ resolved_config: jsonObjectSchema }));
 
 export const approvedPlotManifestSchema = sourcePlotManifestSchema.and(z.object({
-  schema_version: z.literal(1),
   operation: z.literal('plot'),
   run_id: z.string(),
   checkpoint_source: jsonObjectSchema.and(z.object({

@@ -2,11 +2,7 @@
 import { cn } from '@/lib/utils';
 import { motion } from 'motion-v';
 import { Check, Copy, OctagonX, RotateCcw, ScrollText, X } from '@lucide/vue';
-import {
-  canRequestCancellation,
-  nativePending,
-  type RunMonitorSnapshot,
-} from '../../lib/run-monitor';
+import { canRequestCancellation, type RunMonitorSnapshot } from '../../lib/run-monitor';
 import { pathName, runCreatedAt, shortRunId } from '../../lib/run-overview';
 import {
   runBackendMessageKeys,
@@ -69,11 +65,8 @@ onMounted(() => {
 });
 
 const { copy, copied, isSupported: canCopy } = useClipboard({ copiedDuring: 1600 });
-const pending = computed(() => props.snapshot.run !== null && nativePending(props.snapshot.run));
-
 const metricsUnavailable = computed(
-  () =>
-    props.snapshot.freshness !== 'fresh' || pending.value || props.snapshot.run?.attempt == null,
+  () => props.snapshot.freshness !== 'fresh' || props.snapshot.run?.attempt == null,
 );
 
 const chartRecords = computed(() => (metricsUnavailable.value ? [] : props.snapshot.metrics));
@@ -120,9 +113,7 @@ const facts = computed(() => {
     summary?.source_run_id ? t('runs.fromRun', { id: shortRunId(summary.source_run_id) }) : null,
     labels.operation(run),
     backendLabel(run.backend),
-    pending.value
-      ? t('runs.nativePending')
-      : t('runs.attempt', { attempt: run.attempt ?? t('runs.notAllocated') }),
+    t('runs.attempt', { attempt: run.attempt ?? t('runs.notAllocated') }),
   ].filter((fact): fact is string => fact !== null && fact !== undefined && fact !== '');
 });
 
@@ -179,7 +170,6 @@ const streamLabel = computed(() => t(runStreamMessageKeys[props.snapshot.stream]
             :run="snapshot.run"
             :stale="snapshot.freshness !== 'fresh'"
             :progress="metricSummary.progress"
-            :explanation="pending ? t('runs.pendingNote') : undefined"
           />
           <span class="inline-flex items-center gap-[0.15rem] min-w-0 max-w-full"
             ><code

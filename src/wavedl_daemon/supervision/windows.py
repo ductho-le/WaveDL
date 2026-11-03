@@ -268,7 +268,7 @@ class WindowsProcess:
         self._worker = threading.Thread(target=self._run, daemon=True)
         self._worker.start()
 
-    def cancel(self, grace_seconds: float = 5) -> None:
+    def cancel(self, grace_seconds: float = 5, *, interrupt: bool = False) -> None:
         validate_seconds(grace_seconds, "grace_seconds")
         with self._condition:
             if self._result is not None or self._error is not None:

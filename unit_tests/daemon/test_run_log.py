@@ -240,7 +240,7 @@ def test_triggers_reject_rows_out_of_commit_order(log, state):
         (4, 0, "attempt"),
         (2, 1, "attempt"),
         (2, 1, "observed", 10),
-        (2, 1, "metric"),
+        (2, 1, "metric", 0),
     ]:
         with pytest.raises(sqlite3.IntegrityError):
             insert(*row)

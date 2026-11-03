@@ -4,13 +4,7 @@ import type { RunEvent } from './event-stream';
 
 /** Only the exact current runtime's structured evaluation events are results. */
 export function evaluationResults(view: RunView, events: readonly RunEvent[]): JsonObject | null {
-  if (
-    view.operation !== 'test' ||
-    view.attempt === null ||
-    view.uncertainty ||
-    view.evidence?.native_pending === true
-  )
-    return null;
+  if (view.operation !== 'test' || view.attempt === null || view.uncertainty) return null;
   let result: JsonObject | null = null;
   let sequence = -1;
 

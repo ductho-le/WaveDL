@@ -5,7 +5,7 @@ import {
 } from '../i18n/client-messages';
 import { DaemonApiError, type JsonObject, type RunView } from './daemon-api';
 import {
-  metricPayloadSchema, supersedePayloadSchema, metricEventScopeSchema,
+  metricPayloadSchema, metricEventScopeSchema,
   type MetricDetails, type RuntimeMetricField, type NumericMetrics,
 } from '../../shared/schemas/metric-history';
 import type { RunEvent } from './event-stream';
@@ -19,7 +19,6 @@ export interface MetricRecord {
   value: number | null;
   unit: string;
   metrics: MetricDetails;
-  sourceGeneration: string | null;
   active: boolean;
 }
 
@@ -69,12 +68,6 @@ export interface NumericPoint {
   seq: number;
   step: number;
   value: number | null;
-}
-
-interface Boundary {
-  attempt: number;
-  step: number;
-  seq: number | null;
 }
 
 function fail(clientMessageKey: ClientErrorKey, clientMessageParams?: ClientErrorParams): never {
@@ -201,7 +194,7 @@ function runtimeSummary(record: StoredMetricRecord, bestR2: number | null): Runt
 
 function metric(
   payload: JsonObject,
-): Omit<StoredMetricRecord, 'runId' | 'attempt' | 'seq' | 'active' | 'sourceGeneration'> {
+): Omit<StoredMetricRecord, 'runId' | 'attempt' | 'seq' | 'active'> {
   const parsed = metricPayloadSchema.safeParse(payload);
 
   if (!parsed.success) {
@@ -232,24 +225,20 @@ function metric(
 
 /** Incremental numeric replay, independent of capped display logs. Capacity errors
  * are explicit and atomic: silently evicting causal checkpoints corrupts replay.
- * Ingestion is O(1) per metric; branch restores and requested snapshots are O(N).
+ * Ingestion is O(1) per metric except a requeued attempt's resume step, which
+ * retires earlier records in O(N); requested snapshots are O(N).
  */
 export class MetricHistory {
   #records: StoredMetricRecord[] = [];
   #active = new Map<string, StoredMetricRecord>();
-  #steps = new Map<number, Map<number, number>>();
-  #known = new Set<number>();
-  #published = new Set<string>();
-  #generations = new Map<number, string>();
   #cursors = new Map<number, number>();
-  #lineage = new Map<number, Boundary>();
   #head = 0;
+  #resumeStep: number | null = null;
   #latest: StoredMetricRecord | null = null;
   #r2Scores = new Map<string, number>();
   #bestR2: number | null = null;
   #bestR2Dirty = false;
   #scope: number | null | undefined;
-  #pending = false;
   readonly maxPoints: number;
   constructor(
     readonly runId: string,
@@ -263,22 +252,9 @@ export class MetricHistory {
   get size(): number {
     return this.#records.length;
   }
-  get headAttempt(): number {
-    return this.#head;
-  }
   setScope(view: RunView): void {
     if (view.run_id !== this.runId) fail('metricScopeBelongsToAnotherRun');
     this.#scope = view.attempt;
-    this.#pending = view.evidence?.native_pending === true;
-  }
-  acknowledgeGeneration(sourceAttempt: number, step: number, generation: string): void {
-    if (!Number.isSafeInteger(sourceAttempt) || sourceAttempt < 1 ||
-      !Number.isSafeInteger(step) || step < 0 || !generation)
-      fail('invalidVerifiedGeneration');
-
-    if (this.#published.size >= this.maxPoints) fail('metricGenerationCapacityExceeded');
-    this.#published.add(JSON.stringify([sourceAttempt, step, generation]));
-    this.#known.add(sourceAttempt);
   }
   apply(event: RunEvent): void {
     if (event.run_id !== this.runId || !metricEventScopeSchema.safeParse(event).success)
@@ -289,25 +265,38 @@ export class MetricHistory {
     if (!this.#cursors.has(event.attempt) && this.#cursors.size >= this.maxPoints)
       fail('metricAttemptCapacityExceeded');
 
-    if (event.type === 'metric') {
+    if (event.type === 'attempt') this.#advance(event.attempt);
+    else if (event.type === 'metric') {
       const checked = metric(event.payload);
 
       if (this.size >= this.maxPoints) fail('metricHistoryCapacity');
-      const active = event.attempt >= this.#head;
+      this.#advance(event.attempt);
+      const active = event.attempt === this.#head;
 
       const record: StoredMetricRecord = {
         ...checked,
         runId: this.runId,
         attempt: event.attempt,
         seq: event.seq,
-        sourceGeneration: this.#generations.get(event.attempt) ?? null,
         active,
       };
 
       const key = JSON.stringify([record.step, record.name]);
 
       if (active) {
-        if (event.attempt > this.#head) this.#resetRuntimeSummary();
+        // A requeued attempt resumes from a checkpoint, so its lowest step
+        // retires every earlier attempt's records from that step onward.
+        if (this.#resumeStep === null || record.step < this.#resumeStep) {
+          for (const [priorKey, prior] of this.#active) {
+            if (prior.attempt < record.attempt && prior.step >= record.step) {
+              prior.active = false;
+              this.#active.delete(priorKey);
+            }
+          }
+
+          this.#resumeStep = record.step;
+        }
+
         const prior = this.#active.get(key);
 
         if (prior) prior.active = false;
@@ -317,71 +306,16 @@ export class MetricHistory {
       }
 
       this.#records.push(record);
-      let steps = this.#steps.get(event.attempt);
+    }
 
-      if (!steps) {
-        steps = new Map();
-        this.#steps.set(event.attempt, steps);
-      }
-
-      steps.set(record.step, Math.min(steps.get(record.step) ?? event.seq, event.seq));
-      this.#known.add(event.attempt);
-      this.#head = Math.max(this.#head, event.attempt);
-    } else if (event.type === 'supersede') {
-      const parsed = supersedePayloadSchema.safeParse(event.payload);
-
-      if (!parsed.success || parsed.data.source_attempt >= event.attempt)
-        fail('invalidSupersessionBoundary');
-      const payload = parsed.data;
-      const seq = payload.source_seq ?? null;
-      const first = this.#steps.get(payload.source_attempt)?.get(payload.step);
-
-      if (
-        !(first !== undefined && (seq === null || first <= seq)) &&
-        !this.#published.has(
-          JSON.stringify([payload.source_attempt, payload.step, payload.generation]),
-        ) &&
-        !(payload.step === 0 && this.#known.has(payload.source_attempt))
-      )
-        fail('supersessionStepMissing');
-
-      if (this.#lineage.has(event.attempt)) fail('supersessionAlreadySet');
-      this.#lineage.set(event.attempt, {
-        attempt: payload.source_attempt,
-        step: payload.step,
-        seq,
-      });
-
-      if (event.attempt >= this.#head) {
-        this.#restore(event.attempt);
-        this.#head = event.attempt;
-        this.#resetRuntimeSummary();
-        this.#latest = null;
-
-        for (const record of this.#active.values()) {
-          if (record.attempt === event.attempt && (!this.#latest || record.seq > this.#latest.seq))
-            this.#latest = record;
-        }
-
-        for (const record of this.#active.values()) {
-          if (record.attempt === event.attempt)
-            this.#trackR2(JSON.stringify([record.step, record.name]), record);
-        }
-      }
-
-      this.#generations.set(event.attempt, payload.generation);
-    } else if (event.type === 'hello') {
-      this.#known.add(event.attempt);
-
-      if (event.attempt > this.#head) {
-        this.#latest = null;
-        this.#resetRuntimeSummary();
-      }
-
-      this.#head = Math.max(this.#head, event.attempt);
-    } else if (event.type === 'artifact' && event.payload.kind === 'checkpoint')
-      this.#known.add(event.attempt);
     this.#cursors.set(event.attempt, event.seq);
+  }
+  #advance(attempt: number): void {
+    if (attempt <= this.#head) return;
+    this.#head = attempt;
+    this.#resumeStep = null;
+    this.#latest = null;
+    this.#resetRuntimeSummary();
   }
   #resetRuntimeSummary(): void {
     this.#r2Scores.clear();
@@ -398,54 +332,12 @@ export class MetricHistory {
       this.#bestR2 = this.#bestR2 === null ? score : Math.max(score, this.#bestR2);
     }
   }
-  #restore(attempt: number): void {
-    const bounds = new Map<number, { step: number | null; seq: number | null }>();
-    let step: number | null = null;
-    let seq: number | null = null;
-
-    for (;;) {
-      bounds.set(attempt, { step, seq });
-      const boundary = this.#lineage.get(attempt);
-
-      if (!boundary) break;
-      attempt = boundary.attempt;
-      step = step === null ? boundary.step : Math.min(step, boundary.step);
-      seq = boundary.seq;
-    }
-
-    this.#active.clear();
-
-    for (const record of this.#records) {
-      record.active = false;
-      const bound = bounds.get(record.attempt);
-
-      if (
-        !bound ||
-        (bound.step !== null && record.step > bound.step) ||
-        (bound.seq !== null && record.seq > bound.seq)
-      )
-        continue;
-      const key = JSON.stringify([record.step, record.name]);
-      const prior = this.#active.get(key);
-
-      if (
-        !prior ||
-        record.attempt > prior.attempt ||
-        (record.attempt === prior.attempt && record.seq > prior.seq)
-      )
-        this.#active.set(key, record);
-    }
-
-    for (const record of this.#active.values()) record.active = true;
-  }
   *#selectedRecords(
     options: { activeOnly?: boolean; attempt?: number; live?: boolean } = {},
   ): Generator<StoredMetricRecord> {
     if (
       options.live &&
-      (this.#pending ||
-        this.#scope === null ||
-        (this.#scope !== undefined && this.#scope !== this.#head))
+      (this.#scope === null || (this.#scope !== undefined && this.#scope !== this.#head))
     )
       return;
 
@@ -461,11 +353,7 @@ export class MetricHistory {
     return Array.from(this.#selectedRecords(options), snapshotMetric);
   }
   summary(): MetricSummary {
-    if (
-      this.#pending ||
-      this.#scope === null ||
-      (this.#scope !== undefined && this.#scope !== this.#head)
-    )
+    if (this.#scope === null || (this.#scope !== undefined && this.#scope !== this.#head))
       return { progress: null, best: null, latest: null };
     const latest = this.#latest;
     const epoch = latest?.metrics.epoch;

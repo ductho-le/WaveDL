@@ -8,7 +8,7 @@ from typing import Literal
 from pydantic import MISSING, JsonValue
 
 from wavedl_daemon.http.schemas.common import WireModel
-from wavedl_daemon.runs.reducer import RunState
+from wavedl_daemon.runs.lifecycle import RunState
 
 
 RunStateFilter = Literal["planned", *(state.value for state in RunState)]
@@ -39,7 +39,7 @@ class StorageMappingRequest(WireModel):
 
 
 class CheckpointSourceRequest(WireModel):
-    """Run and published generation selected as an inference source."""
+    """A source training run's checkpoint; refused until it is rebuilt."""
 
     run_id: str
     generation: str
@@ -74,6 +74,29 @@ class PlanView(WireModel):
     preview: dict[str, JsonValue]
 
 
+class ExitRecordView(WireModel):
+    """The Slurm batch, training and stage-out exit codes of an attempt."""
+
+    batch: int
+    training: int
+    stage_out: int
+
+
+class RunEvidence(WireModel):
+    """How the run stands beyond its state: the head's phase or its exit."""
+
+    reason: str
+    phase: Literal["queued", "held", "running"] | None
+    native_state: str | None
+    outcome: (
+        Literal["completed", "failed", "cancelled", "requeued", "unknown", "lost"] | None
+    )
+    exit_code: int | None
+    signal: int | None
+    attempt_exit: ExitRecordView | None
+    restart_count: int | None
+
+
 class RunResponse(WireModel):
     """Lifecycle view retaining the existing daemon response field types."""
 
@@ -87,8 +110,7 @@ class RunResponse(WireModel):
     uncertainty: bool
     submission_requested: bool
     cancellation_requested: bool
-    # Evidence contains tuples and StrEnums; object values preserve its JSON encoding.
-    evidence: dict[str, object] | None
+    evidence: RunEvidence | None
     created_at: str | None
     summary: dict[str, JsonValue] | None
 
@@ -97,11 +119,3 @@ class RunList(WireModel):
     """Page of lifecycle views."""
 
     runs: list[RunResponse]
-
-
-class AttemptPage(WireModel):
-    """Page of historical and current attempt evidence."""
-
-    # Attempt records may contain tuples and StrEnums that JSON-encode natively.
-    attempts: list[dict[str, object]]
-    total: int

@@ -9,7 +9,7 @@ import {
 } from './event-stream';
 import { MetricHistory, type MetricRecord, type MetricSummary } from './metric-history';
 
-import { monitorNativeIdentitySchema, diagnosticPayloadSchema } from '../../shared/schemas/run-monitor';
+import { diagnosticPayloadSchema } from '../../shared/schemas/run-monitor';
 
 export interface RunTransport {
   getRun(runId: string, signal: AbortSignal): Promise<RunView>;
@@ -50,14 +50,6 @@ export function canRequestCancellation(
   );
 }
 
-function scope(run: RunView): string {
-  return JSON.stringify([run.attempt, run.evidence?.native_pending, run.evidence?.native_identity]);
-}
-
-function pending(run: RunView): boolean {
-  return run.evidence?.native_pending === true;
-}
-
 function message(cause: unknown): ClientMessage | Error {
   return cause instanceof DaemonApiError ? cause : clientError('lifecycleUnconfirmed');
 }
@@ -86,12 +78,6 @@ export class RunMonitor {
   #logEvents: RunEvent[] = [];
   #logSizes: number[] = [];
   #logBytes = 0;
-  #nativeIdentity: {
-    cluster: string;
-    job_id: string;
-    owner: string;
-    restart_count: number;
-  } | null = null;
   #replayTarget: Cursor | null = null;
   #replayTargetStatus: ReplayTargetStatus = 'none';
   #persistence: 'disabled' | 'ready' | 'saved' | 'unavailable' = 'disabled';
@@ -210,25 +196,6 @@ export class RunMonitor {
     ) {
       throw DaemonApiError.fromKey('identity', 'runOwnershipOrOperationChanged');
     }
-
-    const identity = run.evidence?.native_identity;
-
-    if (identity !== undefined && identity !== null) {
-      const parsed = monitorNativeIdentitySchema.safeParse(identity);
-
-      if (!parsed.success || parsed.data.run_id !== run.run_id || parsed.data.request_id !== run.request_id)
-        throw DaemonApiError.fromKey('identity', 'invalidNativeGenerationOwnership');
-      const native = parsed.data;
-      const previous = this.#nativeIdentity;
-
-      if (
-        previous &&
-        (native.cluster !== previous.cluster ||
-          native.job_id !== previous.job_id ||
-          native.owner !== previous.owner)
-      )
-        throw DaemonApiError.fromKey('identity', 'nativeGenerationConflict');
-    }
   }
   #cancellationConfirmed(): boolean {
     return (
@@ -248,42 +215,12 @@ export class RunMonitor {
       throw DaemonApiError.fromKey('protocol', 'runtimeAttemptRegressed');
     }
 
-    const identity = run.evidence?.native_identity;
-
-    if (this.#nativeIdentity && (identity === undefined || identity === null)) {
-      throw DaemonApiError.fromKey('identity', 'nativeGenerationMissing');
-    }
-
-    if (run.evidence?.native_pending === true && (identity === undefined || identity === null)) {
-      throw DaemonApiError.fromKey('identity', 'nativeIdentityMissing');
-    }
-
-    if (identity !== undefined && identity !== null) {
-      const parsed = monitorNativeIdentitySchema.safeParse(identity);
-
-      if (!parsed.success)
-        throw DaemonApiError.fromKey('identity', 'invalidNativeGenerationOwnership');
-      const native = parsed.data;
-      const previous = this.#nativeIdentity;
-
-      if (previous && native.restart_count < previous.restart_count) {
-        throw DaemonApiError.fromKey('identity', 'nativeGenerationConflict');
-      }
-
-      this.#nativeIdentity = {
-        cluster: native.cluster,
-        job_id: native.job_id,
-        owner: native.owner,
-        restart_count: native.restart_count,
-      };
-    }
-
-    const changed = this.#snapshot.run !== null && scope(this.#snapshot.run) !== scope(run);
+    const changed = prior !== null && prior.attempt !== run.attempt;
     this.#history.setScope(run);
     this.#publish({
       run,
       freshness: 'fresh',
-      liveEvents: pending(run) || changed ? [] : this.#liveEvents,
+      liveEvents: changed ? [] : this.#liveEvents,
       cancellation: run.cancellation_requested ? 'requested' : this.#snapshot.cancellation,
       metrics: this.#history.metrics({ live: true }),
       summary: this.#history.summary(),
@@ -338,7 +275,7 @@ export class RunMonitor {
 
     const run = this.#snapshot.run;
     const fresh = this.#snapshot.freshness === 'fresh';
-    const current = fresh && run !== null && !pending(run) && event.attempt === run.attempt;
+    const current = fresh && run !== null && event.attempt === run.attempt;
 
     if (current) {
       this.#liveEvents.push(event);
@@ -350,7 +287,7 @@ export class RunMonitor {
     // Metrics/logs are ordinary high-volume telemetry: after the first event,
     // always use one bounded trailing publication. Wall-clock elapsed time must
     // not turn a slow commit into per-event rendering again.
-    const immediate = this.#logEvents.length === 1 || !['metric', 'log'].includes(event.type);
+    const immediate = this.#logEvents.length === 1 || event.type !== 'metric';
 
     if (immediate) {
       this.#publish({});
@@ -602,8 +539,4 @@ export function eventDiagnostic(event: RunEvent) {
 
 export function eventText(event: RunEvent): string {
   return eventDiagnostic(event).text;
-}
-
-export function nativePending(run: RunView): boolean {
-  return run.evidence?.native_pending === true;
 }

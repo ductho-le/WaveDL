@@ -12,49 +12,9 @@ from pathlib import Path
 DAEMON = Path(__file__).resolve().parents[2] / "src" / "wavedl_daemon"
 
 ALLOWED: dict[str, set[str]] = {
-    "backends/contracts.py": {
-        "wavedl.core.layout",
-        "wavedl.core.manifest",
-        "wavedl.core.runtime_identity",
-        "wavedl.core.scheduler_attempt",
-    },
     "backends/local.py": {
         "wavedl.core.inference_cli",
-        "wavedl.core.layout",
-        "wavedl.core.manifest",
         "wavedl.core.training_cli",
-    },
-    "backends/local_execution.py": {
-        "wavedl.core.layout",
-        "wavedl.core.local_attempt",
-        "wavedl.core.persistence",
-        "wavedl.core.runtime_identity",
-        "wavedl.core.submission",
-    },
-    "backends/slurm.py": {
-        "wavedl.core.manifest",
-        "wavedl.core.scheduler_attempt",
-    },
-    "backends/slurm_observation.py": {
-        "wavedl.core.layout",
-        "wavedl.core.outcomes",
-        "wavedl.core.protocol",
-        "wavedl.core.safe_files",
-        "wavedl.core.scheduler_attempt",
-        "wavedl.core.submission",
-        "wavedl.core.submission_outcomes",
-    },
-    "backends/slurm_plan.py": {
-        "wavedl.core.layout",
-        "wavedl.core.manifest",
-        "wavedl.core.scheduler_attempt",
-    },
-    "backends/slurm_submission.py": {
-        "wavedl.core.layout",
-        "wavedl.core.manifest",
-        "wavedl.core.persistence",
-        "wavedl.core.safe_files",
-        "wavedl.core.submission",
     },
     "cli.py": {
         "wavedl",
@@ -66,19 +26,7 @@ ALLOWED: dict[str, set[str]] = {
         "wavedl.core.safe_files",
     },
     "credentials.py": {"wavedl.core.safe_files"},
-    "events/ingestion.py": {
-        "wavedl.core.protocol",
-        "wavedl.core.safe_files",
-    },
-    "events/journal_reader.py": {
-        "wavedl.core.protocol",
-        "wavedl.core.safe_files",
-    },
-    "events/streaming.py": {"wavedl.core.protocol"},
-    "execution/service_host.py": {
-        "wavedl.core.checkpoint_source",
-        "wavedl.core.layout",
-    },
+    "execution/service_host.py": {"wavedl.core.layout"},
     "http/static.py": {"wavedl.core.safe_files"},
     "runs/artifacts.py": {
         "wavedl.core.generations",
@@ -86,83 +34,22 @@ ALLOWED: dict[str, set[str]] = {
         "wavedl.core.safe_files",
     },
     "runs/catalog.py": {"wavedl.core.safe_files"},
-    "runs/control/derivation.py": {"wavedl.core.protocol"},
-    "runs/control/dispatch.py": {
-        "wavedl.core.layout",
-        "wavedl.core.manifest",
-    },
-    "runs/control/handshake.py": {
-        "wavedl.core.layout",
-        "wavedl.core.protocol",
-        "wavedl.core.safe_files",
-    },
-    "runs/control/records.py": {"wavedl.core.safe_files"},
-    "runs/control/restarts.py": {"wavedl.core.scheduler_attempt"},
-    "runs/controller.py": {"wavedl.core.protocol"},
     "runs/dataset_headers.py": {"wavedl.core.safe_files"},
     "runs/dataset_preview.py": {
         "wavedl.core.data_keys",
         "wavedl.core.safe_files",
     },
-    "runs/negotiation.py": {
-        "wavedl.core.events",
-        "wavedl.core.protocol",
-    },
     "runs/preview_authority.py": {"wavedl.core.safe_files"},
-    "runs/reconciliation.py": {"wavedl.core.scheduler_attempt"},
-    "runs/reducer.py": {
-        "wavedl.core.events",
-        "wavedl.core.layout",
-        "wavedl.core.protocol",
-    },
-    "runs/runtime_service.py": {
-        "wavedl.core.layout",
-        "wavedl.core.safe_files",
-    },
+    "runs/runtime_service.py": {"wavedl.core.safe_files"},
     "runs/service.py": {
-        "wavedl.core.checkpoint_source",
         "wavedl.core.inference_cli",
         "wavedl.core.layout",
-        "wavedl.core.manifest",
         "wavedl.core.training_cli",
     },
     "serve_state.py": {
         "wavedl.core.protocol",
         "wavedl.core.safe_files",
     },
-    "storage/collections.py": {
-        "wavedl.core.layout",
-        "wavedl.core.protocol",
-    },
-    "storage/event_log.py": {"wavedl.core.protocol"},
-    "storage/executions.py": {
-        "wavedl.core.local_attempt",
-        "wavedl.core.scheduler_attempt",
-    },
-    "storage/metric_history.py": {
-        "wavedl.core.events",
-        "wavedl.core.protocol",
-    },
-    "storage/metric_projection.py": {
-        "wavedl.core.events",
-        "wavedl.core.protocol",
-    },
-    "storage/native_heads.py": {"wavedl.core.scheduler_attempt"},
-    "storage/native_lifecycle.py": {"wavedl.core.scheduler_attempt"},
-    "storage/registry.py": {
-        "wavedl.core.generations",
-        "wavedl.core.layout",
-        "wavedl.core.manifest",
-        "wavedl.core.persistence",
-        "wavedl.core.protocol",
-    },
-    "storage/runtime_provenance.py": {
-        "wavedl.core.events",
-        "wavedl.core.protocol",
-        "wavedl.core.runtime_identity",
-    },
-    "storage/schema.py": {"wavedl.core.persistence"},
-    "storage/submission_generations.py": {"wavedl.core.scheduler_attempt"},
 }
 
 

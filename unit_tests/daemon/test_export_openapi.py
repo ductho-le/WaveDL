@@ -44,13 +44,11 @@ def test_openapi_documents_run_lifecycle():
         "/api/runs",
         "/api/runs/{run_id}",
         "/api/runs/{run_id}/cancel",
-        "/api/runs/{run_id}/attempts",
     }
     assert "post" in paths["/api/runs/plan"]
     assert {"get", "post"} <= paths["/api/runs"].keys()
     assert "get" in paths["/api/runs/{run_id}"]
     assert "post" in paths["/api/runs/{run_id}/cancel"]
-    assert "get" in paths["/api/runs/{run_id}/attempts"]
     schemas = spec["components"]["schemas"]
     assert {
         "PlanRequest",
@@ -58,7 +56,6 @@ def test_openapi_documents_run_lifecycle():
         "PlanView",
         "RunResponse",
         "RunList",
-        "AttemptPage",
     } <= schemas.keys()
     plan = schemas["PlanRequest"]
     assert plan["additionalProperties"] is False
@@ -91,7 +88,7 @@ def test_openapi_documents_run_lifecycle():
 
 def test_offline_service_raises_if_called():
     service = exporter()._InertRunService()
-    for name in ("plan", "submit", "cancel", "get", "list", "attempts"):
+    for name in ("plan", "submit", "cancel", "get", "list"):
         with pytest.raises(AssertionError, match="OpenAPI generation called"):
             getattr(service, name)()
 
@@ -162,7 +159,6 @@ def test_openapi_documents_daemon_errors_not_fastapi_422():
         ("get", "/api/runs"): "list_runs",
         ("get", "/api/runs/{run_id}"): "get_run",
         ("post", "/api/runs/{run_id}/cancel"): "cancel_run",
-        ("get", "/api/runs/{run_id}/attempts"): "list_run_attempts",
     }
     error = {"$ref": "#/components/schemas/ErrorResponse"}
     for operation in operations.values():

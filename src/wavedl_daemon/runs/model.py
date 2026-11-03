@@ -226,11 +226,39 @@ class Metric(_Event):
         return cls(payload["step"], payload["metrics"], source_end)
 
 
+@dataclass(frozen=True)
+class Evaluation(_Event):
+    """The metrics ``wavedl-test`` saved to ``attempts/N/evaluation.json``.
+
+    It is read once at settle, so it has no bookmark. On the wire it is a
+    ``metric`` named ``evaluation``, which is what the browser reads.
+    """
+
+    kind: ClassVar[str] = "metric"
+    name: ClassVar[str] = "evaluation"
+    metrics: Mapping[str, float | int | None]
+
+    def payload(self):
+        return {
+            "name": self.name,
+            "step": 0,
+            "value": self.metrics.get("r2_score"),
+            "unit": "",
+            "metrics": dict(self.metrics),
+        }
+
+    @classmethod
+    def from_payload(cls, payload, source_end):
+        return cls(payload["metrics"])
+
+
 class WarningCode(StrEnum):
     MALFORMED_LINE = "metrics_malformed_line"
     TORN_TAIL = "metrics_torn_tail"
     TRUNCATED = "metrics_truncated"
     LINE_TOO_LONG = "metrics_line_too_long"
+    EVALUATION_MISSING = "evaluation_missing"
+    EVALUATION_MALFORMED = "evaluation_malformed"
 
 
 _SEALING = frozenset(
@@ -243,7 +271,7 @@ class SourceWarning(_Event):
     kind: ClassVar[str] = "warning"
     code: WarningCode
     message: str
-    source_end: int
+    source_end: int | None  # None for a file read once at settle, not tailed
 
     @property
     def seals(self) -> bool:
@@ -269,7 +297,7 @@ Lifecycle = (
     | CancelDelivered
     | Exited
 )
-FromFile = Metric | SourceWarning
+FromFile = Metric | Evaluation | SourceWarning
 RunEvent = Lifecycle | FromFile
 
 _EVENTS: dict[str, type[RunEvent]] = {
@@ -291,6 +319,8 @@ _EVENTS: dict[str, type[RunEvent]] = {
 
 
 def parse_event(kind: str, payload: dict[str, object], source_end: int | None) -> RunEvent:
+    if kind == Evaluation.kind and payload.get("name") == Evaluation.name:
+        return Evaluation.from_payload(payload, source_end)
     return _EVENTS[kind].from_payload(payload, source_end)
 
 

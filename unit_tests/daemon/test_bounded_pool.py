@@ -15,61 +15,6 @@ from wavedl_daemon.execution import (
 from wavedl_daemon.execution.pool import CancellationToken
 
 
-def test_drain_waits_for_control_lane_only(tmp_path):
-    from wavedl_daemon.runs.runtime_service import ServiceSession
-    from wavedl_daemon.storage.settings import Settings
-
-    control_release = threading.Event()
-    shared_release = threading.Event()
-    admitted = threading.Event()
-    drained = threading.Event()
-    errors = []
-    pool = BoundedThreadPool(WorkBudget(max_workers=2))
-    shared_started = threading.Event()
-
-    def shared(token):
-        shared_started.set()
-        shared_release.wait(5)
-
-    pool.submit(shared)
-    assert shared_started.wait(1)
-
-    def owner():
-        try:
-            settings = Settings(tmp_path / "state", tmp_path / "runs")
-            with ServiceSession(settings, worker_pool=pool) as session:
-                started = threading.Event()
-
-                def control(token):
-                    started.set()
-                    control_release.wait(5)
-
-                session.controller.context.lane.submit(control)
-                assert started.wait(1)
-                admitted.set()
-                session.controller.drain()
-                drained.set()
-        except BaseException as error:
-            errors.append(error)
-            admitted.set()
-
-    thread = threading.Thread(target=owner)
-    thread.start()
-    try:
-        assert admitted.wait(2)
-        assert not errors
-        assert not drained.wait(0.05)
-        control_release.set()
-        assert drained.wait(2)
-        assert not shared_release.is_set()
-    finally:
-        control_release.set()
-        shared_release.set()
-        thread.join(5)
-        pool.shutdown()
-    assert not errors
-
-
 def test_control_lane_admits_while_shared_saturated():
     release = threading.Event()
     with BoundedThreadPool(WorkBudget(max_workers=4, max_pending=0)) as pool:

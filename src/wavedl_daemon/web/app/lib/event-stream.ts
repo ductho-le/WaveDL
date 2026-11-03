@@ -105,8 +105,8 @@ function envelope(data: string, runId: string, id: string): RunEvent {
   const payload = event.payload;
 
   return {
-    protocol: 'wavedl-jsonl',
-    version: 1,
+    protocol: 'wavedl-run',
+    version: 2,
     run_id: runId,
     attempt: event.attempt,
     seq: event.seq,

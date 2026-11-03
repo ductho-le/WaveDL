@@ -60,7 +60,7 @@ RUN_LOG_SCHEMA = (
     "seq INTEGER NOT NULL CHECK(seq >= 0), type TEXT NOT NULL, ts TEXT NOT NULL, "
     "payload_json TEXT NOT NULL, "
     "source_end INTEGER CHECK(source_end > 0), "
-    "CHECK((source_end IS NULL) = (type NOT IN ('metric', 'warning'))), "
+    "CHECK(source_end IS NULL OR type IN ('metric', 'warning')), "
     "PRIMARY KEY(run_id, attempt, seq)) WITHOUT ROWID",
     "CREATE TRIGGER run_events_in_order BEFORE INSERT ON run_events WHEN "
     "(NEW.attempt NOT BETWEEN "
@@ -103,6 +103,20 @@ class Expect:
 
 class Stale(Exception):
     """The head moved since the caller read it. Re-read and retry."""
+
+
+def validate_cursor(cursor: tuple[int, int]) -> tuple[int, int]:
+    """A replay position: ``(0, -1)`` before everything, else ``(attempt, seq)``."""
+    attempt, seq = cursor
+    if (
+        type(attempt) is not int
+        or type(seq) is not int
+        or not 0 <= attempt <= 2**63 - 1
+        or not -1 <= seq <= 2**63 - 1
+        or (attempt == 0 and seq != -1)
+    ):
+        raise ValueError("Invalid attempt/sequence cursor")
+    return cursor
 
 
 def _now() -> str:

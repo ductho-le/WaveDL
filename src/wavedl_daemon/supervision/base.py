@@ -71,7 +71,12 @@ class SupervisedProcess(Protocol):
     @property
     def pid(self) -> int: ...
 
-    def cancel(self, grace_seconds: float = 5) -> None: ...
+    def cancel(self, grace_seconds: float = 5, *, interrupt: bool = False) -> None:
+        """Ask the tree to stop, then force it after the grace.
+
+        ``interrupt`` asks with SIGINT instead of SIGTERM where signals exist.
+        """
+        ...
 
     def wait(self, timeout: float | None = None) -> ProcessResult: ...
 

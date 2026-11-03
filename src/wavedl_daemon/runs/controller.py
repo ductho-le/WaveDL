@@ -1,241 +1,243 @@
 # Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Durable, single-threaded control commits with bounded external work.
+"""Turn active run heads into backend work, one bounded page per tick.
 
-Call ticks on the thread that opened the stores. A tick never waits for backend
-I/O. A lost submission reply is searched, never automatically submitted again.
+Ticks run on the thread that owns the database and never wait for I/O.
+Blocking work (spawning, reading attempt files) runs in the pool and returns
+the events to append with the head tokens it read, so a result that raced
+another append is dropped as stale and recomputed on a later tick.
 """
 
 from __future__ import annotations
 
 import threading
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from wavedl_daemon.execution.budget import BudgetExhausted, WorkBudget
-from wavedl_daemon.execution.pool import BoundedThreadPool
-from wavedl_daemon.storage.ownership import DispatchRequired, require_dispatch
-
-from .control.context import ControlContext
-from .control.derivation import derive_state
-from .control.dispatch import SubmissionDispatch
-from .control.fleet import FleetObserver
-from .control.handshake import RuntimeHandshake
-from .control.observations import ObservationRecorder
-from .control.restarts import RestartWatcher
+from wavedl_daemon.backends.contracts import UnsupportedPlan
+from wavedl_daemon.backends.local_execution import SupervisionLost
+from wavedl_daemon.events.metrics_tail import read_attempt_files, read_tail
+from wavedl_daemon.execution.budget import BudgetExhausted
+from wavedl_daemon.runs.layout import RunPaths
+from wavedl_daemon.runs.lifecycle import (
+    Append,
+    Ended,
+    Live,
+    Work,
+    WorkKind,
+    next_work,
+    settle,
+)
+from wavedl_daemon.runs.model import (
+    CancelDelivered,
+    Exited,
+    LocalExit,
+    LocalHandle,
+    Observed,
+    Outcome,
+    Phase,
+    Submitted,
+)
+from wavedl_daemon.storage.run_log import Expect, Stale
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping
+    from collections.abc import Callable
 
-    from wavedl.core.protocol import Envelope
-    from wavedl_daemon.backends.contracts import Backend
-    from wavedl_daemon.runs.reducer import DerivedState, PublicationEvidence
-    from wavedl_daemon.storage.executions import ExecutionRecord, ExecutionStore
-    from wavedl_daemon.storage.ownership import DispatchLock
+    from wavedl_daemon.backends.contracts import Plan
+    from wavedl_daemon.backends.local import LocalBackend
+    from wavedl_daemon.execution.pool import BoundedThreadPool, WorkHandle
+    from wavedl_daemon.runs.lifecycle import RunHead
+    from wavedl_daemon.runs.model import NotOwned, RunEvent, RunId
     from wavedl_daemon.storage.plans import PlanStore
-    from wavedl_daemon.storage.runtime_provenance import RuntimeProvenanceStore
+    from wavedl_daemon.storage.run_log import RunLog
 
 
-class SubmissionController:
-    """Drive one bounded page per tick; no SQLite connection enters a worker."""
+PAGE_SIZE = 256
+TAIL_INTERVAL_SECONDS = 1.0
+MAX_ERRORS = 128
+
+
+@dataclass(frozen=True)
+class Done:
+    """A worker's result: events to append under the tokens it read."""
+
+    events: tuple[RunEvent, ...]
+    expect: Expect
+    release: LocalHandle | None = None  # forget the process once its exit commits
+
+
+def _spawn(backend: LocalBackend, plan: Plan, head: RunHead) -> Done:
+    try:
+        probed, handle = backend.spawn(plan, head.attempt)
+        # A started Local process is running; nothing queues it.
+        running = Observed(Phase.RUNNING, None, None)
+        events: tuple[RunEvent, ...] = (probed, Submitted(handle), running)
+    except (UnsupportedPlan, SupervisionLost, BudgetExhausted, OSError) as error:
+        events = (Exited(Outcome.FAILED, True, detail=str(error)[:1000]),)
+    return Done(events, Expect(revision=head.revision))
+
+
+def _tail(head: RunHead) -> Done | None:
+    chunk = read_tail(
+        RunPaths(head.ref.run_dir).metrics(head.attempt), start=head.metrics_offset
+    )
+    if not chunk.rows:
+        return None
+    return Done(chunk.rows, Expect(offset=(head.attempt, head.metrics_offset)))
+
+
+def _settle(head: RunHead, cause: LocalExit | NotOwned) -> Done:
+    events = settle(head, cause, read_attempt_files(head))
+    release = None
+    if isinstance(head.stage, Live) and isinstance(head.stage.handle, LocalHandle):
+        if events and isinstance(events[-1], Exited):
+            release = head.stage.handle
+    expect = Expect(revision=head.revision, offset=(head.attempt, head.metrics_offset))
+    return Done(events, expect, release)
+
+
+class RunController:
+    """Owns no state that a restart needs: the run log is the work list."""
 
     def __init__(
         self,
-        plan_store: PlanStore,
-        execution_store: ExecutionStore,
-        backends: Mapping[str, Backend],
-        dispatch_lock: DispatchLock,
-        work_budget: WorkBudget | None = None,
+        log: RunLog,
+        plans: PlanStore,
+        pool: BoundedThreadPool,
         *,
-        provenance_store: RuntimeProvenanceStore | None = None,
-        collection_store=None,
+        local: LocalBackend | None,
         clock: Callable[[], float] = time.monotonic,
-        handshake_timeout_seconds: float = 30,
-        max_runtime_active: int = 1000,
-        pool: BoundedThreadPool | None = None,
     ) -> None:
-        self.plan_store = plan_store
-        self.execution_store = execution_store
-        self.backends = dict(backends)
-        self.dispatch_lock = dispatch_lock
-        self.budget = work_budget or WorkBudget()
-        if type(max_runtime_active) is not int or max_runtime_active < 1:
-            raise ValueError("Runtime tracker capacity must be positive")
-        self.provenance_store = provenance_store
-        self.collection_store = collection_store
-        self._owns_pool = pool is None
-        self._pool = pool if pool is not None else BoundedThreadPool(self.budget)
-        self.dispatch_errors = {}
+        self._log = log
+        self._plans = plans
+        self._local = local
+        self._pool = pool
+        self._clock = clock
+        self._inflight: dict[RunId, tuple[WorkKind, WorkHandle[Done | None]]] = {}
+        self._next_tail: dict[RunId, float] = {}
         self._offset = 0
         self._thread = threading.get_ident()
-        self._closed = False
-        self._draining = False
-        self.context = ControlContext(
-            self.plan_store,
-            self.execution_store,
-            self.provenance_store,
-            self.collection_store,
-            self.backends,
-            self.budget,
-            self._pool.control_lane,
-            clock,
-            self._guard,
-            self._guard_external,
-            self.dispatch_errors,
-            max_runtime_active,
-        )
-        self.handshake = RuntimeHandshake(
-            self.context,
-            handshake_timeout_seconds=handshake_timeout_seconds,
-            capacity=max_runtime_active,
-        )
-        self.observations = ObservationRecorder(self.context, self.handshake)
-        self.fleet = FleetObserver(self.context, self.observations, self.handshake)
-        self.dispatch = SubmissionDispatch(
-            self.context, self.observations, self.handshake, self.fleet
-        )
-        self.restarts = RestartWatcher(
-            self.context, self.handshake, self.observations, self.fleet, self.dispatch
-        )
-
-    @property
-    def restart_errors(self):
-        return self.restarts.restart_errors
-
-    @property
-    def restart_watch_refusals(self):
-        return self.restarts.restart_watch_refusals
-
-    @property
-    def capability_errors(self):
-        return self.fleet.capability_errors
-
-    def accept_runtime_events(self, plan_id: str, events: Iterable[Envelope]):
-        self._guard()
-        return self.handshake.accept_events(plan_id, events)
-
-    def reject_runtime_events(self, plan_id: str, reason: str):
-        self._guard()
-        return self.handshake.reject(plan_id, reason)
+        self.errors: dict[str, str] = {}
 
     def _guard(self) -> None:
         if threading.get_ident() != self._thread:
-            raise RuntimeError(
-                "Controller/store commits must remain on their owner thread"
-            )
-        if self._closed and not self._draining:
-            raise RuntimeError("Controller is closed")
-        require_dispatch(self.dispatch_lock)
-        stores = [self.plan_store, self.execution_store]
-        if self.context.provenance_store is not None:
-            stores.append(self.context.provenance_store)
-        if self.collection_store is not None:
-            stores.append(self.collection_store)
-        for store in stores:
-            if store.read_only:
-                raise PermissionError("Read-only recovery cannot dispatch")
-            if (
-                store.path != self.plan_store.path
-                or (
-                    self.dispatch_lock.path.resolve()
-                    != store.path.parent / "dispatch.lock"
-                )
-                or store.dispatch_lock is not self.dispatch_lock
-            ):
-                raise DispatchRequired(
-                    "Controller requires matching store dispatch ownership"
-                )
+            raise RuntimeError("The controller must stay on its database owner thread")
 
-    def request_submit(self, plan_id: str) -> ExecutionRecord:
+    def tick(self) -> None:
         self._guard()
-        plan = self.plan_store.request_submission(plan_id)
-        record = self.dispatch.ensure(plan)
-        self.dispatch.schedule(plan, record)
-        return self.execution_store.get(plan_id)
-
-    def request_cancel(self, plan_id: str) -> ExecutionRecord:
-        self._guard()
-        plan = self.plan_store.request_cancellation(plan_id)
-        record = self.dispatch.ensure(plan)
-        self.dispatch.schedule(plan, record)
-        return self.execution_store.get(plan_id)
-
-    def _guard_external(self) -> None:
-        if self._closed:
-            raise RuntimeError("Controller closed before external dispatch")
-        require_dispatch(self.dispatch_lock)
-        if (
-            self.dispatch_lock.path.resolve()
-            != self.plan_store.path.parent / "dispatch.lock"
-        ):
-            raise DispatchRequired(
-                "External operation has mismatched dispatch ownership"
-            )
-
-    def reconcile_once(self) -> list[ExecutionRecord]:
-        self._guard()
-        self.handshake.harvest()
-        self.dispatch.harvest()
-        self.restarts.harvest()
-        self.fleet.harvest()
-        self.fleet.probe_capabilities()
-        limit = min(1000, self.budget.max_workers + self.budget.max_pending)
-        plans = self.plan_store.list_pending(limit=limit, offset=self._offset)
-        self._offset = self._offset + len(plans) if len(plans) == limit else 0
-        records = []
-        for plan in plans:
-            record = self.dispatch.ensure(plan)
+        self._harvest()
+        heads = self._log.heads(active=True, limit=PAGE_SIZE, offset=self._offset)
+        self._offset = self._offset + len(heads) if len(heads) == PAGE_SIZE else 0
+        for head in heads:
+            if head.ref.run_id in self._inflight:
+                continue
             try:
-                self.restarts.schedule(plan, record)
-                self.handshake.probe(record)
-                self.dispatch.schedule(plan, record)
-            except BudgetExhausted:
-                if (
-                    plan.plan_id not in self.dispatch_errors
-                    and len(self.dispatch_errors) >= self.context.runtime_capacity
-                ):
-                    self.dispatch_errors.pop(next(iter(self.dispatch_errors)))
-                self.dispatch_errors[plan.plan_id] = "BudgetExhausted"
+                self._advance(head)
+            except (BudgetExhausted, Stale):
+                continue  # retried on a later tick from the committed head
+            except Exception as error:
+                self._error(head, error)
             else:
-                self.dispatch_errors.pop(plan.plan_id, None)
-            records.append(self.execution_store.get(plan.plan_id))
-        self.fleet.publish(records)
-        return records
+                self.errors.pop(head.ref.plan_id, None)
 
-    def startup(self) -> list[ExecutionRecord]:
-        return self.reconcile_once()
+    def _advance(self, head: RunHead) -> None:
+        step = next_work(head, local_poll=self._poll(head))
+        match step:
+            case Append(events=events, then=then):
+                if then is WorkKind.SPAWN and not self._admits():
+                    return
+                head = self._log.append(
+                    head.ref.run_id, events, expect=Expect(revision=head.revision)
+                )
+                if then is not None:
+                    self._run(then, head)
+            case Work(kind=kind):
+                self._run(kind, head)
 
-    def close(self) -> None:
-        """Do not wait for uncooperative I/O or discard durable intent."""
-        self._closed = True
-        self.context.lane.shutdown(wait=False)
-        if self._owns_pool:
-            self._pool.shutdown(wait=False)
+    def _poll(self, head: RunHead) -> LocalExit | NotOwned | None:
+        stage = head.stage
+        if not isinstance(stage, Live) or not isinstance(stage.handle, LocalHandle):
+            return None
+        if self._local is None:
+            raise UnsupportedPlan("The Local backend is not registered")
+        return self._local.poll(stage.handle)
 
-    def drain(self) -> None:
-        """Finish admitted backend work before releasing dispatch/store ownership."""
-        self.context.lane.shutdown(wait=True)
-        if self._owns_pool:
-            self._pool.shutdown(wait=True)
-        self._draining = True
-        try:
-            self.dispatch.harvest()
-        finally:
-            self._draining = False
+    def _admits(self) -> bool:
+        if self._local is None:
+            return False
+        spawning = sum(kind is WorkKind.SPAWN for kind, _ in self._inflight.values())
+        return self._local.running + spawning < self._local.max_processes
 
-    def derive(
-        self,
-        plan_id: str,
-        events: Iterable[Envelope] = (),
-        *,
-        publication: PublicationEvidence | None = None,
-    ) -> DerivedState:
-        return derive_state(
-            self.context,
-            self.handshake,
-            self.dispatch,
-            self.restarts,
-            plan_id,
-            events,
-            publication=publication,
-        )
+    def _run(self, kind: WorkKind, head: RunHead) -> None:
+        run_id = head.ref.run_id
+        match kind:
+            case WorkKind.SPAWN:
+                record = self._plans.get(head.ref.plan_id)
+                local = self._local
+                if record is None or local is None:
+                    raise UnsupportedPlan("The run has no plan or no Local backend")
+                self._submit(kind, run_id, lambda: _spawn(local, record.plan, head))
+            case WorkKind.RECOVER:
+                # The claim committed but its spawn result did not. The process
+                # may exist, so it is never started again.
+                ending = Exited(
+                    Outcome.LOST,
+                    False,
+                    detail="The daemon stopped before the launch was recorded",
+                )
+                self._log.append(run_id, [ending], expect=Expect(revision=head.revision))
+            case WorkKind.CANCEL:
+                stage = head.stage
+                if self._local is None or not isinstance(stage, Live):
+                    raise UnsupportedPlan("Only Local runs can be cancelled for now")
+                if isinstance(stage.handle, LocalHandle):
+                    self._local.cancel(stage.handle)
+                self._log.append(
+                    run_id, [CancelDelivered()], expect=Expect(revision=head.revision)
+                )
+            case WorkKind.TAIL:
+                now = self._clock()
+                if now < self._next_tail.get(run_id, 0):
+                    return
+                self._next_tail[run_id] = now + TAIL_INTERVAL_SECONDS
+                self._submit(kind, run_id, lambda: _tail(head))
+            case WorkKind.SETTLE:
+                cause = self._poll(head)
+                if cause is None:
+                    raise UnsupportedPlan("Slurm settling is being rebuilt")
+                self._submit(kind, run_id, lambda: _settle(head, cause))
+            case WorkKind.SBATCH:
+                raise UnsupportedPlan("Slurm submission is being rebuilt")
+
+    def _submit(
+        self, kind: WorkKind, run_id: RunId, work: Callable[[], Done | None]
+    ) -> None:
+        self._inflight[run_id] = (kind, self._pool.control_lane.submit(lambda token: work()))
+
+    def _harvest(self) -> None:
+        for run_id, (kind, handle) in list(self._inflight.items()):
+            if not handle.done():
+                continue
+            del self._inflight[run_id]
+            try:
+                done = handle.result()
+                if done is None:
+                    continue
+                head = self._log.append(run_id, done.events, expect=done.expect)
+            except Stale:
+                continue
+            except Exception as error:
+                current = self._log.head(run_id)
+                if current is not None:
+                    self._error(current, error)
+                continue
+            if isinstance(head.stage, Ended):
+                self._next_tail.pop(run_id, None)
+                if done.release is not None and self._local is not None:
+                    self._local.release(done.release)
+
+    def _error(self, head: RunHead, error: BaseException) -> None:
+        if head.ref.plan_id not in self.errors and len(self.errors) >= MAX_ERRORS:
+            self.errors.pop(next(iter(self.errors)))
+        self.errors[head.ref.plan_id] = type(error).__name__

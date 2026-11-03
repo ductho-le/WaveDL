@@ -4,7 +4,7 @@ import { ConnectionSession } from '../../app/lib/connection-session';
 import { DaemonApi, DaemonApiError, parseJson, stripBootstrapUrl } from '../../app/lib/daemon-api';
 import { translateClientDiagnostic } from '../../app/i18n/client-messages';
 import { jsonSchema, jsonObjectSchema } from '../../shared/schemas/json';
-import { planSchema, runPendingEvidenceSchema } from '../../app/lib/daemon-api-schemas';
+import { planSchema } from '../../app/lib/daemon-api-schemas';
 
 describe('bounded JSON schema parity', () => {
   it('retains additive own members and rejects invalid numbers without narrowing finite metrics', () => {
@@ -52,26 +52,26 @@ const matrixRun = {
   evidence: null,
 };
 
+const matrixEvidence = {
+  reason: 'running',
+  phase: 'running',
+  native_state: 'RUNNING',
+  outcome: null,
+  exit_code: null,
+  signal: null,
+  attempt_exit: null,
+  restart_count: 0,
+};
+
 const matrixPlan = { plan_id: matrixId, run_id: matrixId, request_id: matrixId, preview: {} };
 
 describe('plan preview boundary', () => {
-  it('keeps legacy missing manifests and additive preview fields but requires present manifests to be strings', () => {
+  it('keeps additive preview fields but requires a present spec to be an object', () => {
     expect(planSchema.safeParse(matrixPlan).success).toBe(true);
-    expect(planSchema.parse({ ...matrixPlan, preview: { manifest_json: '', additive: 1 } }).preview).toEqual({ manifest_json: '', additive: 1 });
+    expect(planSchema.parse({ ...matrixPlan, preview: { spec: {}, additive: 1 } }).preview).toEqual({ spec: {}, additive: 1 });
 
-    for (const manifest_json of [null, false, 1, [], {}]) {
-      expect(planSchema.safeParse({ ...matrixPlan, preview: { manifest_json } }).success).toBe(false);
-    }
-  });
-});
-
-describe('run pending evidence boundary', () => {
-  it('accepts absent and boolean flags with additive JSON but rejects malformed flags', () => {
-    expect(runPendingEvidenceSchema.parse({ additive: [1, null] })).toEqual({ additive: [1, null] });
-    expect(runPendingEvidenceSchema.parse({ native_pending: false }).native_pending).toBe(false);
-
-    for (const native_pending of ['yes', null, 0, [], {}]) {
-      expect(runPendingEvidenceSchema.safeParse({ native_pending }).success).toBe(false);
+    for (const spec of [null, false, 1, [], '']) {
+      expect(planSchema.safeParse({ ...matrixPlan, preview: { spec } }).success).toBe(false);
     }
   });
 });
@@ -143,98 +143,24 @@ const negativeResponses = [
     })),
   ),
   ...[
-    ['native_pending', 'true', 'native_pending'],
-    ['current_runtime_attempt', 0, 'current_runtime_attempt'],
-    ['last_runtime_attempt', 0, 'last_runtime_attempt'],
-    ['confidence', 'certain', 'confidence'],
-    ['reason', false, 'reason'],
-    ['runtime', null, 'runtime'],
-    ['runtime', { hello_seen: 1 }, 'hello_seen'],
-    ['runtime', { outcome: { status: 'completed' } }, 'status'],
-    ['batch', { signal: 0 }, 'signal'],
-    ['backend', { status: 'success' }, 'status'],
-    ['stage_out', [], 'stage_out'],
-    ['native_identity', {}, 'native_identity'],
-  ].map(([field, value, diagnostic]) => ({
+    ['reason', false],
+    ['reason', undefined],
+    ['phase', 'terminal'],
+    ['phase', undefined],
+    ['native_state', 1],
+    ['outcome', 'success'],
+    ['exit_code', 1.5],
+    ['signal', 0],
+    ['attempt_exit', { batch: 0, training: 0 }],
+    ['attempt_exit', []],
+    ['restart_count', -1],
+  ].map(([field, value]) => ({
     method: 'run',
-    body: { ...matrixRun, evidence: { [String(field)]: value } },
+    body: { ...matrixRun, evidence: { ...matrixEvidence, [String(field)]: value } },
     code: 'response',
     key: 'invalidRunEvidence',
-    params: { field: diagnostic },
+    params: { field: String(field) },
   })),
-  ...[
-    ['runtime', { conflicting_exits: 1 }, 'conflicting_exits'],
-    ['runtime', { state: 1 }, 'state'],
-    ['runtime', { state_seq: -2 }, 'state_seq'],
-    ['runtime', { exit_seq: -2 }, 'exit_seq'],
-    ['runtime', { outcome: [] }, 'outcome'],
-    ...['batch', 'stage_out', 'runtime'].flatMap((name) =>
-      [
-        ['status', 'completed'],
-        ['exit_code', 1.5],
-        ['signal', 0],
-        ['detail', false],
-      ].map(([field, value]) => [
-        name,
-        name === 'runtime' ? { outcome: { [String(field)]: value } } : { [String(field)]: value },
-        field,
-      ]),
-    ),
-    ...['backend', 'last_observation'].flatMap((name) =>
-      [
-        ['status', 'success'],
-        ['native_state', 1],
-        ['detail', false],
-        ['attempt', 0],
-        ['native_identity', {}],
-        ['exit_code', 1.5],
-        ['signal', 0],
-        ['batch', []],
-        ['stage_out', { signal: 0 }],
-      ].map(([field, value]) => [
-        name,
-        { [String(field)]: value },
-        field === 'stage_out' ? 'signal' : field,
-      ]),
-    ),
-    ...['run_id', 'request_id', 'cluster', 'owner', 'job_id', 'restart_count'].map((field) => [
-      'native_identity',
-      {
-        run_id: matrixId,
-        request_id: matrixId,
-        cluster: 'site',
-        owner: 'user',
-        job_id: '1',
-        restart_count: 0,
-        [field]: [],
-      },
-      'native_identity',
-    ]),
-    [
-      'native_identity',
-      {
-        run_id: matrixId,
-        request_id: matrixId,
-        cluster: 'site',
-        owner: 'user',
-        job_id: 'invalid',
-        restart_count: 0,
-      },
-      'native_identity',
-    ],
-  ].map(([field, value, diagnostic]) => ({
-    method: 'run',
-    body: { ...matrixRun, evidence: { [String(field)]: value } },
-    code: 'response',
-    key: 'invalidRunEvidence',
-    params: { field: diagnostic },
-  })),
-  {
-    method: 'run',
-    body: { ...matrixRun, evidence: { native_pending: true, current_runtime_attempt: 1 } },
-    code: 'response',
-    key: 'pendingRuntimeConflict',
-  },
 ];
 
 describe('malformed response diagnostic compatibility matrix', () => {
@@ -349,83 +275,18 @@ describe('daemon transport', () => {
     expect(JSON.stringify(failure)).not.toContain(token);
   });
 
-  it.each([
-    { native_pending: 'true' },
-    { native_pending: true, current_runtime_attempt: 1 },
-    { last_runtime_attempt: 9007199254740992 },
-    { current_runtime_attempt: 0 },
-    { confidence: 'certain' },
-    { reason: false },
-    { runtime: [] },
-    { runtime: { hello_seen: 'true' } },
-    { runtime: { state_seq: 9007199254740992 } },
-    { runtime: { outcome: { status: 'completed' } } },
-    { backend: { status: 'success' } },
-    { stage_out: { signal: 0 } },
-    {
-      native_identity: {
-        run_id: '11111111-1111-1111-1111-111111111111',
-        request_id: '11111111-1111-1111-1111-111111111111',
-        cluster: 'site',
-        owner: 'user',
-        job_id: '9223372036854775808',
-        restart_count: 1,
-      },
-    },
-    {
-      native_identity: {
-        run_id: '22222222-2222-2222-2222-222222222222',
-        request_id: '11111111-1111-1111-1111-111111111111',
-        cluster: 'site',
-        owner: 'user',
-        job_id: '1',
-        restart_count: 1,
-      },
-    },
-  ])('rejects malformed known native/runtime evidence %j', async (evidence) => {
-    const run = '11111111-1111-1111-1111-111111111111';
-
-    const api = new DaemonApi(origin, {}, async (url) =>
-      json(
-        String(url).endsWith('/health')
-          ? health
-          : {
-              plan_id: run,
-              run_id: run,
-              request_id: run,
-              backend: 'slurm',
-              operation: 'train',
-              attempt: 1,
-              state: 'queued',
-              uncertainty: true,
-              submission_requested: true,
-              cancellation_requested: false,
-              evidence,
-            },
-      ),
-    );
-
-    api.setToken(token);
-    await expect(api.getRun(run)).rejects.toMatchObject({ code: 'response' });
-  });
-  it('preserves valid native pending history and additive evidence', async () => {
+  it('decodes requeue evidence and strips additive members', async () => {
     const run = '11111111-1111-1111-1111-111111111111';
 
     const evidence = {
-      native_pending: true,
-      current_runtime_attempt: null,
-      last_runtime_attempt: 1,
-      confidence: 'unconfirmed',
       reason: 'requeued',
-      future: { metric: 1e100 },
-      native_identity: {
-        run_id: run,
-        request_id: run,
-        cluster: 'site',
-        owner: 'user',
-        job_id: '9223372036854775807',
-        restart_count: 2,
-      },
+      phase: null,
+      native_state: 'NODE_FAIL',
+      outcome: 'requeued',
+      exit_code: null,
+      signal: null,
+      attempt_exit: { batch: 0, training: 1, stage_out: 0 },
+      restart_count: 1,
     };
 
     const api = new DaemonApi(origin, {}, async (url) =>
@@ -438,12 +299,12 @@ describe('daemon transport', () => {
               request_id: run,
               backend: 'slurm',
               operation: 'train',
-              attempt: 1,
+              attempt: 2,
               state: 'queued',
-              uncertainty: true,
+              uncertainty: false,
               submission_requested: true,
               cancellation_requested: false,
-              evidence,
+              evidence: { ...evidence, future: { metric: 1e100 } },
             },
       ),
     );
@@ -827,7 +688,7 @@ describe('daemon transport', () => {
     response = { ...view, state: 'success' };
     await expect(api.getRun(run)).rejects.toMatchObject({ code: 'response' });
   });
-  it('rejects unsafe attempt coordinates while retaining pending native null attempts', async () => {
+  it('rejects unsafe attempt coordinates', async () => {
     const run = '11111111-1111-1111-1111-111111111111';
 
     const body = {
@@ -841,7 +702,7 @@ describe('daemon transport', () => {
       uncertainty: true,
       submission_requested: true,
       cancellation_requested: false,
-      evidence: {},
+      evidence: null,
     };
 
     const api = new DaemonApi(

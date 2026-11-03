@@ -11,7 +11,6 @@ import {
 } from '../../shared/schemas/result-request';
 import {
   object,
-  parseJson,
   type DaemonApi,
   type Json,
   type JsonObject,
@@ -30,7 +29,6 @@ import {
   approvedTrainingManifestSchema, trainingPlanPreviewSchema, approvedTrainingConfigSchema,
   sourcePlotManifestSchema, approvedPlotManifestSchema,
 } from '../../shared/schemas/autoplot';
-import { monitorNativeIdentitySchema } from '../../shared/schemas/run-monitor';
 
 interface AutoPlotIntent {
   readonly request: ResultRequest;
@@ -43,8 +41,8 @@ export function automaticPlotRequest(
   plan: PlanView,
   originalRequest?: JsonObject,
 ): TrainingRequest {
-  if (plan.preview.manifest_json === undefined) throw clientError('missingApprovedManifest', {});
-  const parsed = approvedTrainingManifestSchema.safeParse(parseJson(plan.preview.manifest_json));
+  if (plan.preview.spec === undefined) throw clientError('missingApprovedManifest', {});
+  const parsed = approvedTrainingManifestSchema.safeParse(plan.preview.spec);
   const preview = trainingPlanPreviewSchema.safeParse(plan.preview);
 
   if (!parsed.success || !preview.success || parsed.data.run_id !== run.run_id || preview.data.target !== run.backend)
@@ -195,9 +193,7 @@ export class AutoPlotController {
   #daemonId = '';
   #busy = false;
   #sourceAttempt: number | null = null;
-  #sourceNative = '';
   #observedAttempt: number | null = null;
-  #nativeBinding: { cluster: string; owner: string; jobId: string; restart: number } | null = null;
   #timer: ReturnType<typeof setTimeout> | null = null;
   #unsubscribe: () => void;
   // Status recovery must never re-arm explicitly disabled/completed workflows.
@@ -266,8 +262,6 @@ export class AutoPlotController {
       this.#request = structuredClone(request);
       this.#run = structuredClone(toRaw(run));
       this.#observedAttempt = run.attempt;
-
-      if (!this.#acceptScope(run)) throw clientError('unsupportedCapturedNativeScope', {});
       this.state.value = {
         status: 'armed',
         plotRunId: null,
@@ -358,11 +352,16 @@ export class AutoPlotController {
       return;
     }
 
-    if (!this.#acceptScope(run)) {
+    if (
+      this.#observedAttempt !== null &&
+      (run.attempt === null || run.attempt < this.#observedAttempt)
+    ) {
       this.stop();
 
       return;
     }
+
+    this.#observedAttempt = run.attempt;
 
     if (run.state === 'failed' || run.state === 'cancelled') {
       this.stop();
@@ -370,19 +369,7 @@ export class AutoPlotController {
       return;
     }
 
-    if (
-      run.state !== 'completed' ||
-      run.uncertainty ||
-      run.evidence?.native_pending === true ||
-      run.attempt === null
-    )
-      return;
-
-    if (run.backend === 'slurm' && !this.#nativeBinding) {
-      this.stop();
-
-      return;
-    }
+    if (run.state !== 'completed' || run.uncertainty || run.attempt === null) return;
 
     this.#busy = true;
     const parent = this.#scope.signal;
@@ -456,7 +443,6 @@ export class AutoPlotController {
       );
       this.#sourceSelection = selected.classification;
       this.#sourceAttempt = run.attempt;
-      this.#sourceNative = JSON.stringify(run.evidence?.native_identity ?? null);
 
       // Re-read lifecycle after metadata downloads; it may have requeued meanwhile.
       const latest = await this.session.perform((api, scoped) => api.getRun(run.run_id, scoped), {
@@ -473,10 +459,8 @@ export class AutoPlotController {
         latest.operation !== 'train' ||
         latest.cancellation_requested ||
         latest.attempt !== run.attempt ||
-        JSON.stringify(latest.evidence?.native_identity ?? null) !== this.#sourceNative ||
         latest.state !== 'completed' ||
-        latest.uncertainty ||
-        latest.evidence?.native_pending === true
+        latest.uncertainty
       ) {
         this.stop();
 
@@ -590,9 +574,7 @@ export class AutoPlotController {
       sourceNow.attempt !== this.#sourceAttempt ||
       sourceNow.state !== 'completed' ||
       sourceNow.uncertainty ||
-      sourceNow.cancellation_requested ||
-      sourceNow.evidence?.native_pending === true ||
-      JSON.stringify(sourceNow.evidence?.native_identity ?? null) !== this.#sourceNative
+      sourceNow.cancellation_requested
     ) {
       this.stop();
 
@@ -633,10 +615,10 @@ export class AutoPlotController {
     try {
       if (!current()) return false;
 
-      if (!sourcePlan || sourcePlan.preview.manifest_json === undefined || plan.preview.manifest_json === undefined)
+      if (!sourcePlan || sourcePlan.preview.spec === undefined || plan.preview.spec === undefined)
         throw clientError('missingApprovedManifests', {});
-      const parsedSource = sourcePlotManifestSchema.safeParse(parseJson(sourcePlan.preview.manifest_json));
-      const parsedPlot = approvedPlotManifestSchema.safeParse(parseJson(plan.preview.manifest_json));
+      const parsedSource = sourcePlotManifestSchema.safeParse(sourcePlan.preview.spec);
+      const parsedPlot = approvedPlotManifestSchema.safeParse(plan.preview.spec);
 
       if (!parsedSource.success || !parsedPlot.success)
         throw clientError('invalidPlotManifest', {});
@@ -648,7 +630,7 @@ export class AutoPlotController {
         new Uint8Array(
           await crypto.subtle.digest(
             'SHA-256',
-            new TextEncoder().encode(`${sourcePlan.preview.manifest_json}\n`),
+            new TextEncoder().encode(`${canonical(sourcePlan.preview.spec)}\n`),
           ),
         ),
         (byte) => byte.toString(16).padStart(2, '0'),
@@ -694,41 +676,6 @@ export class AutoPlotController {
 
       return false;
     }
-  }
-  #acceptScope(run: RunView): boolean {
-    if (
-      this.#observedAttempt !== null &&
-      (run.attempt === null || run.attempt < this.#observedAttempt)
-    )
-      return false;
-    this.#observedAttempt = run.attempt;
-    const rawIdentity = run.evidence?.native_identity;
-
-    if (rawIdentity === undefined || rawIdentity === null) return this.#nativeBinding === null;
-
-    const parsed = monitorNativeIdentitySchema.safeParse(rawIdentity);
-
-    if (!parsed.success || parsed.data.run_id !== run.run_id || parsed.data.request_id !== run.request_id)
-      return false;
-    const identity = parsed.data;
-    const prior = this.#nativeBinding;
-
-    if (
-      prior &&
-      (prior.cluster !== identity.cluster ||
-        prior.owner !== identity.owner ||
-        prior.jobId !== identity.job_id ||
-        identity.restart_count < prior.restart)
-    )
-      return false;
-    this.#nativeBinding = {
-      cluster: identity.cluster,
-      owner: identity.owner,
-      jobId: identity.job_id,
-      restart: identity.restart_count,
-    };
-
-    return true;
   }
   #complete(run: RunView): void {
     if (
@@ -784,11 +731,9 @@ export class AutoPlotController {
         current.plan_id !== source.plan_id ||
         current.request_id !== source.request_id ||
         current.attempt !== this.#sourceAttempt ||
-        JSON.stringify(current.evidence?.native_identity ?? null) !== this.#sourceNative ||
         current.state !== 'completed' ||
         current.uncertainty ||
-        current.cancellation_requested ||
-        current.evidence?.native_pending === true
+        current.cancellation_requested
       ) {
         this.stop();
 
@@ -808,9 +753,7 @@ export class AutoPlotController {
     this.#run = null;
     this.#intent = null;
     this.#sourceAttempt = null;
-    this.#sourceNative = '';
     this.#observedAttempt = null;
-    this.#nativeBinding = null;
     this.#plan = null;
     this.#sourcePlan = null;
     this.#sourceApi = null;

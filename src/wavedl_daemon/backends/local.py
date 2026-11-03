@@ -6,11 +6,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from wavedl.core.inference_cli import validate_import_modules
-from wavedl.core.layout import OperationKind
-from wavedl.core.manifest import Manifest
 from wavedl.core.training_cli import validate_cv_options
+from wavedl_daemon.runs.model import Operation
 
-from .contracts import Plan, Topology, UnsupportedPlan, _json
+from .contracts import Plan, RunSpec, Topology, UnsupportedPlan
 from .local_execution import LocalExecution, reserved_local_environment
 
 
@@ -70,8 +69,6 @@ _TRAIN_FLAGS = frozenset(
 )
 _TEST_VALUES = frozenset(
     [
-        "device",
-        "operation",
         "checkpoint",
         "data_path",
         "model",
@@ -94,9 +91,9 @@ _TEST_FLAGS = frozenset(["save_predictions", "plot", "verbose", "no_denorm"])
 # Recorded CLI configurations carry these, but the daemon never runs them:
 # pickled datasets execute code, and selection_metric is an HPO-only switch.
 _DEFAULT_ONLY = {
-    OperationKind.TRAIN: {"allow_pickle": False, "selection_metric": "loss"},
-    OperationKind.TEST: {"allow_pickle": False},
-    OperationKind.PLOT: {"allow_pickle": False},
+    Operation.TRAIN: {"allow_pickle": False, "selection_metric": "loss"},
+    Operation.TEST: {"allow_pickle": False},
+    Operation.PLOT: {"allow_pickle": False},
 }
 
 
@@ -105,27 +102,13 @@ class LocalBackend(LocalExecution):
 
     name = "local"
 
-    def plan(
-        self,
-        manifest: Manifest,
-        *,
-        topology: Topology = Topology(),
-        arguments: tuple[str, ...] = (),
-        allocation_mode: str = "reserved",
-    ) -> Plan:
-        # Writer allocation is explicit opt-in; existing production previews
-        # retain their reserved mode and byte-identical serialized contracts.
-        if type(allocation_mode) is not str or allocation_mode not in {
-            "reserved",
-            "writer",
-        }:
-            raise UnsupportedPlan("Invalid attempt allocation mode")
-        if not isinstance(manifest, Manifest) or not isinstance(topology, Topology):
-            raise UnsupportedPlan("A resolved Manifest and Topology are required")
+    def plan(self, spec: RunSpec, *, topology: Topology = Topology()) -> Plan:
+        if not isinstance(spec, RunSpec) or not isinstance(topology, Topology):
+            raise UnsupportedPlan("A resolved RunSpec and Topology are required")
         if topology.num_machines != 1 or topology.machine_rank != 0:
             raise UnsupportedPlan("Local supports one machine only")
-        if manifest.operation == OperationKind.TRAIN:
-            folds = manifest.resolved_config.get("cv", 0)
+        if spec.operation == Operation.TRAIN:
+            folds = spec.resolved_config.get("cv", 0)
             if type(folds) is not int or folds < 0:
                 raise UnsupportedPlan(
                     "Cross-validation fold count must be a nonnegative integer"
@@ -133,10 +116,10 @@ class LocalBackend(LocalExecution):
             if folds and topology.processes_per_machine != 1:
                 raise UnsupportedPlan("Cross-validation requires one training process")
             try:
-                validate_cv_options(manifest.resolved_config)
+                validate_cv_options(spec.resolved_config)
             except ValueError as error:
                 raise UnsupportedPlan(str(error)) from error
-        runtime = manifest.runtime
+        runtime = spec.runtime
         if any(reserved_local_environment(key) for key in runtime.environment):
             raise UnsupportedPlan(
                 "Local environment cannot override execution identity"
@@ -146,31 +129,19 @@ class LocalBackend(LocalExecution):
             or runtime.container is not None
         ):
             raise UnsupportedPlan("Local does not implement bundled/container runtimes")
-        if manifest.operation == OperationKind.TRAIN and runtime.device == "mps":
+        if spec.operation == Operation.TRAIN and runtime.device == "mps":
             raise UnsupportedPlan("Explicit MPS training selection is unsupported")
         if any(
             Path(item.host_root) != Path(item.execution_root)
-            for item in manifest.storage_map
+            for item in spec.storage_map
         ):
             raise UnsupportedPlan("Local cannot execute remapped storage paths")
-        if manifest.run_directory != manifest.working_directory:
+        if spec.run_directory != spec.working_directory:
             raise UnsupportedPlan(
                 "Local working directory must be the owned run directory"
             )
-        if not isinstance(arguments, tuple) or not all(
-            isinstance(arg, str) for arg in arguments
-        ):
-            raise UnsupportedPlan("Arguments must be a tuple of strings")
-        for argument in arguments:
-            option = argument.split("=", 1)[0]
-            if option in {"--output_dir", "--output-dir"}:
-                raise UnsupportedPlan("output_dir is owned by the daemon")
-        if arguments:
-            raise UnsupportedPlan(
-                "Merge caller arguments into resolved_config before planning"
-            )
         if (
-            manifest.operation != OperationKind.TRAIN
+            spec.operation != Operation.TRAIN
             and topology.processes_per_machine != 1
         ):
             raise UnsupportedPlan("Only training supports multiprocess Local plans")
@@ -195,23 +166,23 @@ class LocalBackend(LocalExecution):
                     "CUDA Local training requires explicit distinct visible CUDA devices"
                 )
         values = (
-            _TRAIN_VALUES if manifest.operation == OperationKind.TRAIN else _TEST_VALUES
+            _TRAIN_VALUES if spec.operation == Operation.TRAIN else _TEST_VALUES
         )
         flags = (
-            _TRAIN_FLAGS if manifest.operation == OperationKind.TRAIN else _TEST_FLAGS
+            _TRAIN_FLAGS if spec.operation == Operation.TRAIN else _TEST_FLAGS
         )
-        config = manifest.resolved_config
+        config = spec.resolved_config
         if "import_modules" in config:
             try:
                 validate_import_modules(config["import_modules"])
             except ValueError as error:
                 raise UnsupportedPlan(str(error)) from error
-        if manifest.operation in {OperationKind.TEST, OperationKind.PLOT} and any(
+        if spec.operation in {Operation.TEST, Operation.PLOT} and any(
             not config.get(name) for name in ("checkpoint", "data_path")
         ):
             raise UnsupportedPlan("Test and plot require checkpoint and data_path")
         argv = [runtime.python, "-u", "-m"]
-        if manifest.operation == OperationKind.TRAIN:
+        if spec.operation == Operation.TRAIN:
             # Explicit topology prevents launcher hardware auto-detection from
             # silently multiplying this single-machine request.
             argv += [
@@ -232,7 +203,7 @@ class LocalBackend(LocalExecution):
         for name, value in sorted(config.items()):
             if name in {"output_dir", "config"} or value is None:
                 continue
-            default_only = _DEFAULT_ONLY.get(manifest.operation, {})
+            default_only = _DEFAULT_ONLY.get(spec.operation, {})
             if name in default_only:
                 if value != default_only[name] or type(value) is not type(
                     default_only[name]
@@ -247,7 +218,7 @@ class LocalBackend(LocalExecution):
             elif name in values:
                 multiple = (
                     {"constraint", "constraint_weight", "import_modules"}
-                    if manifest.operation == OperationKind.TRAIN
+                    if spec.operation == Operation.TRAIN
                     else {"param_names", "plot_format", "import_modules"}
                 )
                 if isinstance(value, list) and name not in multiple:
@@ -268,15 +239,14 @@ class LocalBackend(LocalExecution):
                 argv += [f"--{option}", *(str(item) for item in items)]
             else:
                 raise UnsupportedPlan(f"Unsupported resolved option: {name}")
-        if manifest.operation == OperationKind.PLOT and "--plot" not in argv:
+        if spec.operation == Operation.PLOT and "--plot" not in argv:
             argv.append("--plot")
-        argv += ["--output_dir", manifest.working_directory]
+        argv += ["--output_dir", spec.execution_path(spec.paths.output)]
         return Plan(
             target=self.name,
-            manifest_json=_json(manifest.to_dict()),
+            spec=spec,
             argv=tuple(argv),
             topology=topology,
-            allocation_mode=allocation_mode,
             environment=tuple(sorted(runtime.environment.items())),
             warnings=(
                 "Preview only: submission verifies the selected runtime/device before execution.",

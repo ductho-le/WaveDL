@@ -15,7 +15,7 @@ from starlette.responses import StreamingResponse
 
 from wavedl_daemon.events.streaming import EVENT_SERVICE_ERRORS, stream_events
 from wavedl_daemon.http.schemas.common import API_ERRORS
-from wavedl_daemon.storage.event_log import validate_cursor
+from wavedl_daemon.storage.run_log import validate_cursor
 
 
 def _identity(request):

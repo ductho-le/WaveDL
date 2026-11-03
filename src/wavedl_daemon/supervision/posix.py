@@ -59,6 +59,7 @@ class POSIXProcess:
         self._condition = threading.Condition()
         self._deadline: float | None = None
         self._cancelled = False
+        self._stop_signal = signal.SIGTERM
         self._timed_out = False
         self._result: ProcessResult | None = None
         self._error: BaseException | None = None
@@ -71,11 +72,13 @@ class POSIXProcess:
     def pid(self) -> int:
         return self._process.pid
 
-    def cancel(self, grace_seconds: float = 5) -> None:
+    def cancel(self, grace_seconds: float = 5, *, interrupt: bool = False) -> None:
         validate_seconds(grace_seconds, "grace_seconds")
         with self._condition:
             if self._result is None and not self._cancelled:
                 self._cancelled = True
+                if interrupt:
+                    self._stop_signal = signal.SIGINT
                 self._deadline = time.monotonic() + grace_seconds
                 self._condition.notify_all()
 
@@ -269,10 +272,10 @@ class POSIXProcess:
                         # A leader exiting is not evidence its group has exited.
                         if leader_exited and self._deadline is None:
                             self._deadline = time.monotonic() + 0.2
-                        deadline = self._deadline
+                        deadline, stop_signal = self._deadline, self._stop_signal
                     if deadline is not None and not terminated:
                         terminated = True
-                        group_exists = self._signal_group(signal.SIGTERM)
+                        group_exists = self._signal_group(stop_signal)
                         if not group_exists:
                             killed = True
                     if (

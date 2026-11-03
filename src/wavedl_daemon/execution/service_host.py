@@ -265,31 +265,7 @@ class AsyncRunService:
         return await self.host.call(invoke)
 
     async def plan(self, payload: dict, idempotency_key: str) -> PlanResponse:
-        payload = deepcopy(payload)
-        if type(payload) is not dict or "checkpoint_source" not in payload:
-            return await self._call("plan", payload, idempotency_key)
-
-        def capture(session):
-            runs = getattr(session, "runs", session)
-            source = runs.checkpoint_selection(payload, idempotency_key)
-            if source is None:
-                return None
-            from wavedl.core.checkpoint_source import capture_checkpoint_source
-
-            layout, generation, digest = source
-            return session.pool.submit(
-                lambda token: capture_checkpoint_source(
-                    layout, generation, manifest_sha256=digest, check=token.check
-                )
-            )
-
-        work = await self.host.call(capture)
-        selection = await work.wait() if work is not None else None
-        if selection is None:
-            return await self._call("plan", payload, idempotency_key)
-        return await self._call(
-            "plan", payload, idempotency_key, checkpoint_selection=selection
-        )
+        return await self._call("plan", deepcopy(payload), idempotency_key)
 
     async def submit(self, plan_id: str) -> RunResponse:
         return await self._call("submit", plan_id)
@@ -307,6 +283,3 @@ class AsyncRunService:
 
     async def layout(self, run_id: str) -> RunLayout:
         return await self._call("layout", run_id)
-
-    async def attempts(self, run_id: str, *, limit=50, offset=0):
-        return await self._call("attempts", run_id, limit=limit, offset=offset)

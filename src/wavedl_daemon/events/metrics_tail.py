@@ -15,13 +15,24 @@ import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from wavedl_daemon.runs.model import Metric, SourceWarning, WarningCode
+from wavedl_daemon.backends.slurm_exit import parse_exit_record
+from wavedl_daemon.runs.layout import RunPaths
+from wavedl_daemon.runs.lifecycle import AttemptFiles
+from wavedl_daemon.runs.model import (
+    BackendKind,
+    Evaluation,
+    Metric,
+    Operation,
+    SourceWarning,
+    WarningCode,
+)
 
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from wavedl_daemon.runs.model import FromFile
+    from wavedl_daemon.runs.lifecycle import RunHead
+    from wavedl_daemon.runs.model import ExitRecord, FromFile
 
 
 MAX_LINE_BYTES = 1 << 20
@@ -83,6 +94,68 @@ def read_tail(path: Path, *, start: int, limit: int = MAX_LINE_BYTES) -> TailChu
     return TailChunk(start, tuple(rows), len(data) - complete, size)
 
 
+def read_attempt_files(head: RunHead) -> AttemptFiles:
+    """What settle needs from the current attempt's directory."""
+    paths, operation = RunPaths(head.ref.run_dir), head.ref.operation
+    tail = None
+    if operation is Operation.TRAIN and not head.metrics_sealed:
+        tail = read_tail(paths.metrics(head.attempt), start=head.metrics_offset)
+    evaluation = None
+    if operation is Operation.TEST:
+        evaluation = read_evaluation(paths.evaluation(head.attempt))
+    record = None
+    if head.ref.backend is BackendKind.SLURM:
+        record = _read_exit_record(paths.exit_record(head.attempt))
+    return AttemptFiles(tail, record, evaluation)
+
+
+def read_evaluation(path: Path) -> Evaluation | SourceWarning:
+    """``wavedl-test --metrics_json`` output: one object of numbers."""
+    try:
+        with path.open("rb") as stream:
+            data = stream.read(MAX_LINE_BYTES + 1)
+    except FileNotFoundError:
+        return SourceWarning(
+            WarningCode.EVALUATION_MISSING,
+            "The test saved no evaluation metrics",
+            None,
+        )
+    value = _loads(data) if len(data) <= MAX_LINE_BYTES else None
+    if not _numbers(value):
+        return SourceWarning(
+            WarningCode.EVALUATION_MALFORMED,
+            "Evaluation metrics are not one JSON object of numbers",
+            None,
+        )
+    return Evaluation(value)
+
+
+def _read_exit_record(path: Path) -> ExitRecord | None:
+    try:
+        with path.open("rb") as stream:
+            return parse_exit_record(stream.read(64))
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def _loads(data: bytes) -> object:
+    try:
+        return json.loads(
+            data,
+            parse_constant=lambda _: None,
+            parse_float=_finite,
+            object_pairs_hook=_unique,
+        )
+    except (ValueError, RecursionError):
+        return None
+
+
+def _numbers(value: object) -> bool:
+    return type(value) is dict and all(
+        item is None or type(item) in {int, float} for item in value.values()
+    )
+
+
 def _parse_line(line: bytes, end: int) -> FromFile:
     try:
         value = json.loads(
@@ -94,10 +167,9 @@ def _parse_line(line: bytes, end: int) -> FromFile:
     except (ValueError, RecursionError) as exc:
         return SourceWarning(WarningCode.MALFORMED_LINE, f"Not JSON: {exc}"[:200], end)
     if (
-        type(value) is not dict
+        not _numbers(value)
         or type(value.get("epoch")) is not int
         or value["epoch"] < 1
-        or not all(item is None or type(item) in {int, float} for item in value.values())
     ):
         return SourceWarning(
             WarningCode.MALFORMED_LINE,

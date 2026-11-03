@@ -8,7 +8,7 @@ function equal(left: Json, right: Json | undefined): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-/** Reads a persisted plan for review: its manifest, context and non-default values. */
+/** Reads a persisted plan for review: its run spec, context and non-default values. */
 export function usePlanSummary(source: MaybeRefOrGetter<PlanView | null>) {
   const { t } = useI18n({ useScope: 'global' });
 
@@ -28,17 +28,9 @@ export function usePlanSummary(source: MaybeRefOrGetter<PlanView | null>) {
   }
 
   const document = computed(() => {
-    const raw = toValue(source)?.preview.manifest_json;
+    const parsed = planManifestSchema.safeParse(toValue(source)?.preview.spec);
 
-    if (raw === undefined) return null;
-
-    try {
-      const parsed = planManifestSchema.safeParse(JSON.parse(raw));
-
-      return parsed.success ? parsed.data : null;
-    } catch {
-      return null;
-    }
+    return parsed.success ? parsed.data : null;
   });
 
   const manifest = computed(() => document.value?.manifest ?? null);

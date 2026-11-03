@@ -1,16 +1,15 @@
 # Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Typed lifecycle facade over already-open, owner-thread stores.
+"""Plan, submit, cancel and read runs on the thread that owns the database.
 
-Planning is pure apart from committing an immutable SQLite preview. The
-controller publishes run files and commits submission/cancellation intent before
-it schedules external work. This module never starts a server or creates stores.
+Planning commits an immutable plan and nothing else. Submit and cancel append
+one event to the run log; the controller does the rest. A run's state is
+always ``status`` of its head, never stored separately.
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
+import os
 import re
 import threading
 from dataclasses import asdict, dataclass
@@ -19,36 +18,54 @@ from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from wavedl.core.inference_cli import inference_defaults, validate_import_modules
-from wavedl.core.layout import OperationKind, RunLayout
-from wavedl.core.manifest import (
-    RuntimeSelection,
-    StorageMapping,
-    _json_bytes,
-    build_manifest,
-)
+from wavedl.core.layout import RunLayout
 from wavedl.core.training_cli import (
     build_training_parser,
     training_defaults,
     validate_cv_options,
 )
-from wavedl_daemon.backends.contracts import Plan, Topology, UnsupportedPlan
+from wavedl_daemon.backends.contracts import (
+    Plan,
+    Runtime,
+    RunSpec,
+    StorageMapping,
+    Topology,
+    UnsupportedPlan,
+)
 from wavedl_daemon.backends.local import _TEST_FLAGS, _TEST_VALUES
 from wavedl_daemon.execution.budget import BudgetExhausted
-from wavedl_daemon.runs.reducer import RunState
-from wavedl_daemon.storage.executions import native_runtime_pending
-from wavedl_daemon.storage.plans import IdempotencyConflict, _canonical_request
+from wavedl_daemon.runs.lifecycle import Ended, Live, RunRef, RunState, status
+from wavedl_daemon.runs.model import (
+    AttemptOpened,
+    BackendKind,
+    CancelRequested,
+    Operation,
+    PlanId,
+    RunId,
+)
+from wavedl_daemon.storage.plans import IdempotencyConflict, canonical_request
+from wavedl_daemon.storage.run_log import Expect, New, Stale
 
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from wavedl_daemon.backends.contracts import Backend
-    from wavedl_daemon.runs.controller import SubmissionController
-    from wavedl_daemon.storage.executions import ExecutionStore
+    from wavedl_daemon.backends.contracts import Planner
+    from wavedl_daemon.runs.lifecycle import RunHead
     from wavedl_daemon.storage.plans import PlanRecord, PlanStore
-    from wavedl_daemon.storage.registry import Registry
-    from wavedl_daemon.storage.runtime_provenance import RuntimeProvenanceStore
+    from wavedl_daemon.storage.run_log import RunLog
     from wavedl_daemon.storage.settings import Settings
+
+
+# Paths a request may give relative to its submission directory.
+PATH_FIELDS = (
+    "data_path",
+    "config",
+    "resume",
+    "checkpoint",
+    "constraint_file",
+    "export_path",
+)
 
 
 def _uuid(value: str) -> None:
@@ -94,8 +111,7 @@ class RunResponse:
 
 def _run_summary(plan: Plan) -> dict:
     """Identify a run for people: the approved inputs, never live state."""
-    manifest = plan.manifest
-    config = manifest.resolved_config
+    config = plan.spec.resolved_config
 
     def text(name: str) -> str | None:
         value = config.get(name)
@@ -105,15 +121,110 @@ def _run_summary(plan: Plan) -> dict:
         value = config.get(name)
         return value if type(value) is int and value >= minimum else None
 
-    source = manifest.checkpoint_source
     return {
         "name": text("run_name"),
         "model": text("model"),
         "data_path": text("data_path"),
         "epochs": count("epochs", 1),
         "cv": count("cv", 2),
-        "source_run_id": source["run_id"] if source is not None else None,
+        "source_run_id": None,
     }
+
+
+def _evidence(head: RunHead) -> dict:
+    """What the browser shows about how the run stands, beyond its state."""
+    phase = native_state = ending = None
+    match head.stage:
+        case Live(phase=phase, native_state=native_state):
+            pass
+        case Ended(exit=ending):
+            native_state = ending.native_state
+    return {
+        "reason": status(head).reason,
+        "phase": None if phase is None else phase.value,
+        "native_state": native_state,
+        "outcome": None if ending is None else ending.outcome.value,
+        "exit_code": None if ending is None else ending.exit_code,
+        "signal": None if ending is None else ending.signal,
+        "attempt_exit": (
+            None if ending is None or ending.attempt_exit is None
+            else asdict(ending.attempt_exit)
+        ),
+        "restart_count": head.restart_count,
+    }
+
+
+def build_spec(
+    run_dir: Path,
+    *,
+    operation: Operation,
+    resolved_config: dict[str, object],
+    runtime: Runtime,
+    submission_cwd: Path,
+    storage_map: tuple[StorageMapping, ...] = (),
+) -> RunSpec:
+    """Resolve request paths against the submission directory, then map them.
+
+    Data paths are made absolute with symlinks dereferenced. The interpreter
+    is only normalized: a virtualenv's ``bin/python`` is a symlink to the base
+    interpreter, and following it would run without the venv's packages.
+    """
+    base = submission_cwd.resolve()
+    mappings = tuple(
+        sorted(
+            (
+                StorageMapping(str(Path(item.host_root).resolve()), item.execution_root)
+                for item in storage_map
+            ),
+            key=lambda item: len(item.host_root),
+            reverse=True,
+        )
+    )
+    if len({item.host_root for item in mappings}) != len(mappings):
+        raise ValueError("Duplicate storage mapping")
+
+    def mapped(host: Path) -> str:
+        for mapping in mappings:
+            try:
+                relative = host.relative_to(Path(mapping.host_root))
+            except ValueError:
+                continue
+            return str(Path(mapping.execution_root) / relative)
+        return str(host)
+
+    def resolve(value: str) -> str:
+        return mapped((base / Path(value).expanduser()).resolve())
+
+    config = dict(resolved_config)
+    if "import_modules" in config:
+        config["import_modules"] = validate_import_modules(
+            [
+                resolve(item) if item.endswith(".py") else item
+                for item in validate_import_modules(config["import_modules"])
+            ]
+        )
+    for name in PATH_FIELDS:
+        if config.get(name) is not None:
+            if not isinstance(config[name], str) or not config[name]:
+                raise ValueError(f"Invalid path: {name}")
+            config[name] = resolve(config[name])
+    python = Path(runtime.python).expanduser()
+    return RunSpec(
+        run_id=run_dir.name,
+        operation=operation,
+        resolved_config=config,
+        runtime=Runtime(
+            mapped(Path(os.path.normpath(base / python))),
+            runtime.mode,
+            runtime.device,
+            dict(runtime.environment),
+            runtime.container,
+        ),
+        submission_directory=str(base),
+        run_directory=str(run_dir),
+        working_directory=resolve(str(run_dir)),
+        storage_map=mappings,
+    )
 
 
 def _object(value: object, *, allowed: set[str], required: set[str] = frozenset()):
@@ -268,83 +379,37 @@ def _test_config(config: dict) -> dict:
 
 
 class RunService:
-    """All calls stay on the thread that opened the SQLite/controller objects."""
+    """All calls stay on the thread that opened the database."""
 
     def __init__(
         self,
         settings: Settings,
-        plan_store: PlanStore,
-        execution_store: ExecutionStore,
-        controller: SubmissionController,
-        backends: Mapping[str, Backend],
-        registry: Registry | None = None,
-        provenance: RuntimeProvenanceStore | None = None,
-        *,
-        collections=None,
+        plans: PlanStore,
+        log: RunLog,
+        backends: Mapping[str, Planner],
     ) -> None:
         self.settings = settings
-        self.plan_store = plan_store
-        self.execution_store = execution_store
-        self.controller = controller
+        self.plans = plans
+        self.log = log
         self.backends = dict(backends)
-        self.registry = registry
-        self.provenance = provenance
-        self.collections = collections
         self._thread = threading.get_ident()
 
     def _guard(self) -> None:
         if threading.get_ident() != self._thread:
             raise RuntimeError("Run service must remain on its store owner thread")
 
-    def checkpoint_selection(self, payload: dict, idempotency_key: str):
-        """Capture registered ownership without opening source files."""
+    def plan(self, payload: dict, idempotency_key: str) -> PlanResponse:
         self._guard()
         if type(idempotency_key) is not str or not 1 <= len(idempotency_key) <= 256:
             raise ValueError("A bounded idempotency key is required")
         _bounded(idempotency_key)
-        _bounded(payload)
-        if len(_canonical_request(payload).encode()) > 65536:
-            raise ValueError("Request exceeds bound")
-        if self.plan_store.get_by_key(idempotency_key) is not None:
-            return None
-        if type(payload) is not dict or "checkpoint_source" not in payload:
-            return None
-        if payload.get("operation") not in {"test", "plot"}:
-            raise ValueError("Checkpoint sources are inference-only")
-        source = _object(
-            payload["checkpoint_source"],
-            allowed={"run_id", "generation"},
-            required={"run_id", "generation"},
-        )
-        config = payload.get("config")
-        if type(config) is not dict or "checkpoint" in config:
-            raise ValueError("Checkpoint source and path are mutually exclusive")
-        record = self._owned(source["run_id"])
-        if record.plan.operation != OperationKind.TRAIN:
-            raise ValueError("Checkpoint source must be a training run")
-        source_model = record.plan.manifest.resolved_config.get("model")
-        if config.get("model") is not None and config["model"] != source_model:
-            raise ValueError("Inference model differs from source training model")
-        return (
-            RunLayout(Path(record.plan.run_dir), record.plan.run_id),
-            source["generation"],
-            hashlib.sha256(_json_bytes(record.plan.manifest.to_dict())).hexdigest(),
-        )
-
-    def plan(
-        self, payload: dict, idempotency_key: str, *, checkpoint_selection=None
-    ) -> PlanResponse:
-        self._guard()
-        if type(idempotency_key) is not str or not 1 <= len(idempotency_key) <= 256:
-            raise ValueError("A bounded idempotency key is required")
-        _bounded(idempotency_key)
-        canonical = _canonical_request(payload)
+        canonical = canonical_request(payload)
         _bounded(payload)
         if len(canonical.encode()) > 65536:
             raise ValueError("Request exceeds bound")
-        existing = self.plan_store.get_by_key(idempotency_key)
+        existing = self.plans.get_by_key(idempotency_key)
         if existing is not None:
-            if existing.request_payload_json != canonical:
+            if existing.request_json != canonical:
                 raise IdempotencyConflict("Key is bound to another request")
             return self._preview(existing)
         body = _object(
@@ -361,10 +426,15 @@ class RunService:
             },
             required={"backend", "operation", "config", "runtime", "topology"},
         )
+        if "checkpoint_source" in body:
+            raise UnsupportedPlan(
+                "Testing from a run's checkpoint is being rebuilt; "
+                "give the checkpoint path instead"
+            )
         backend_name = body["backend"]
         if type(backend_name) is not str or backend_name not in self.backends:
             raise ValueError("Unknown backend")
-        operation = OperationKind(body["operation"])
+        operation = Operation(body["operation"])
         runtime = _object(
             body["runtime"],
             allowed={"python", "mode", "device", "environment"},
@@ -382,7 +452,7 @@ class RunService:
             raise ValueError(
                 "Daemon runtime identity and credentials are not caller-owned"
             )
-        selected = RuntimeSelection(**runtime)
+        selected = Runtime(**runtime)
         topology = Topology(
             **_object(
                 body["topology"],
@@ -395,27 +465,13 @@ class RunService:
             body["config"],
             allowed=set(body["config"]) if type(body["config"]) is dict else set(),
         )
-        source = self.checkpoint_selection(payload, idempotency_key)
-        if source is not None:
-            from wavedl.core.checkpoint_source import validate_checkpoint_source
-
-            pin = validate_checkpoint_source(checkpoint_selection)
-            if (pin["run_id"], pin["generation"], pin["manifest_sha256"]) != (
-                source[0].run_id,
-                source[1],
-                source[2],
-            ):
-                raise ValueError("Checkpoint selection differs from registered source")
-            config = config | {"checkpoint": str(source[0].checkpoints / source[1])}
         config = (
             _training_config(config)
-            if operation == OperationKind.TRAIN
+            if operation is Operation.TRAIN
             else _test_config(config)
         )
-        if operation != OperationKind.TRAIN:
-            config.update(operation=operation.value, device=selected.device)
-            if operation == OperationKind.PLOT:
-                config["plot"] = True
+        if operation is Operation.PLOT:
+            config["plot"] = True
         cwd = body.get("submission_cwd", str(self.settings.run_root))
         if type(cwd) is not str or not cwd or not Path(cwd).is_absolute():
             raise ValueError("Submission directory must be absolute")
@@ -432,44 +488,29 @@ class RunService:
             )
             for item in storage
         )
-        run_id = str(uuid4())
-        manifest = build_manifest(
-            RunLayout(self.settings.run_root / run_id, run_id),
+        spec = build_spec(
+            self.settings.run_root / str(uuid4()),
             operation=operation,
             resolved_config=config,
             runtime=selected,
             submission_cwd=Path(cwd),
             storage_map=mappings,
-            checkpoint_source=pin if source is not None else None,
         )
-        # Every newly-created lifecycle preview is intentionally unbound.  The
-        # native scheduler/worker must establish the first execution attempt
-        # only after accepting the immutable writer plan.  Existing plans are
-        # returned above unchanged, preserving legacy reserved allocations on
-        # idempotent replay.
-        plan = self.backends[backend_name].plan(
-            manifest, topology=topology, allocation_mode="writer"
-        )
-        if plan.allocation_mode != "writer":
-            raise UnsupportedPlan(
-                "Backend did not honor the required writer allocation mode"
-            )
-        if plan.target != backend_name or plan.manifest != manifest:
+        plan = self.backends[backend_name].plan(spec, topology=topology)
+        if plan.target != backend_name or plan.spec != spec:
             raise ValueError("Backend changed the approved execution identity")
-        record = self.plan_store.put(
+        record = self.plans.put(
             plan, idempotency_key=idempotency_key, request_payload=payload
         )
         return self._preview(record)
 
     @staticmethod
     def _preview(record: PlanRecord) -> PlanResponse:
-        return PlanResponse(
-            record.plan_id, record.plan.run_id, record.request_id, record.plan
-        )
+        return PlanResponse(record.plan_id, record.run_id, record.request_id, record.plan)
 
     def _owned(self, run_id: str) -> PlanRecord:
         _uuid(run_id)
-        record = self.plan_store.get_by_run_id(run_id)
+        record = self.plans.by_run(run_id)
         if record is None:
             raise KeyError(run_id)
         return record
@@ -477,17 +518,35 @@ class RunService:
     def submit(self, plan_id: str) -> RunResponse:
         self._guard()
         _uuid(plan_id)
-        record = self.plan_store.get(plan_id)
+        record = self.plans.get(plan_id)
         if record is None:
             raise KeyError(plan_id)
-        self.controller.request_submit(plan_id)
-        return self._view(self.plan_store.get(plan_id))
+        run_id = RunId(record.run_id)
+        if self.log.head(run_id) is None:
+            ref = RunRef(
+                run_id,
+                PlanId(record.plan_id),
+                BackendKind(record.plan.target),
+                record.plan.operation,
+                record.plan.spec.paths.run_dir,
+            )
+            try:
+                self.log.append(run_id, [AttemptOpened("submit", None)], expect=New(ref))
+            except Stale:
+                pass  # a concurrent submit already started it
+        return self._view(record)
 
     def cancel(self, run_id: str) -> RunResponse:
         self._guard()
         record = self._owned(run_id)
-        self.controller.request_cancel(record.plan_id)
-        return self._view(self.plan_store.get(record.plan_id))
+        head = self.log.head(RunId(run_id))
+        if head is not None and not head.cancel_requested and not isinstance(
+            head.stage, Ended
+        ):
+            self.log.append(
+                head.ref.run_id, [CancelRequested()], expect=Expect(revision=head.revision)
+            )
+        return self._view(record)
 
     def get(self, run_id: str) -> RunResponse:
         self._guard()
@@ -496,147 +555,29 @@ class RunService:
     def layout(self, run_id: str) -> RunLayout:
         """Resolve persisted identity on the owner thread, without file probing."""
         self._guard()
-        plan = self._owned(run_id).plan
-        return RunLayout(Path(plan.run_dir), plan.run_id)
-
-    def attempts(self, run_id: str, *, limit=50, offset=0) -> dict:
-        """Expose archived and current evidence without conflating generations."""
-        self._guard()
-        if (
-            type(limit) is not int
-            or not 1 <= limit <= 100
-            or type(offset) is not int
-            or not 0 <= offset <= 10000
-        ):
-            raise ValueError("Invalid attempt page bounds")
-        plan = self._owned(run_id)
-        current = self.execution_store.get(plan.plan_id)
-        if current is None:
-            return {"attempts": [], "total": 0}
-        count = self.execution_store.history_count(plan.plan_id)
-        records = self.execution_store.history(plan.plan_id, limit=limit, offset=offset)
-        if offset <= count < offset + limit:
-            records.append(current)
-        result = []
-        for record in records:
-            runtime = (
-                self.provenance.get(plan.plan_id, record.attempt)
-                if self.provenance and record.attempt is not None
-                else None
-            )
-            binding = (
-                self.execution_store.requeue_binding(plan.plan_id, record.attempt)
-                if record.attempt is not None
-                else None
-            )
-            collection = (
-                self.collections.get(plan.plan_id, record.attempt)
-                if self.collections and record.attempt is not None
-                else None
-            )
-            submission_collection = None
-            if self.collections:
-                identity = record.native_identity
-                if identity is None and record.submission_observation is not None:
-                    identity = record.submission_observation.native_identity
-                if identity is not None:
-                    submission_collection = self.collections.get_submission_generation(
-                        plan.plan_id, identity
-                    )
-            result.append(
-                {
-                    "attempt": record.attempt,
-                    "current": record.attempt == current.attempt
-                    and not native_runtime_pending(current),
-                    "last_runtime": record.attempt == current.attempt,
-                    "native_pending": native_runtime_pending(current),
-                    "execution_state": record.state.value,
-                    "native_identity": asdict(record.native_identity)
-                    if record.native_identity is not None
-                    else None,
-                    "handle": record.handle.to_dict() if record.handle else None,
-                    "submission_handle": record.submission_handle.to_dict()
-                    if record.submission_handle
-                    else None,
-                    "submission_observation": asdict(record.submission_observation)
-                    if record.submission_observation
-                    else None,
-                    "latest_submission_observation": asdict(
-                        record.latest_submission_observation
-                    )
-                    if record.latest_submission_observation
-                    else None,
-                    "observation": asdict(record.observation)
-                    if record.observation
-                    else None,
-                    "latest_observation": asdict(record.latest_observation)
-                    if record.latest_observation
-                    else None,
-                    "cancellation_requested": record.cancellation_requested,
-                    "cancel_delivered": record.cancel_delivered,
-                    "runtime": asdict(runtime.hello) if runtime else None,
-                    "scheduler_binding": asdict(binding) if binding else None,
-                    "collection": asdict(collection.result) if collection else None,
-                    "submission_collection": (
-                        submission_collection.proposal.to_dict()
-                        if submission_collection
-                        else None
-                    ),
-                }
-            )
-        page = {"attempts": result, "total": count + 1}
-        if (
-            len(json.dumps(page, allow_nan=False, separators=(",", ":")).encode())
-            > 1024 * 1024
-        ):
-            raise BudgetExhausted("Attempt evidence page exceeds byte bound")
-        return page
+        record = self._owned(run_id)
+        return RunLayout(record.plan.spec.paths.run_dir, record.run_id)
 
     def _view(self, record: PlanRecord) -> RunResponse:
-        execution = self.execution_store.get(record.plan_id)
         plan = record.plan
-        state, uncertainty = "planned", True
-        evidence = None
-        if execution is not None:
-            events = ()
-            if self.registry is not None and execution.attempt is not None:
-                events = self.registry.lifecycle_events(plan.run_id, execution.attempt)
-            derived = self.controller.derive(record.plan_id, events)
-            state, uncertainty = derived.state.value, derived.confidence != "confirmed"
-            evidence = {
-                "native_pending": native_runtime_pending(execution),
-                "native_identity": asdict(execution.native_identity)
-                if execution.native_identity is not None
-                else None,
-                "current_runtime_attempt": None
-                if native_runtime_pending(execution)
-                else execution.attempt,
-                "last_runtime_attempt": execution.attempt,
-                "confidence": derived.confidence,
-                "reason": derived.reason,
-                "runtime": asdict(derived.runtime),
-                "backend": asdict(derived.backend)
-                if derived.backend is not None
-                else None,
-                "last_observation": asdict(derived.last_observation)
-                if derived.last_observation is not None
-                else None,
-                "batch": asdict(derived.batch) if derived.batch is not None else None,
-                "stage_out": asdict(derived.stage_out)
-                if derived.stage_out is not None
-                else None,
-            }
+        head = self.log.head(RunId(record.run_id))
+        if head is None:
+            state, uncertainty, evidence = "planned", True, None
+        else:
+            current = status(head)
+            state, uncertainty = current.state.value, not current.confirmed
+            evidence = _evidence(head)
         return RunResponse(
             record.plan_id,
-            plan.run_id,
+            record.run_id,
             record.request_id,
             plan.target,
             plan.operation.value,
-            execution.attempt if execution else None,
+            None if head is None else head.attempt,
             state,
             uncertainty,
-            record.submission_requested,
-            record.cancellation_requested,
+            head is not None,
+            head is not None and head.cancel_requested,
             evidence,
             record.created_at,
             _run_summary(plan),
@@ -661,20 +602,14 @@ class RunService:
         if state is None:
             return [
                 self._view(record)
-                for record in self.plan_store.list_plans(limit=limit, offset=offset)
+                for record in self.plans.page(limit=limit, offset=offset)
             ]
-        # State is derived, never trusted from the journal projection. A bounded
-        # page scan prevents state filtering from monopolizing the owner thread.
-        result, skipped = [], 0
-        for record in self.plan_store.list_plans(limit=1000, offset=0):
-            view = self._view(record)
-            if view.state == state:
-                if skipped < offset:
-                    skipped += 1
-                    continue
-                result.append(view)
-                if len(result) == limit:
-                    return result
-        if self.plan_store.list_plans(limit=1, offset=1000):
+        # A bounded scan keeps state filtering from monopolizing the owner thread.
+        matches = [
+            view
+            for view in map(self._view, self.plans.page(limit=1000, offset=0))
+            if view.state == state
+        ]
+        if self.plans.page(limit=1, offset=1000):
             raise BudgetExhausted("Derived-state list scan capacity exhausted")
-        return result
+        return matches[offset : offset + limit]

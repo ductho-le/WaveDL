@@ -8,12 +8,10 @@ import json
 import math
 import sqlite3
 
-from wavedl.core.protocol import encode
 from wavedl_daemon.execution.budget import BudgetExhausted, StorageWorkError
 from wavedl_daemon.execution.pool import WorkCancelled
-from wavedl_daemon.storage.event_log import validate_cursor
 from wavedl_daemon.storage.ownership import DispatchRequired
-from wavedl_daemon.storage.plans import PlanRecoveryRequired
+from wavedl_daemon.storage.run_log import encode, validate_cursor
 from wavedl_daemon.storage.settings import UnsupportedStorage
 
 
@@ -23,7 +21,6 @@ EVENT_SERVICE_ERRORS = (
     WorkCancelled,
     DispatchRequired,
     PermissionError,
-    PlanRecoveryRequired,
     UnsupportedStorage,
     sqlite3.DatabaseError,
     OSError,

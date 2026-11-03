@@ -8,8 +8,13 @@ import { MetricHistory } from '../../app/lib/metric-history';
 
 const id = '11111111-1111-1111-1111-111111111111';
 
-function metricEvent(payload: JsonObject, type = 'metric', attempt = 1, seq = 0): RunEvent {
-  return { protocol: 'wavedl-jsonl', version: 1, run_id: id, attempt, seq, type,
+function metricEvent(
+  payload: JsonObject,
+  type: RunEvent['type'] = 'metric',
+  attempt = 1,
+  seq = 0,
+): RunEvent {
+  return { protocol: 'wavedl-run', version: 2, run_id: id, attempt, seq, type,
     ts: '2026-10-07T00:00:00Z', payload };
 }
 
@@ -51,21 +56,10 @@ describe('metric payload boundary schemas', () => {
     expect(history.series('extra')).toEqual([]);
   });
 
-  it('retains typed option and generation bounds with the existing diagnostics', () => {
+  it('retains typed option bounds', () => {
     for (const maxPoints of [0, -1, 0.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1]) {
       expect(() => new MetricHistory(id, { maxPoints })).toThrow();
     }
-
-    const history = new MetricHistory(id, { maxPoints: 1 });
-
-    for (const [attempt, step, generation] of [
-      [0, 0, 'g'], [1, -1, 'g'], [1.5, 0, 'g'], [1, 0.5, 'g'], [1, 0, ''],
-    ] satisfies [number, number, string][]) {
-      expect(() => history.acknowledgeGeneration(attempt, step, generation)).toThrow();
-    }
-
-    history.acknowledgeGeneration(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, 'g');
-    expect(() => history.acknowledgeGeneration(1, 0, 'next')).toThrow();
   });
 
   it.each([
@@ -118,29 +112,42 @@ describe('metric payload boundary schemas', () => {
     }
   });
 
-  it.each([
-    { source_attempt: 1, step: 0, generation: '', source_seq: 0 },
-    { source_attempt: 2, step: 0, generation: 'g' },
-    { source_attempt: 1, step: -1, generation: 'g' },
-    { source_attempt: 1, step: 0, generation: 'g', source_seq: null },
-  ])('rejects malformed supersession payload %j', (payload) => {
-    expect(() => new MetricHistory(id).apply(metricEvent(payload, 'supersede', 2)))
-      .toThrow();
+  it('retires earlier attempt steps from the requeued attempt resume step onward', () => {
+    const history = new MetricHistory(id);
+    const epoch = (attempt: number, seq: number, step: number) =>
+      metricEvent({ name: 'epoch', value: step, step, unit: '', metrics: { epoch: step, val_r2: step } },
+        'metric', attempt, seq);
+
+    history.apply(metricEvent({ cause: 'submit', restart_count: null }, 'attempt'));
+
+    for (let step = 1; step <= 8; step++) history.apply(epoch(1, step, step));
+    history.apply(metricEvent({ cause: 'requeue', restart_count: 1 }, 'attempt', 2));
+    expect(history.summary()).toEqual({ progress: null, best: null, latest: null });
+    history.apply(epoch(2, 1, 6));
+    history.apply(epoch(2, 2, 7));
+
+    expect(history.metrics().map((record) => [record.attempt, record.step])).toEqual([
+      [1, 1], [1, 2], [1, 3], [1, 4], [1, 5], [2, 6], [2, 7],
+    ]);
+    expect(history.metrics({ activeOnly: false })).toHaveLength(10);
+    expect(history.summary().latest?.attempt).toBe(2);
+    expect(history.summary().current?.bestR2).toBe(7);
   });
 
-  it('accepts additive supersession fields and nullable seq omission', () => {
+  it('keeps a missed attempt event from leaving earlier steps active', () => {
     const history = new MetricHistory(id);
-    history.apply(metricEvent({}, 'hello'));
-    history.apply(metricEvent({ source_attempt: 1, step: 0, generation: 'g', additive: true }, 'supersede', 2));
-    expect(history.headAttempt).toBe(2);
+    history.apply(metricEvent({ name: 'epoch', value: 1, step: 1 }, 'metric', 1, 1));
+    history.apply(metricEvent({ name: 'epoch', value: 2, step: 2 }, 'metric', 1, 2));
+    history.apply(metricEvent({ name: 'epoch', value: 9, step: 2 }, 'metric', 2, 3));
+    expect(history.metrics().map((record) => record.value)).toEqual([1, 9]);
   });
 });
 
 describe('diagnostic payload boundary', () => {
   it('keeps message precedence, empty strings and non-string fallbacks', () => {
-    expect(eventDiagnostic(metricEvent({ message: '', text: 'fallback' }, 'log')).text).toBe('2026-10-07T00:00:00Z [1:0] log: ');
-    expect(eventDiagnostic(metricEvent({ message: false, text: 'fallback' }, 'log')).text).toContain('log: fallback');
-    expect(eventDiagnostic(metricEvent({ message: false, text: null }, 'log')).text).toContain('{"message":false,"text":null}');
+    expect(eventDiagnostic(metricEvent({ message: '', text: 'fallback' }, 'warning')).text).toBe('2026-10-07T00:00:00Z [1:0] warning: ');
+    expect(eventDiagnostic(metricEvent({ message: false, text: 'fallback' }, 'warning')).text).toContain('warning: fallback');
+    expect(eventDiagnostic(metricEvent({ message: false, text: null }, 'warning')).text).toContain('{"message":false,"text":null}');
   });
 });
 
@@ -161,9 +168,9 @@ function view(patch: Partial<RunView> = {}): RunView {
   };
 }
 
-function frame(seq: number, type = 'log', attempt = 1): Uint8Array {
+function frame(seq: number, type: RunEvent['type'] = 'warning', attempt = 1): Uint8Array {
   return new TextEncoder().encode(
-    `id: ${attempt}:${seq}\ndata: ${JSON.stringify({ protocol: 'wavedl-jsonl', version: 1, run_id: id, attempt, seq, type, ts: '2026-10-07T00:00:00Z', payload: { message: '<script>never HTML</script>' } })}\n\n`,
+    `id: ${attempt}:${seq}\ndata: ${JSON.stringify({ protocol: 'wavedl-run', version: 2, run_id: id, attempt, seq, type, ts: '2026-10-07T00:00:00Z', payload: { message: '<script>never HTML</script>' } })}\n\n`,
   );
 }
 
@@ -207,7 +214,7 @@ function harness(initial = view(), store: CursorStore | null = null) {
     set: (run: RunView) => {
       current = run;
     },
-    send: (seq: number, type?: string, attempt?: number) =>
+    send: (seq: number, type?: RunEvent['type'], attempt?: number) =>
       channel?.enqueue(frame(seq, type, attempt)),
     raw: (text: string) => channel?.enqueue(new TextEncoder().encode(text)),
     sendCombined: () => {
@@ -232,32 +239,6 @@ afterEach(() => {
 });
 
 describe('run monitoring', () => {
-  it.each([{ restart_count: 0 }, { owner: 'other' }, { job_id: '13' }, { cluster: 'other' }])(
-    'rejects changed native ownership or generation %j',
-    async (patch) => {
-      vi.useFakeTimers();
-
-      const identity = {
-        run_id: id,
-        request_id: id,
-        cluster: 'test',
-        job_id: '12',
-        owner: 'tester',
-        restart_count: 1,
-      };
-
-      const h = harness(view({ evidence: { native_pending: true, native_identity: identity } }));
-      const task = h.monitor.start();
-      await flush();
-      h.set(
-        view({ evidence: { native_pending: true, native_identity: { ...identity, ...patch } } }),
-      );
-      await vi.advanceTimersByTimeAsync(100);
-      await task;
-      expect(h.reportFailure).toHaveBeenCalledTimes(1);
-      expect(h.monitor.snapshot().stream).toBe('error');
-    },
-  );
   it.each([
     { attempt: null },
     { attempt: 0 },
@@ -265,19 +246,6 @@ describe('run monitoring', () => {
     { request_id: '22222222-2222-2222-2222-222222222222' },
     { backend: 'local' },
     { operation: 'plot' as const },
-    { evidence: { native_pending: true, native_identity: null } },
-    {
-      evidence: {
-        native_identity: {
-          run_id: id,
-          request_id: '22222222-2222-2222-2222-222222222222',
-          cluster: 'test',
-          job_id: '12',
-          owner: 'tester',
-          restart_count: 0,
-        },
-      },
-    },
   ])('revokes monitoring on malformed, foreign or regressing authority %j', async (patch) => {
     vi.useFakeTimers();
     const h = harness();
@@ -356,14 +324,14 @@ describe('run monitoring', () => {
     const h = harness(view({ state: 'held', uncertainty: true }));
     const task = h.monitor.start();
     await flush();
-    h.send(0, 'exit');
+    h.send(0, 'exited');
     await flush();
     expect(h.monitor.snapshot().run?.state).toBe('held');
     expect(h.monitor.snapshot().run?.uncertainty).toBe(true);
     h.monitor.stop();
     await task;
   });
-  it('fences old runtime events while native generation is pending and preserves diagnostics', async () => {
+  it('fences old attempt events once a newer attempt is authoritative and preserves diagnostics', async () => {
     vi.useFakeTimers();
     const h = harness();
     const task = h.monitor.start();
@@ -371,44 +339,14 @@ describe('run monitoring', () => {
     h.send(0);
     await flush();
     expect(h.monitor.snapshot().liveEvents).toHaveLength(1);
-    h.set(
-      view({
-        evidence: {
-          native_pending: true,
-          native_identity: {
-            run_id: id,
-            request_id: id,
-            cluster: 'test',
-            job_id: '12',
-            owner: 'tester',
-            restart_count: 1,
-          },
-        },
-      }),
-    );
+    h.set(view({ attempt: 2 }));
     await vi.advanceTimersByTimeAsync(100);
+    expect(h.monitor.snapshot().liveEvents).toHaveLength(0);
     h.send(1);
     await flush();
     expect(h.monitor.snapshot().liveEvents).toHaveLength(0);
     expect(h.monitor.snapshot().events).toHaveLength(2);
-    h.set(
-      view({
-        attempt: 2,
-        evidence: {
-          native_pending: false,
-          native_identity: {
-            run_id: id,
-            request_id: id,
-            cluster: 'test',
-            job_id: '12',
-            owner: 'tester',
-            restart_count: 1,
-          },
-        },
-      }),
-    );
-    await vi.advanceTimersByTimeAsync(100);
-    h.send(0, 'hello', 2);
+    h.send(0, 'attempt', 2);
     await flush();
     expect(h.monitor.snapshot().liveEvents.map((event) => event.attempt)).toEqual([2]);
     h.monitor.stop();
@@ -452,29 +390,12 @@ describe('run monitoring', () => {
   ] as const)('blocks cancellation for %s', (_label, run, state) => {
     expect(canRequestCancellation(run, state)).toBe(false);
   });
-  it('keeps uncertain supervision loss and native-pending runs cancellable', () => {
+  it('keeps uncertain supervision loss and unallocated runs cancellable', () => {
     expect(
       canRequestCancellation(view({ state: 'supervision_lost', uncertainty: true }), 'idle'),
     ).toBe(true);
     expect(
-      canRequestCancellation(
-        view({
-          attempt: null,
-          uncertainty: true,
-          evidence: {
-            native_pending: true,
-            native_identity: {
-              run_id: id,
-              request_id: id,
-              cluster: 'qa',
-              job_id: '12',
-              owner: 'tester',
-              restart_count: 1,
-            },
-          },
-        }),
-        'unknown',
-      ),
+      canRequestCancellation(view({ attempt: null, state: 'submission_unknown', uncertainty: true }), 'unknown'),
     ).toBe(true);
   });
   it.each(['reject', 'false', 'older-true'] as const)(
@@ -544,108 +465,39 @@ describe('run monitoring', () => {
       await task;
     },
   );
-  it.each(['cluster', 'job_id', 'owner'] as const)(
-    'rejects a deferred foreign native %s cancellation response after a newer poll',
-    async (field) => {
-      vi.useFakeTimers();
-
-      const identity = {
-        run_id: id,
-        request_id: id,
-        cluster: 'test',
-        job_id: '12',
-        owner: 'tester',
-        restart_count: 0,
-      };
-
-      const h = harness(view({ evidence: { native_identity: identity } }));
-      const task = h.monitor.start();
-      await flush();
-      let resolve!: (run: RunView) => void;
-      vi.mocked(h.transport.cancelRun).mockImplementationOnce(
-        () =>
-          new Promise((yes) => {
-            resolve = yes;
-          }),
-      );
-      const cancellation = h.monitor.cancel();
-
-      const newer = view({
-        attempt: 2,
-        evidence: { native_identity: { ...identity, restart_count: 1 } },
-      });
-
-      h.set(newer);
-      await vi.advanceTimersByTimeAsync(100);
-      expect(h.monitor.snapshot().run).toEqual(newer);
-      resolve(
-        view({
-          cancellation_requested: true,
-          state: 'cancelled',
-          evidence: {
-            native_identity: { ...identity, [field]: field === 'job_id' ? '13' : 'foreign' },
-          },
+  it('accepts a deferred cancellation acknowledgement without replacing a newer attempt', async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    const task = h.monitor.start();
+    await flush();
+    let resolve!: (run: RunView) => void;
+    vi.mocked(h.transport.cancelRun).mockImplementationOnce(
+      () =>
+        new Promise((yes) => {
+          resolve = yes;
         }),
-      );
-      await cancellation;
-      expect(h.reportFailure).toHaveBeenCalledTimes(1);
-      expect(h.reportFailure).toHaveBeenCalledWith(expect.objectContaining({ code: 'identity' }));
-      expect(h.monitor.snapshot().cancellation).toBe('unknown');
-      expect(h.monitor.snapshot().run).toEqual(newer);
-      await task;
-    },
-  );
-  it.each(['older-generation', 'formerly-unbound'] as const)(
-    'accepts a deferred %s cancellation acknowledgement without replacing a newer native head',
-    async (outcome) => {
-      vi.useFakeTimers();
+    );
+    const cancellation = h.monitor.cancel();
+    const newer = view({ attempt: 2 });
 
-      const identity = {
-        run_id: id,
-        request_id: id,
-        cluster: 'test',
-        job_id: '12',
-        owner: 'tester',
-        restart_count: 0,
-      };
-
-      const olderEvidence = outcome === 'older-generation' ? { native_identity: identity } : null;
-      const h = harness(view({ evidence: olderEvidence }));
-      const task = h.monitor.start();
-      await flush();
-      let resolve!: (run: RunView) => void;
-      vi.mocked(h.transport.cancelRun).mockImplementationOnce(
-        () =>
-          new Promise((yes) => {
-            resolve = yes;
-          }),
-      );
-      const cancellation = h.monitor.cancel();
-
-      const newer = view({
-        attempt: 2,
-        evidence: { native_identity: { ...identity, restart_count: 1 } },
-      });
-
-      h.set(newer);
-      await vi.advanceTimersByTimeAsync(100);
-      expect(h.monitor.snapshot().run).toEqual(newer);
-      expect(h.monitor.snapshot().cancellation).toBe('sending');
-      resolve(view({ cancellation_requested: true, state: 'stopping', evidence: olderEvidence }));
-      await cancellation;
-      expect(h.reportFailure).not.toHaveBeenCalled();
-      expect(h.monitor.snapshot().cancellation).toBe('requested');
-      expect(h.monitor.snapshot().run).toEqual(newer);
-      await vi.advanceTimersByTimeAsync(100);
-      expect(h.monitor.snapshot().run).toEqual(newer);
-      expect(h.monitor.snapshot().run?.cancellation_requested).toBe(false);
-      expect(h.monitor.snapshot().cancellation).toBe('requested');
-      await h.monitor.cancel();
-      expect(h.transport.cancelRun).toHaveBeenCalledTimes(1);
-      h.monitor.stop();
-      await task;
-    },
-  );
+    h.set(newer);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(h.monitor.snapshot().run).toEqual(newer);
+    expect(h.monitor.snapshot().cancellation).toBe('sending');
+    resolve(view({ cancellation_requested: true, state: 'stopping' }));
+    await cancellation;
+    expect(h.reportFailure).not.toHaveBeenCalled();
+    expect(h.monitor.snapshot().cancellation).toBe('requested');
+    expect(h.monitor.snapshot().run).toEqual(newer);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(h.monitor.snapshot().run).toEqual(newer);
+    expect(h.monitor.snapshot().run?.cancellation_requested).toBe(false);
+    expect(h.monitor.snapshot().cancellation).toBe('requested');
+    await h.monitor.cancel();
+    expect(h.transport.cancelRun).toHaveBeenCalledTimes(1);
+    h.monitor.stop();
+    await task;
+  });
   it('closing only aborts monitoring and never requests cancellation', async () => {
     const h = harness();
     const task = h.monitor.start();
@@ -731,7 +583,7 @@ describe('run monitoring', () => {
     await task;
     expect(store.load()).toEqual({ attempt: 1, seq: 0 });
   });
-  it('reconstructs checkpoint supersession and logs before verifying a cold watermark', async () => {
+  it('reconstructs a requeued attempt and diagnostics before verifying a cold watermark', async () => {
     vi.useFakeTimers();
     let saved = JSON.stringify({ attempt: 2, seq: 1 });
 
@@ -746,16 +598,16 @@ describe('run monitoring', () => {
     const task = h.monitor.start();
     await flush();
 
-    const send = (attempt: number, seq: number, type: string, payload: JsonObject) => {
+    const send = (attempt: number, seq: number, type: RunEvent['type'], payload: JsonObject) => {
       h.raw(
-        `id: ${attempt}:${seq}\ndata: ${JSON.stringify({ protocol: 'wavedl-jsonl', version: 1, run_id: id, attempt, seq, type, ts: '2026-10-07T00:00:00Z', payload })}\n\n`,
+        `id: ${attempt}:${seq}\ndata: ${JSON.stringify({ protocol: 'wavedl-run', version: 2, run_id: id, attempt, seq, type, ts: '2026-10-07T00:00:00Z', payload })}\n\n`,
       );
     };
 
-    send(1, 0, 'hello', {});
+    send(1, 0, 'attempt', { cause: 'submit', restart_count: null });
     send(1, 1, 'metric', { name: 'loss', value: 4, step: 1 });
     send(1, 2, 'metric', { name: 'loss', value: 2, step: 2 });
-    send(2, 0, 'supersede', { source_attempt: 1, step: 1, generation: 'checkpoint-a' });
+    send(2, 0, 'attempt', { cause: 'requeue', restart_count: 1 });
     send(2, 1, 'metric', { name: 'loss', value: 3, step: 2 });
 
     for (let i = 0; i < 20; i++) await flush();
@@ -891,7 +743,7 @@ describe('run monitoring', () => {
     const h = harness();
     const task = h.monitor.start();
     await flush();
-    h.send(0, 'exit');
+    h.send(0, 'exited');
     await flush();
     expect(h.monitor.snapshot().stream).toBe('live');
     h.set(view({ state: 'completed' }));

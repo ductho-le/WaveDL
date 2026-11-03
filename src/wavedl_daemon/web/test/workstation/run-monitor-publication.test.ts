@@ -32,7 +32,7 @@ function frame(
     metrics: { epoch: seq, total_epochs: 100000, train_loss: seq, val_loss: seq },
   },
 ) {
-  return `id: ${attempt}:${seq}\ndata: ${JSON.stringify({ protocol: 'wavedl-jsonl', version: 1, run_id: id, attempt, seq, type, ts: '2026-10-07T00:00:00Z', payload })}\n\n`;
+  return `id: ${attempt}:${seq}\ndata: ${JSON.stringify({ protocol: 'wavedl-run', version: 2, run_id: id, attempt, seq, type, ts: '2026-10-07T00:00:00Z', payload })}\n\n`;
 }
 
 async function flush() {
@@ -41,7 +41,7 @@ async function flush() {
 
 afterEach(() => vi.useRealTimers());
 
-it('same-authority refresh retains buffered live events and pending scope clears them', async () => {
+it('same-authority refresh retains buffered live events and a new attempt clears them', async () => {
   vi.useFakeTimers();
   let current = view();
   let channel: ReadableStreamDefaultController<Uint8Array> | undefined;
@@ -69,19 +69,7 @@ it('same-authority refresh retains buffered live events and pending scope clears
   expect(monitor.snapshot().liveEvents.map((e) => e.seq)).toEqual([1, 2]);
   channel?.enqueue(new TextEncoder().encode(frame(3)));
   await flush();
-  current = view({
-    evidence: {
-      native_pending: true,
-      native_identity: {
-        run_id: id,
-        request_id: id,
-        cluster: 'test',
-        job_id: '123',
-        owner: 'tester',
-        restart_count: 1,
-      },
-    },
-  });
+  current = view({ attempt: 2 });
   await vi.advanceTimersByTimeAsync(100);
   expect(monitor.snapshot().metrics).toEqual([]);
   expect(monitor.snapshot().liveEvents).toEqual([]);
@@ -169,7 +157,7 @@ it('commits all 100k frames and exact final cursor while coalescing subscriber w
   expect(vi.getTimerCount()).toBe(0);
 }, 15000);
 
-it('publishes supersession immediately and never revives a queued metric after stop', async () => {
+it('publishes a requeued attempt immediately and never revives a queued metric after stop', async () => {
   vi.useFakeTimers();
   let channel: ReadableStreamDefaultController<Uint8Array> | undefined;
 
@@ -201,12 +189,12 @@ it('publishes supersession immediately and never revives a queued metric after s
   expect(seen).toHaveLength(first);
   expect(monitor.position()).toEqual({ attempt: 1, seq: 2 });
   expect(monitor.snapshot().metrics).toHaveLength(2);
-  send(frame(0, 'supersede', 2, { source_attempt: 1, step: 1, generation: 'gen-000001' }));
+  send(frame(0, 'attempt', 2, { cause: 'requeue', restart_count: 1 }));
   await flush();
   expect(seen).toHaveLength(first + 1);
-  expect(seen.at(-1)?.events.at(-1)?.type).toBe('supersede');
-  // Supersession moves lineage to attempt 2 before lifecycle confirms it;
-  // the attempt-1 scope must not show that replacement as current progress.
+  expect(seen.at(-1)?.events.at(-1)?.type).toBe('attempt');
+  // The requeue opens attempt 2 before lifecycle confirms it; the attempt-1
+  // scope must not show the new attempt as current progress.
   expect(seen.at(-1)?.metrics).toEqual([]);
   send(frame(1, 'metric', 2, { name: 'loss', value: 9, step: 2 }));
   await flush();

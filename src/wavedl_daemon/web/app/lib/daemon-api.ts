@@ -3,15 +3,11 @@ import { z } from 'zod';
 import { jsonObjectSchema, jsonScalarSchema, jsonContainerSchema } from '../../shared/schemas/json';
 import {
   RUN_STATES,
-  evidenceSchemaFor,
   healthSchema,
-  observationSchema,
-  outcomeSchema,
   planSchema,
+  runEvidenceSchema,
   runListSchema,
   runViewSchema,
-  runtimeSchema,
-  runPendingEvidenceSchema,
   planPreviewSchema,
   sessionGrantSchema,
   isUuid,
@@ -57,7 +53,7 @@ export interface RunView {
   uncertainty: boolean;
   submission_requested: boolean;
   cancellation_requested: boolean;
-  evidence: z.output<typeof runPendingEvidenceSchema> | null;
+  evidence: z.output<typeof runEvidenceSchema> | null;
   created_at?: string | null;
   summary?: RunSummary | null;
 }
@@ -134,44 +130,16 @@ function freezeJson(item: Json): void {
   }
 }
 
-function runEvidence(value: JsonObject, runId: string, requestId: string) {
-  const check = (schema: z.ZodType, input: Json | undefined, outer?: string): void => {
-    const result = schema.safeParse(input);
+function runEvidence(value: JsonObject): z.output<typeof runEvidenceSchema> {
+  const result = runEvidenceSchema.safeParse(value);
 
-    if (!result.success) {
-      const issue = result.error.issues[0];
-      // Native identity failures have always named the containing field, not
-      // a member of the scheduler identity. Other nested diagnostics name leaves.
-      const path = issue?.path ?? [];
-      const field = outer ?? (path.includes('native_identity') ? 'native_identity' : path.at(-1));
-      throw DaemonApiError.fromKey('response', 'invalidRunEvidence', {
-        params: { field: String(field) },
-      });
-    }
-  };
-
-  // Preserve the historical validation order and its first-error diagnostic.
-  const evidenceSchema = evidenceSchemaFor(runId, requestId);
-
-  for (const [name, schema] of Object.entries(evidenceSchema.shape)) check(schema, value[name], name);
-
-  if (value.runtime !== undefined) check(runtimeSchema, value.runtime);
-
-  for (const name of ['batch', 'stage_out'])
-    if (value[name] !== undefined) check(outcomeSchema, value[name]);
-
-  for (const name of ['backend', 'last_observation'])
-    if (value[name] != null) check(observationSchema(runId, requestId), value[name]);
-
-  if (
-    value.native_pending === true &&
-    value.current_runtime_attempt !== undefined &&
-    value.current_runtime_attempt !== null
-  ) {
-    throw DaemonApiError.fromKey('response', 'pendingRuntimeConflict');
+  if (!result.success) {
+    throw DaemonApiError.fromKey('response', 'invalidRunEvidence', {
+      params: { field: String(result.error.issues[0]?.path[0]) },
+    });
   }
 
-  return runPendingEvidenceSchema.parse(value);
+  return result.data;
 }
 
 function runView(value: Json, expectedRunId?: string): RunView {
@@ -183,7 +151,7 @@ function runView(value: Json, expectedRunId?: string): RunView {
 
   return {
     ...run,
-    evidence: run.evidence === null ? null : runEvidence(run.evidence, run.run_id, run.request_id),
+    evidence: run.evidence === null ? null : runEvidence(run.evidence),
   };
 }
 

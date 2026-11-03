@@ -13,6 +13,7 @@ from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import Response
 
+from wavedl_daemon.backends.contracts import UnsupportedPlan
 from wavedl_daemon.execution.budget import BudgetExhausted, StorageWorkError
 from wavedl_daemon.execution.pool import WorkCancelled
 from wavedl_daemon.http.app import strict_json_route
@@ -23,7 +24,6 @@ from wavedl_daemon.http.schemas.common import (
     exact_query,
 )
 from wavedl_daemon.http.schemas.runs import (
-    AttemptPage,
     PlanRequest,
     PlanView,
     RunList,
@@ -32,7 +32,7 @@ from wavedl_daemon.http.schemas.runs import (
     SubmitRequest,
 )
 from wavedl_daemon.storage.ownership import DispatchRequired
-from wavedl_daemon.storage.plans import IdempotencyConflict, PlanRecoveryRequired
+from wavedl_daemon.storage.plans import IdempotencyConflict
 from wavedl_daemon.storage.settings import UnsupportedStorage
 
 
@@ -52,13 +52,14 @@ async def _call(callback: Callable, *args, **kwargs):
         raise HTTPException(409, "Idempotency conflict") from None
     except KeyError:
         raise HTTPException(404, "Not found") from None
+    except UnsupportedPlan as error:
+        raise HTTPException(400, str(error)) from None
     except (
         BudgetExhausted,
         StorageWorkError,
         WorkCancelled,
         DispatchRequired,
         PermissionError,
-        PlanRecoveryRequired,
         UnsupportedStorage,
         sqlite3.DatabaseError,
         OSError,
@@ -95,16 +96,6 @@ def lifecycle_routes(service: RunService | AsyncRunService) -> list[APIRoute]:
         result = await _call(service.get, run_id)
         response.headers.update(NO_STORE)
         return result.to_dict()
-
-    async def attempts(
-        run_id: str,
-        response: Response,
-        limit: Annotated[int, Query(ge=1, le=100)] = 50,
-        offset: Annotated[int, Query(ge=0, le=10000)] = 0,
-    ):
-        result = await _call(service.attempts, run_id, limit=limit, offset=offset)
-        response.headers.update(NO_STORE)
-        return result
 
     async def list_runs(
         response: Response,
@@ -153,15 +144,6 @@ def lifecycle_routes(service: RunService | AsyncRunService) -> list[APIRoute]:
         methods=["POST"],
         response_model=RunResponse,
         status_code=202,
-    )
-    router.add_api_route(
-        "/api/runs/{run_id}/attempts",
-        attempts,
-        operation_id="list_run_attempts",
-        responses=API_ERRORS,
-        methods=["GET", "HEAD"],
-        response_model=AttemptPage,
-        dependencies=[Depends(exact_query("limit", "offset"))],
     )
     router.add_api_route(
         "/api/runs/{run_id}",

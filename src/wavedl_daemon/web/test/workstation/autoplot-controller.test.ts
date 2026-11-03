@@ -453,7 +453,6 @@ describe('actual captured automatic plot coordinator', () => {
   it.each([
     { uncertainty: true },
     { state: 'running' as const },
-    { evidence: { native_pending: true } },
     { cancellation_requested: true },
     { run_id: plot.run_id },
     { request_id: plot.request_id },
@@ -637,23 +636,9 @@ describe('actual captured automatic plot coordinator', () => {
       owner.session.detach();
     },
   );
-  it('retains mapped Slurm source/native scope and disarms on native requeue before retry', async () => {
+  it('retains mapped Slurm source scope and disarms on requeue before retry', async () => {
     const owner = await setup();
-
-    const source: RunView = {
-      ...train,
-      backend: 'slurm',
-      evidence: {
-        native_identity: {
-          run_id: train.run_id,
-          request_id: train.request_id,
-          cluster: 'site',
-          owner: 'alice',
-          job_id: '123',
-          restart_count: 0,
-        },
-      },
-    };
+    const source: RunView = { ...train, backend: 'slurm' };
 
     owner.current(source);
 
@@ -665,7 +650,7 @@ describe('actual captured automatic plot coordinator', () => {
     owner.controller.capture(source, plan);
     await owner.controller.observeFresh(source);
     expect(owner.controller.state.value.status).toBe('error');
-    owner.current({ ...source, attempt: 2, evidence: { native_pending: true } });
+    owner.current({ ...source, attempt: 2 });
     owner.losePlan(false);
     await owner.controller.retry();
     expect(owner.controller.state.value.status).toBe('stopped');
@@ -760,57 +745,8 @@ describe('actual captured automatic plot coordinator', () => {
     owner.controller.dispose();
     owner.session.detach();
   });
-  it('cannot retry a partially captured workflow with malformed native scope', async () => {
+  it('disarms when the observed runtime attempt regresses', async () => {
     const owner = await setup();
-    owner.controller.capture(
-      { ...train, evidence: { native_identity: { invalid: true } } },
-      await owner.approve(),
-    );
-    expect(owner.controller.state.value.status).toBe('unavailable');
-    await owner.controller.retry();
-    await owner.controller.observeFresh(train);
-    expect(owner.routes.some((route) => route.startsWith('POST'))).toBe(false);
-    owner.controller.dispose();
-    owner.session.detach();
-  });
-  it('requires Slurm native evidence at eligibility, but not initial pending capture', async () => {
-    for (const evidence of [null, { native_identity: null }]) {
-      const owner = await setup();
-      const run: RunView = { ...train, backend: 'slurm', evidence };
-      const plan = await owner.approve(0, 'slurm');
-      owner.current(run);
-      owner.controller.capture({ ...run, state: 'submitted', attempt: null }, plan);
-      expect(owner.controller.state.value.status).toBe('armed');
-      await owner.controller.observeFresh(run);
-      expect(owner.controller.state.value.status).toBe('stopped');
-      expect(owner.routes.some((route) => route.startsWith('POST'))).toBe(false);
-      owner.controller.dispose();
-      owner.session.detach();
-    }
-  });
-  it('disarms when observed native ownership or runtime attempt regresses', async () => {
-    const owner = await setup();
-
-    const native = {
-      run_id: train.run_id,
-      request_id: train.request_id,
-      cluster: 'site',
-      owner: 'alice',
-      job_id: '123',
-      restart_count: 2,
-    };
-
-    owner.controller.capture(
-      { ...train, state: 'running', attempt: 2, evidence: { native_identity: native } },
-      await owner.approve(),
-    );
-    await owner.controller.observeFresh({
-      ...train,
-      state: 'running',
-      attempt: 2,
-      evidence: { native_identity: { ...native, restart_count: 1 } },
-    });
-    expect(owner.controller.state.value.status).toBe('stopped');
     owner.controller.capture({ ...train, state: 'running', attempt: 2 }, await owner.approve());
     await owner.controller.observeFresh({ ...train, state: 'running', attempt: 1 });
     expect(owner.controller.state.value.status).toBe('stopped');
@@ -944,7 +880,7 @@ describe('actual captured automatic plot coordinator', () => {
     next.loseSubmit();
     next.controller.capture(train, await next.approve());
     await next.controller.observeFresh(train);
-    next.current({ ...train, attempt: 2, evidence: { native_pending: true } });
+    next.current({ ...train, attempt: 2 });
     await next.controller.retry();
     expect(next.controller.state.value.status).toBe('stopped');
     expect(next.routes.filter((route) => route === 'POST /api/runs')).toHaveLength(1);
@@ -957,7 +893,7 @@ describe('actual captured automatic plot coordinator', () => {
     await controller.observeFresh(train);
     expect(controller.state.value.status).toBe('stopped');
     controller.capture(train, await approve());
-    await controller.observeFresh({ ...train, evidence: { native_pending: true } });
+    await controller.observeFresh({ ...train, state: 'pending' });
     await controller.observeFresh({ ...train, run_id: plot.run_id });
     session.detach();
     await controller.observeFresh(train);

@@ -22,6 +22,7 @@ from wavedl_daemon.runs.model import (
     BackendKind,
     CancelDelivered,
     CancelRequested,
+    Evaluation,
     Exited,
     LocalExit,
     Metric,
@@ -127,7 +128,11 @@ def evolve(head: RunHead | RunRef, event: RunEvent) -> RunHead:
     after = _transition(head, event)
     if isinstance(event, AttemptOpened):
         return replace(after, attempt=head.attempt + 1, seq=0, revision=head.revision + 1)
-    revision = head.revision if isinstance(event, Metric | SourceWarning) else head.revision + 1
+    revision = (
+        head.revision
+        if isinstance(event, Metric | Evaluation | SourceWarning)
+        else head.revision + 1
+    )
     return replace(after, seq=head.seq + 1, revision=revision)
 
 
@@ -172,6 +177,10 @@ def _transition(head: RunHead, event: RunEvent) -> RunHead:
             event.outcome is not Outcome.REQUEUED or head.ref.backend is BackendKind.SLURM
         ):
             return _end(head, event, handle)
+        case Live(), Evaluation() | SourceWarning(source_end=None) if (
+            head.ref.operation is Operation.TEST
+        ):
+            return head
         case Claimed() | Live(), Metric() | SourceWarning() if _reads_forward(head, event):
             sealed = isinstance(event, SourceWarning) and event.seals
             return replace(head, metrics_offset=event.source_end, metrics_sealed=sealed)
@@ -185,8 +194,8 @@ def _end(head: RunHead, event: Exited, handle: Handle | None) -> RunHead:
     return replace(head, stage=Ended(event, handle), metrics_sealed=True)
 
 
-def _reads_forward(head: RunHead, event: FromFile) -> bool:
-    if head.metrics_sealed:
+def _reads_forward(head: RunHead, event: Metric | SourceWarning) -> bool:
+    if head.metrics_sealed or event.source_end is None:
         return False
     if isinstance(event, SourceWarning) and event.code is WarningCode.TRUNCATED:
         return event.source_end == head.metrics_offset
@@ -369,6 +378,7 @@ def react(head: RunHead, observation: SlurmObservation | ObservationFailed) -> S
 class AttemptFiles:
     tail: TailChunk | None  # None when the run has no metrics file to drain
     exit_record: ExitRecord | None  # Slurm only
+    evaluation: Evaluation | SourceWarning | None = None  # test runs only
 
 
 def settle(
@@ -384,6 +394,7 @@ def settle(
     the next attempt in the same append.
     """
     tail = files.tail
+    evaluation = () if files.evaluation is None else (files.evaluation,)
     if tail is None or head.metrics_sealed:
         rows: tuple[FromFile, ...] = ()
     elif not tail.drained:
@@ -397,7 +408,7 @@ def settle(
         rows = (*tail.rows, torn)
     else:
         rows = tail.rows
-    return (*rows, *_ending(head, cause, files.exit_record))
+    return (*rows, *evaluation, *_ending(head, cause, files.exit_record))
 
 
 def _ending(
