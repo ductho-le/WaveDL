@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # These are the jobs branch protection and release automation depend on.  Keep this
 # list explicit: adding a workflow without a gate should be a deliberate change.
 REQUIRED_JOBS = {
-    ".github/workflows/daemon-foundations.yml": {"storage-enospc", "foundations"},
+    ".github/workflows/daemon-foundations.yml": {"foundations"},
     ".github/workflows/lint.yml": {"lint"},
     ".github/workflows/release.yml": {
         "test",

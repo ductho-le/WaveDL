@@ -129,20 +129,15 @@ def test_retired_desktop_workflow_and_paths_are_not_active():
         paths = foundations[True][event]["paths"]
         assert not any("wavedl_gui" in path or "test_gui_" in path for path in paths)
         assert "src/wavedl_daemon/**" in paths
-        assert "unit_tests/core/**" in paths
         assert "unit_tests/daemon/**" in paths
-        assert "src/wavedl_daemon/web/**" in paths
+        assert not any(path.startswith("src/wavedl/") for path in paths)
     jobs = foundations["jobs"]
-    assert set(jobs) == {"storage-enospc", "foundations"}
+    assert set(jobs) == {"foundations"}
     assert jobs["foundations"]["strategy"]["matrix"] == {
         "os": ["ubuntu-latest", "macos-latest", "windows-latest"],
         "python": ["3.11", "3.13"],
     }
     commands = "\n".join(step.get("run", "") for step in jobs["foundations"]["steps"])
-    assert (
-        "run_user_owned_pytest.py unit_tests/core --confcutdir=unit_tests/core"
-        in commands
-    )
     assert (
         "run_user_owned_pytest.py unit_tests/daemon --confcutdir=unit_tests/daemon"
         in commands

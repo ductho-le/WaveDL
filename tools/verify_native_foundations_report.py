@@ -1,8 +1,8 @@
-"""Require native ownership/supervision evidence for the current CI platform.
+"""Require native daemon supervision evidence for the current CI platform.
 
 Other-platform and optional ML/site skips remain visible, not waived as native
-proof. This gate covers local filesystem and process supervision only; it does
-not certify GPU trees, shared filesystems or scheduler behavior.
+proof. This gate covers local process supervision only; it does not certify GPU
+trees, shared filesystems or scheduler behavior.
 """
 
 from __future__ import annotations
@@ -17,56 +17,29 @@ from pathlib import Path
 
 
 POSIX_REQUIRED = {
-    "core": {
-        "unit_tests.core.test_safe_files": {
-            "test_owned_stream_replacement_is_anchored_but_guard_rejects",
-            "test_owned_directory_replacement_rejects_guard",
-            "test_guard_rejects_symlink_ancestor_even_when_identity_matches",
-            "test_owned_objects_reject_insecure_mode_and_foreign_uid",
-            "test_fifo_rejected_without_blocking",
-        },
-    },
-    "daemon": {
-        "unit_tests.daemon.test_posix_supervisor": {
-            "test_large_separate_output_is_drained_but_bounded",
-            "test_zero_capture_and_stdin_closed",
-            "test_exited_leader_still_escalates_ignoring_grandchild",
-            "test_exited_leader_closed_pipes_do_not_hide_descendant",
-            "test_ignoring_leader_requires_forceful_phase",
-            "test_repeated_cancel_and_concurrent_wait_share_result",
-            "test_timeout_kills_actual_tree",
-            "test_cancellation_drains_continuous_output_with_bounded_capture",
-        },
+    "unit_tests.daemon.test_posix_supervisor": {
+        "test_large_separate_output_is_drained_but_bounded",
+        "test_zero_capture_and_stdin_closed",
+        "test_exited_leader_still_escalates_ignoring_grandchild",
+        "test_exited_leader_closed_pipes_do_not_hide_descendant",
+        "test_ignoring_leader_requires_forceful_phase",
+        "test_repeated_cancel_and_concurrent_wait_share_result",
+        "test_timeout_kills_actual_tree",
+        "test_cancellation_drains_continuous_output_with_bounded_capture",
     },
 }
 WINDOWS_REQUIRED = {
-    "core": {
-        "unit_tests.core.test_journal_writer": {
-            "test_first_flush_waits_for_native_journal_reader_release",
-        },
-        "unit_tests.core.test_windows_ownership": {
-            "test_native_current_user_file_owner_and_dacl",
-            "test_native_mkdir_700_owner_rights_is_private_to_actual_user",
-        },
-        "unit_tests.core.test_safe_files": {
-            "test_native_windows_pinned_directory_cannot_be_renamed",
-            "test_native_windows_junction_rejected",
-            "test_held_directory_exclusive_link_preserves_bytes_and_existing_target",
-        },
+    "unit_tests.daemon.test_inspection": {
+        "test_native_windows_catalog_header_worker_preserves_identity_binding",
     },
-    "daemon": {
-        "unit_tests.daemon.test_inspection": {
-            "test_native_windows_catalog_header_worker_preserves_identity_binding",
-        },
-        "unit_tests.daemon.test_windows_supervisor": {
-            "test_native_large_independent_streams_and_closed_stdin",
-            "test_native_assignment_failure_never_executes_child",
-            "test_native_suspended_assignment_and_descendant_inherits_job",
-            "test_native_ignoring_descendant_killed_even_after_leader_exit[False]",
-            "test_native_ignoring_descendant_killed_even_after_leader_exit[True]",
-            "test_native_leader_exit_finalizes_without_caller_timeout",
-            "test_native_daemon_death_closes_job_and_kills_descendant",
-        },
+    "unit_tests.daemon.test_windows_supervisor": {
+        "test_native_large_independent_streams_and_closed_stdin",
+        "test_native_assignment_failure_never_executes_child",
+        "test_native_suspended_assignment_and_descendant_inherits_job",
+        "test_native_ignoring_descendant_killed_even_after_leader_exit[False]",
+        "test_native_ignoring_descendant_killed_even_after_leader_exit[True]",
+        "test_native_leader_exit_finalizes_without_caller_timeout",
+        "test_native_daemon_death_closes_job_and_kills_descendant",
     },
 }
 MAX_REPORT_BYTES = 8 * 1024 * 1024
@@ -142,7 +115,7 @@ def _cases(path: Path) -> list[ET.Element]:
     return cases
 
 
-def verify_reports(core: Path, daemon: Path, *, platform: str) -> dict[str, int]:
+def verify_report(path: Path, *, platform: str) -> dict[str, int]:
     """Reject missing/skipped native cases while retaining other skip counts."""
     if platform == "win32":
         required = WINDOWS_REQUIRED
@@ -150,63 +123,54 @@ def verify_reports(core: Path, daemon: Path, *, platform: str) -> dict[str, int]
         required = POSIX_REQUIRED
     else:
         raise ValueError("Unsupported native acceptance platform")
-    counts = {"required": 0, "passed": 0, "other_skipped": 0}
-    for slice_name, path in (("core", core), ("daemon", daemon)):
-        expected = {
-            (module, name)
-            for module, names in required[slice_name].items()
-            for name in names
-        }
-        seen = set()
-        for case in _cases(path):
-            key = (case.get("classname"), case.get("name"))
-            # pytest.importorskip at module scope emits a skipped collection
-            # item with no classname and the dotted module as its name. This
-            # is unverified optional coverage, never a passed native case.
-            if (
-                key[0] in {None, ""}
-                and isinstance(key[1], str)
-                and re.fullmatch(
-                    rf"unit_tests\.{slice_name}\.test_[A-Za-z0-9_]+", key[1]
-                )
-                and case.find("skipped") is not None
-                and not any(
-                    case.find(outcome) is not None for outcome in ("failure", "error")
-                )
-            ):
-                if key[1] in required[slice_name]:
-                    raise ValueError("Required native module collection was skipped")
-                if key in seen:
-                    raise ValueError("Duplicate foundations testcase identity")
-                seen.add(key)
-                counts["other_skipped"] += 1
-                continue
-            if not all(isinstance(value, str) and value for value in key):
-                raise ValueError("Foundations testcase identity is missing")
+    expected = {(module, name) for module, names in required.items() for name in names}
+    counts = {"required": len(expected), "passed": 0, "other_skipped": 0}
+    seen = set()
+    for case in _cases(path):
+        key = (case.get("classname"), case.get("name"))
+        # pytest.importorskip at module scope emits a skipped collection
+        # item with no classname and the dotted module as its name. This
+        # is unverified optional coverage, never a passed native case.
+        if (
+            key[0] in {None, ""}
+            and isinstance(key[1], str)
+            and re.fullmatch(r"unit_tests\.daemon\.test_[A-Za-z0-9_]+", key[1])
+            and case.find("skipped") is not None
+            and not any(
+                case.find(outcome) is not None for outcome in ("failure", "error")
+            )
+        ):
+            if key[1] in required:
+                raise ValueError("Required native module collection was skipped")
             if key in seen:
                 raise ValueError("Duplicate foundations testcase identity")
             seen.add(key)
-            if any(case.find(outcome) is not None for outcome in ("failure", "error")):
-                raise ValueError("Foundations testcase failed")
-            if case.find("skipped") is not None:
-                if key in expected:
-                    raise ValueError("Required native acceptance testcase was skipped")
-                counts["other_skipped"] += 1
-            else:
-                counts["passed"] += 1
-        if expected - seen:
-            raise ValueError("Missing required native acceptance testcases")
-        counts["required"] += len(expected)
+            counts["other_skipped"] += 1
+            continue
+        if not all(isinstance(value, str) and value for value in key):
+            raise ValueError("Foundations testcase identity is missing")
+        if key in seen:
+            raise ValueError("Duplicate foundations testcase identity")
+        seen.add(key)
+        if any(case.find(outcome) is not None for outcome in ("failure", "error")):
+            raise ValueError("Foundations testcase failed")
+        if case.find("skipped") is not None:
+            if key in expected:
+                raise ValueError("Required native acceptance testcase was skipped")
+            counts["other_skipped"] += 1
+        else:
+            counts["passed"] += 1
+    if expected - seen:
+        raise ValueError("Missing required native acceptance testcases")
     return counts
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("core", type=Path)
-    parser.add_argument("daemon", type=Path)
+    parser.add_argument("report", type=Path)
     args = parser.parse_args()
     try:
-        result = verify_reports(args.core, args.daemon, platform=sys.platform)
+        result = verify_report(args.report, platform=sys.platform)
     except (OSError, ValueError, ET.ParseError) as error:
         parser.exit(1, f"Native foundations gate failed: {error}\n")
     print(

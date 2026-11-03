@@ -102,10 +102,6 @@ accelerate launch --num_machines 2 --main_process_ip <ip> -m wavedl.train --mode
 # Basic inference
 wavedl-test --checkpoint <checkpoint_folder> --data_path <test_data>
 
-# Custom architectures need explicit registration in each fresh inference process
-wavedl-test --checkpoint <checkpoint_folder> --data_path <test_data> \
-  --import my_model.py --model my_model --device cpu
-
 # With visualization, prediction export, and multiple plot formats
 wavedl-test --checkpoint <checkpoint_folder> --data_path <test_data> \
   --plot --plot_format png pdf --save_predictions --output_dir <output_folder>
@@ -245,13 +241,6 @@ class MyModel(BaseModel):
 ```bash
 wavedl-train --import my_model.py --model my_model --data_path train.npz
 ```
-
-Use the same trusted `--import` modules or `.py` files for inference, plotting,
-and ONNX export. Daemon plans resolve registration files against the submission
-directory and apply explicit host/execution storage mappings; named modules
-must be available in the selected interpreter. Imports execute Python code and
-are never inferred from checkpoint metadata. The browser Results form exposes
-the import list explicitly; automatic plots retain the captured training list.
 
 WaveDL handles everything else: training loop, logging, checkpoints, multi-GPU, early stopping, etc.
 

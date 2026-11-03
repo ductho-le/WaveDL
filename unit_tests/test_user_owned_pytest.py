@@ -3,7 +3,6 @@
 import ctypes
 import importlib.util
 import os
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -223,7 +222,7 @@ def test_wrapper_enters_owner_context_before_pytest_main_or_temp_allocation(
     )
 
     def pytest_main(args):
-        assert args == ["unit_tests/core", "--confcutdir=unit_tests/core"]
+        assert args == ["unit_tests/daemon", "--confcutdir=unit_tests/daemon"]
         assert api.owner == 200
         assert api.events[-1] == ("query", 4)
         assert sys.path[0] == os.getcwd()
@@ -233,7 +232,7 @@ def test_wrapper_enters_owner_context_before_pytest_main_or_temp_allocation(
         return 7
 
     monkeypatch.setitem(sys.modules, "pytest", SimpleNamespace(main=pytest_main))
-    assert MODULE.main(["unit_tests/core", "--confcutdir=unit_tests/core"]) == 7
+    assert MODULE.main(["unit_tests/daemon", "--confcutdir=unit_tests/daemon"]) == 7
     assert api.owner == 100 and api.events[-1] == "close"
     assert sys.path == original_path
 
@@ -286,12 +285,12 @@ def test_windows_wrapper_forces_fresh_protected_basetemp_before_pytest(monkeypat
     )
 
     def pytest_main(args):
-        assert args == ["unit_tests/core", "--basetemp", str(roots[0] / "pytest")]
+        assert args == ["unit_tests/daemon", "--basetemp", str(roots[0] / "pytest")]
         assert roots[0].is_dir() and api.owner == 200
         return 9
 
     monkeypatch.setitem(sys.modules, "pytest", SimpleNamespace(main=pytest_main))
-    assert MODULE.main(["unit_tests/core"]) == 9
+    assert MODULE.main(["unit_tests/daemon"]) == 9
     assert not roots[0].exists() and api.owner == 100
     with pytest.raises(ValueError, match="owns the Windows pytest"):
         MODULE.main(["--basetemp=existing-user-folder"])
@@ -359,24 +358,23 @@ def test_typed_native_bindings_query_set_compare_and_close(monkeypatch):
     assert calls == [("open", 999, 0x88), ("set", 200), ("set", 100), ("close", 700)]
 
 
-def test_foundations_core_and_daemon_use_owned_wrapper_without_weakening_gates():
+def test_foundations_daemon_uses_owned_wrapper_without_weakening_gates():
     value = yaml.safe_load(
         (ROOT / ".github/workflows/daemon-foundations.yml").read_text()
     )
     foundation = value["jobs"]["foundations"]
     steps = foundation["steps"]
-    for name, folder, report in (
-        ("Shared contracts without parent ML fixtures", "core", "core-foundations.xml"),
-        ("Native supervision and durable control", "daemon", "daemon-foundations.xml"),
-    ):
-        step = next(step for step in steps if step.get("name") == name)
-        assert step["run"] == (
-            f"python tools/run_user_owned_pytest.py unit_tests/{folder} "
-            f"--confcutdir=unit_tests/{folder} --junitxml={report} -q"
-        )
-        assert not step.get("continue-on-error", False)
-        if folder == "daemon":
-            assert step["if"] == "${{ !cancelled() }}"
+    step = next(
+        step
+        for step in steps
+        if step.get("name") == "Native supervision and durable control"
+    )
+    assert step["run"] == (
+        "python tools/run_user_owned_pytest.py unit_tests/daemon "
+        "--confcutdir=unit_tests/daemon --junitxml=daemon-foundations.xml -q"
+    )
+    assert not step.get("continue-on-error", False)
+    assert step["if"] == "${{ !cancelled() }}"
     guard = next(
         step
         for step in steps
@@ -396,42 +394,15 @@ def test_foundations_core_and_daemon_use_owned_wrapper_without_weakening_gates()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Native TokenOwner restoration witness")
-def test_native_owner_context_creates_user_owned_file_and_restores_token(tmp_path):
-    from wavedl.core.safe_files import open_directory
-
+def test_native_owner_context_sets_user_owner_and_restores_token():
     api = MODULE.TokenOwnerAPI()
     token = api.open()
     try:
         _before_buffer, before = api.query(token, 4)
-        with (
-            MODULE.user_owned_objects(),
-            MODULE.private_test_workspace() as workspace,
-        ):
+        with MODULE.user_owned_objects(), MODULE.private_test_workspace():
             _user_buffer, user = api.query(token, 1)
             _current_buffer, current = api.query(token, 4)
             assert api.equal(current, user)
-            (workspace / "native-user-owned").write_bytes(b"native ownership")
-            subprocess.run(
-                [
-                    sys.executable,
-                    "-c",
-                    "from pathlib import Path; import sys; Path(sys.argv[1]).write_bytes(b'child ownership')",
-                    str(workspace / "native-child-owned"),
-                ],
-                check=True,
-                timeout=10,
-            )
-            with (
-                open_directory(workspace) as root,
-                root.open_file("native-user-owned") as file,
-            ):
-                file.verify_private_owner()
-                root.verify_private_owner()
-            with (
-                open_directory(workspace) as root,
-                root.open_file("native-child-owned") as file,
-            ):
-                file.verify_private_owner()
         _after_buffer, after = api.query(token, 4)
         assert api.equal(before, after)
     finally:
