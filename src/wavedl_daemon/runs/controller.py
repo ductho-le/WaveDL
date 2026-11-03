@@ -2,9 +2,10 @@
 """Turn active run heads into backend work, one bounded page per tick.
 
 Ticks run on the thread that owns the database and never wait for I/O.
-Blocking work (spawning, reading attempt files) runs in the pool and returns
-the events to append with the head tokens it read, so a result that raced
-another append is dropped as stale and recomputed on a later tick.
+Blocking work (spawning, sbatch, scheduler queries, reading attempt files)
+runs in the pool and returns the events to append with the head tokens it
+read, so a result that raced another append is dropped as stale and
+recomputed on a later tick.
 """
 
 from __future__ import annotations
@@ -12,10 +13,15 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from wavedl_daemon.backends.contracts import UnsupportedPlan
-from wavedl_daemon.backends.local_execution import SupervisionLost
+from wavedl_daemon.backends.local_execution import (
+    CANCEL_GRACE_SECONDS,
+    SupervisionLost,
+)
+from wavedl_daemon.backends.slurm import SubmissionRejected
 from wavedl_daemon.events.metrics_tail import read_attempt_files, read_tail
 from wavedl_daemon.execution.budget import BudgetExhausted
 from wavedl_daemon.runs.layout import RunPaths
@@ -26,16 +32,21 @@ from wavedl_daemon.runs.lifecycle import (
     Work,
     WorkKind,
     next_work,
+    react,
     settle,
 )
 from wavedl_daemon.runs.model import (
+    BackendKind,
     CancelDelivered,
     Exited,
     LocalExit,
     LocalHandle,
+    ObservationFailed,
     Observed,
     Outcome,
     Phase,
+    SlurmHandle,
+    SlurmObservation,
     Submitted,
 )
 from wavedl_daemon.storage.run_log import Expect, Stale
@@ -46,16 +57,21 @@ if TYPE_CHECKING:
 
     from wavedl_daemon.backends.contracts import Plan
     from wavedl_daemon.backends.local import LocalBackend
+    from wavedl_daemon.backends.slurm import SlurmBackend
     from wavedl_daemon.execution.pool import BoundedThreadPool, WorkHandle
     from wavedl_daemon.runs.lifecycle import RunHead
-    from wavedl_daemon.runs.model import NotOwned, RunEvent, RunId
-    from wavedl_daemon.storage.plans import PlanStore
+    from wavedl_daemon.runs.model import NotOwned, PlanId, RunEvent, RunId
+    from wavedl_daemon.storage.plans import PlanRecord, PlanStore
     from wavedl_daemon.storage.run_log import RunLog
 
 
 PAGE_SIZE = 256
 TAIL_INTERVAL_SECONDS = 1.0
+RETRY_SECONDS = 5.0
 MAX_ERRORS = 128
+OBSERVE_BATCH = 128
+OBSERVE_INTERVAL_SECONDS = 30.0
+OBSERVE_BACKOFF_SECONDS = (5.0, 120.0)
 
 
 @dataclass(frozen=True)
@@ -65,6 +81,21 @@ class Done:
     events: tuple[RunEvent, ...]
     expect: Expect
     release: LocalHandle | None = None  # forget the process once its exit commits
+    # A Slurm settle may leave the attempt open (an undrained file, a second
+    # requeue); its observation is folded again on the next tick.
+    observation: SlurmObservation | None = None
+
+
+@dataclass
+class _Watch:
+    """One Live Slurm run's polling state. A daemon restart starts it afresh."""
+
+    plan_id: PlanId
+    due: float = 0.0
+    failures: int = 0
+    error: str | None = None
+    pending: SlurmObservation | ObservationFailed | None = None  # not yet reacted to
+    kill_at: float | None = None
 
 
 def _spawn(backend: LocalBackend, plan: Plan, head: RunHead) -> Done:
@@ -80,6 +111,38 @@ def _spawn(backend: LocalBackend, plan: Plan, head: RunHead) -> Done:
     return Done(events, Expect(offset=(head.attempt, head.metrics_offset)))
 
 
+def _sbatch(backend: SlurmBackend, plan: Plan, head: RunHead) -> Done:
+    """Submit once. An unknown sbatch outcome raises and is recovered later."""
+    try:
+        events: tuple[RunEvent, ...] = (Submitted(backend.submit(plan)),)
+    except (UnsupportedPlan, SubmissionRejected, OSError) as error:
+        events = (Exited(Outcome.FAILED, True, detail=str(error)[:1000]),)
+    return Done(events, Expect(offset=(head.attempt, head.metrics_offset)))
+
+
+def _recover(backend: SlurmBackend, record: PlanRecord, head: RunHead) -> Done:
+    """Find the job a submission lost between sbatch and its commit."""
+    handle = backend.find(record.plan, created_at=datetime.fromisoformat(record.created_at))
+    lost = Exited(
+        Outcome.UNKNOWN,
+        False,
+        detail="The daemon stopped before the submission was recorded, and no job was found",
+    )
+    events: tuple[RunEvent, ...] = (lost,) if handle is None else (Submitted(handle),)
+    return Done(events, Expect(offset=(head.attempt, head.metrics_offset)))
+
+
+def _scancel(
+    backend: SlurmBackend, head: RunHead, handle: SlurmHandle, *, interrupt: bool
+) -> Done:
+    backend.cancel(head.ref.run_id, handle, interrupt=interrupt)
+    return Done((CancelDelivered(),), Expect(revision=head.revision))
+
+
+def _kill(backend: SlurmBackend, head: RunHead, handle: SlurmHandle) -> None:
+    backend.cancel(head.ref.run_id, handle, interrupt=False)
+
+
 def _tail(head: RunHead) -> Done | None:
     chunk = read_tail(
         RunPaths(head.ref.run_dir).metrics(head.attempt), start=head.metrics_offset
@@ -89,14 +152,15 @@ def _tail(head: RunHead) -> Done | None:
     return Done(chunk.rows, Expect(offset=(head.attempt, head.metrics_offset)))
 
 
-def _settle(head: RunHead, cause: LocalExit | NotOwned) -> Done:
+def _settle(head: RunHead, cause: LocalExit | NotOwned | SlurmObservation) -> Done:
     events = settle(head, cause, read_attempt_files(head))
     release = None
     if isinstance(head.stage, Live) and isinstance(head.stage.handle, LocalHandle):
         if events and isinstance(events[-1], Exited):
             release = head.stage.handle
     expect = Expect(revision=head.revision, offset=(head.attempt, head.metrics_offset))
-    return Done(events, expect, release)
+    observation = cause if isinstance(cause, SlurmObservation) else None
+    return Done(events, expect, release, observation)
 
 
 class RunController:
@@ -109,18 +173,33 @@ class RunController:
         pool: BoundedThreadPool,
         *,
         local: LocalBackend | None,
+        slurm: SlurmBackend | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._log = log
         self._plans = plans
         self._local = local
+        self._slurm = slurm
         self._pool = pool
         self._clock = clock
         self._inflight: dict[RunId, tuple[WorkKind, WorkHandle[Done | None]]] = {}
         self._next_tail: dict[RunId, float] = {}
+        self._retry_at: dict[RunId, float] = {}
+        self._watches: dict[RunId, _Watch] = {}
+        self._observing: tuple[tuple[RunId, ...], WorkHandle[dict]] | None = None
         self._offset = 0
         self._thread = threading.get_ident()
         self.errors: dict[str, str] = {}
+        self.observation_refusals = 0
+
+    @property
+    def observation_errors(self) -> dict[str, str]:
+        """The last scheduler query failure of each Slurm run, by plan."""
+        return {
+            watch.plan_id: watch.error
+            for watch in self._watches.values()
+            if watch.error is not None
+        }
 
     def _guard(self) -> None:
         if threading.get_ident() != self._thread:
@@ -129,10 +208,13 @@ class RunController:
     def tick(self) -> None:
         self._guard()
         self._harvest()
+        self._harvest_observations()
         heads = self._log.heads(active=True, limit=PAGE_SIZE, offset=self._offset)
         self._offset = self._offset + len(heads) if len(heads) == PAGE_SIZE else 0
+        now = self._clock()
         for head in heads:
-            if head.ref.run_id in self._inflight:
+            run_id = head.ref.run_id
+            if run_id in self._inflight or now < self._retry_at.get(run_id, 0):
                 continue
             try:
                 self._advance(head)
@@ -142,18 +224,36 @@ class RunController:
                 self._error(head, error)
             else:
                 self.errors.pop(head.ref.plan_id, None)
+        self._observe(heads)
 
     def _advance(self, head: RunHead) -> None:
-        step = next_work(head, local_poll=self._poll(head))
+        poll = self._poll(head)
+        watch = self._watches.get(head.ref.run_id)
+        observation = None if watch is None else watch.pending
+        step = None
+        if watch is not None and observation is not None:
+            watch.pending = None
+            step = react(head, observation)
+        if step is None and self._escalate(head):
+            return
+        if step is None:
+            step = next_work(head, local_poll=poll)
         match step:
             case Append(events=events, then=then):
                 if then is WorkKind.SPAWN and not self._admits():
                     return
+                if then is WorkKind.SBATCH and self._slurm is None:
+                    raise UnsupportedPlan("The Slurm backend is not registered")
                 head = self._log.append(
                     head.ref.run_id, events, expect=Expect(revision=head.revision)
                 )
                 if then is not None:
                     self._run(then, head)
+            case Work(kind=WorkKind.SETTLE):
+                cause = observation if isinstance(observation, SlurmObservation) else poll
+                if cause is None:
+                    raise UnsupportedPlan("There is no exit to settle")
+                self._submit(WorkKind.SETTLE, head.ref.run_id, lambda: _settle(head, cause))
             case Work(kind=kind):
                 self._run(kind, head)
 
@@ -171,15 +271,32 @@ class RunController:
         spawning = sum(kind is WorkKind.SPAWN for kind, _ in self._inflight.values())
         return self._local.running + spawning < self._local.max_processes
 
+    def _backend(self) -> SlurmBackend:
+        if self._slurm is None:
+            raise UnsupportedPlan("The Slurm backend is not registered")
+        return self._slurm
+
+    def _record(self, head: RunHead) -> PlanRecord:
+        record = self._plans.get(head.ref.plan_id)
+        if record is None:
+            raise UnsupportedPlan("The run has no plan")
+        return record
+
     def _run(self, kind: WorkKind, head: RunHead) -> None:
         run_id = head.ref.run_id
+        slurm = head.ref.backend is BackendKind.SLURM
         match kind:
             case WorkKind.SPAWN:
-                record = self._plans.get(head.ref.plan_id)
-                local = self._local
-                if record is None or local is None:
-                    raise UnsupportedPlan("The run has no plan or no Local backend")
+                record, local = self._record(head), self._local
+                if local is None:
+                    raise UnsupportedPlan("The Local backend is not registered")
                 self._submit(kind, run_id, lambda: _spawn(local, record.plan, head))
+            case WorkKind.SBATCH:
+                record, backend = self._record(head), self._backend()
+                self._submit(kind, run_id, lambda: _sbatch(backend, record.plan, head))
+            case WorkKind.RECOVER if slurm:
+                record, backend = self._record(head), self._backend()
+                self._submit(kind, run_id, lambda: _recover(backend, record, head))
             case WorkKind.RECOVER:
                 # The claim committed but its spawn result did not. The process
                 # may exist, so it is never started again.
@@ -190,27 +307,56 @@ class RunController:
                 )
                 self._log.append(run_id, [ending], expect=Expect(revision=head.revision))
             case WorkKind.CANCEL:
-                stage = head.stage
-                if self._local is None or not isinstance(stage, Live):
-                    raise UnsupportedPlan("Only Local runs can be cancelled for now")
-                if isinstance(stage.handle, LocalHandle):
-                    self._local.cancel(stage.handle)
-                self._log.append(
-                    run_id, [CancelDelivered()], expect=Expect(revision=head.revision)
-                )
+                self._cancel(head)
             case WorkKind.TAIL:
                 now = self._clock()
                 if now < self._next_tail.get(run_id, 0):
                     return
                 self._next_tail[run_id] = now + TAIL_INTERVAL_SECONDS
                 self._submit(kind, run_id, lambda: _tail(head))
-            case WorkKind.SETTLE:
-                cause = self._poll(head)
-                if cause is None:
-                    raise UnsupportedPlan("Slurm settling is being rebuilt")
-                self._submit(kind, run_id, lambda: _settle(head, cause))
-            case WorkKind.SBATCH:
-                raise UnsupportedPlan("Slurm submission is being rebuilt")
+
+    def _cancel(self, head: RunHead) -> None:
+        stage = head.stage
+        if not isinstance(stage, Live):
+            raise UnsupportedPlan("Only a live run can be cancelled")
+        match stage.handle:
+            case LocalHandle() as handle:
+                if self._local is None:
+                    raise UnsupportedPlan("The Local backend is not registered")
+                self._local.cancel(handle)
+                self._log.append(
+                    head.ref.run_id, [CancelDelivered()], expect=Expect(revision=head.revision)
+                )
+            case SlurmHandle() as handle:
+                backend = self._backend()
+                # A queued job has no step to interrupt and nothing to save.
+                interrupt = stage.phase is Phase.RUNNING
+                self._submit(
+                    WorkKind.CANCEL,
+                    head.ref.run_id,
+                    lambda: _scancel(backend, head, handle, interrupt=interrupt),
+                )
+
+    def _escalate(self, head: RunHead) -> bool:
+        """End a Slurm job outright each time a cancel grace passes."""
+        stage = head.stage
+        if not (
+            isinstance(stage, Live)
+            and stage.cancel_delivered
+            and isinstance(stage.handle, SlurmHandle)
+        ):
+            return False
+        handle = stage.handle
+        watch = self._watches.setdefault(head.ref.run_id, _Watch(head.ref.plan_id))
+        now = self._clock()
+        if watch.kill_at is None:
+            watch.kill_at = now + CANCEL_GRACE_SECONDS
+        if now < watch.kill_at:
+            return False
+        backend = self._backend()
+        watch.kill_at = now + CANCEL_GRACE_SECONDS
+        self._submit(WorkKind.CANCEL, head.ref.run_id, lambda: _kill(backend, head, handle))
+        return True
 
     def _submit(
         self, kind: WorkKind, run_id: RunId, work: Callable[[], Done | None]
@@ -222,24 +368,83 @@ class RunController:
             if not handle.done():
                 continue
             del self._inflight[run_id]
+            done = None
             try:
                 done = handle.result()
                 if done is None:
                     continue
                 head = self._log.append(run_id, done.events, expect=done.expect)
             except Stale:
-                continue
+                head = None
             except Exception as error:
                 current = self._log.head(run_id)
                 if current is not None:
                     self._error(current, error)
                 continue
-            if isinstance(head.stage, Ended):
-                self._next_tail.pop(run_id, None)
+            if head is not None and isinstance(head.stage, Ended):
+                self._forget(run_id)
                 if done.release is not None and self._local is not None:
                     self._local.release(done.release)
+            elif done.observation is not None and run_id in self._watches:
+                watch = self._watches[run_id]
+                watch.pending = watch.pending or done.observation
+
+    def _forget(self, run_id: RunId) -> None:
+        self._next_tail.pop(run_id, None)
+        self._retry_at.pop(run_id, None)
+        self._watches.pop(run_id, None)
+
+    def _observe(self, heads: list[RunHead]) -> None:
+        """Start one batched scheduler query for the Slurm runs that are due."""
+        if self._slurm is None or self._observing is not None:
+            return
+        now = self._clock()
+        batch: list[tuple[RunId, SlurmHandle]] = []
+        for head in heads:
+            stage = head.stage
+            if not isinstance(stage, Live) or not isinstance(stage.handle, SlurmHandle):
+                continue
+            watch = self._watches.setdefault(head.ref.run_id, _Watch(head.ref.plan_id))
+            if watch.due <= now and len(batch) < OBSERVE_BATCH:
+                batch.append((head.ref.run_id, stage.handle))
+        if not batch:
+            return
+        backend = self._slurm
+        try:
+            work = self._pool.control_lane.submit(lambda token: backend.observe_many(batch))
+        except BudgetExhausted:
+            self.observation_refusals += 1
+            return
+        self._observing = (tuple(run_id for run_id, _ in batch), work)
+
+    def _harvest_observations(self) -> None:
+        if self._observing is None or not self._observing[1].done():
+            return
+        run_ids, work = self._observing
+        self._observing = None
+        try:
+            results = work.result()
+        except Exception as error:
+            failed = ObservationFailed(f"{type(error).__name__}: {error}"[:512])
+            results = dict.fromkeys(run_ids, failed)
+        now = self._clock()
+        initial, limit = OBSERVE_BACKOFF_SECONDS
+        for run_id in run_ids:
+            watch = self._watches.get(run_id)
+            if watch is None:
+                continue
+            observation = results.get(run_id, ObservationFailed("No observation returned"))
+            watch.pending = observation
+            if isinstance(observation, ObservationFailed):
+                watch.failures = min(watch.failures + 1, 16)
+                watch.error = observation.detail
+                watch.due = now + min(limit, initial * 2 ** (watch.failures - 1))
+            else:
+                watch.failures, watch.error = 0, None
+                watch.due = now + OBSERVE_INTERVAL_SECONDS
 
     def _error(self, head: RunHead, error: BaseException) -> None:
         if head.ref.plan_id not in self.errors and len(self.errors) >= MAX_ERRORS:
             self.errors.pop(next(iter(self.errors)))
         self.errors[head.ref.plan_id] = type(error).__name__
+        self._retry_at[head.ref.run_id] = self._clock() + RETRY_SECONDS

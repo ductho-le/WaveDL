@@ -56,7 +56,9 @@ def environment(tmp_path):
         connection = open_database(settings.state_root / "registry.db", dispatch_lock=lock)
         log, plans = RunLog(connection), PlanStore(connection)
         local = LocalBackend(dispatch_lock=lock, supervisor=supervisor)
-        slurm = SlurmBackend(SlurmSite("debug"), None, owner="tester", dispatch_lock=lock)
+        slurm = SlurmBackend(
+            SlurmSite("debug", cluster="alpha"), None, owner="tester", dispatch_lock=lock
+        )
         service = RunService(settings, plans, log, {"local": local, "slurm": slurm})
         pool = BoundedThreadPool(WorkBudget())
         controller = RunController(log, plans, pool, local=local)
@@ -243,13 +245,14 @@ def test_cv_plan_preserves_supported_options_and_inapplicable_cache(
     assert len(all_plans(plans)) == 1
 
 
-def test_slurm_plans_are_refused_while_slurm_is_rebuilt(environment):
-    body = payload() | {"backend": "slurm"}
-    with pytest.raises(UnsupportedPlan, match="Slurm is being rebuilt"):
-        environment.service.plan(body, "slurm")
+def test_slurm_plans_preview_their_batch_script(environment):
+    body = train_payload(epochs=2, model="cnn", data_path="data.npz") | {"backend": "slurm"}
     response = request(environment.app, "POST", "/api/runs/plan", body=body, key="slurm")
-    assert response.status_code == 400
-    assert all_plans(environment.plans) == []
+    assert response.status_code == 200, response.text
+    preview = response.json()["preview"]
+    assert preview["target"] == "slurm" and preview["argv"] == []
+    assert f"#SBATCH --job-name=wavedl-{response.json()['run_id']}" in preview["script"]
+    assert len(all_plans(environment.plans)) == 1
 
 
 def test_checkpoint_sources_are_refused_while_rebuilt(environment, tmp_path):

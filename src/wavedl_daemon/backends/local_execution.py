@@ -18,7 +18,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from wavedl_daemon.execution.budget import BudgetExhausted
-from wavedl_daemon.runs.model import LocalExit, LocalHandle, NotOwned, Operation, Probed
+from wavedl_daemon.runs.layout import RESULT_OPTIONS
+from wavedl_daemon.runs.model import LocalExit, LocalHandle, NotOwned, Probed
 from wavedl_daemon.storage.ownership import require_dispatch
 from wavedl_daemon.supervision.base import (
     ProcessResult,
@@ -91,15 +92,11 @@ def local_environment(plan: Plan) -> dict[str, str]:
 
 def attempt_argv(plan: Plan, attempt: int) -> tuple[str, ...]:
     """The approved command plus where this attempt's results go."""
+    if plan.operation not in RESULT_OPTIONS:
+        return plan.argv
+    option, name = RESULT_OPTIONS[plan.operation]
     spec = plan.spec
-    match plan.operation:
-        case Operation.TRAIN:
-            extra = ("--metrics_jsonl", spec.execution_path(spec.paths.metrics(attempt)))
-        case Operation.TEST:
-            extra = ("--metrics_json", spec.execution_path(spec.paths.evaluation(attempt)))
-        case Operation.PLOT:
-            extra = ()
-    return (*plan.argv, *extra)
+    return (*plan.argv, option, spec.execution_path(spec.paths.attempt(attempt) / name))
 
 
 def _claim(plan: Plan, attempt: int) -> Path:

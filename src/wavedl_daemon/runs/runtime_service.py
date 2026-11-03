@@ -113,7 +113,11 @@ class ServiceSession:
                 if hasattr(backend, "close"):
                     stack.callback(backend.close)
             self.controller = RunController(
-                self.log, plans, self.pool, local=self.backends.get("local")
+                self.log,
+                plans,
+                self.pool,
+                local=self.backends.get("local"),
+                slurm=self.backends.get("slurm"),
             )
             self.runs = RunService(self.settings, plans, self.log, self.backends)
             self.catalog = CatalogService(
@@ -267,9 +271,14 @@ class HostedServices(DaemonServices):
                     for source, failure in sorted(session.errors.items())
                 ],
                 "filesystem_work_outstanding": session.pool.outstanding,
-                # Slurm restart watching is being rebuilt; nothing watches yet.
-                "restart_watch_refusals": 0,
-                "restart_monitoring_errors": [],
+                # Requeues are found by the same Slurm observation as status.
+                "restart_watch_refusals": session.controller.observation_refusals,
+                "restart_monitoring_errors": [
+                    {"plan_id": key, "error": value}
+                    for key, value in sorted(
+                        session.controller.observation_errors.items()
+                    )
+                ],
                 "dispatch_errors": [
                     {"plan_id": key, "error": value}
                     for key, value in sorted(session.controller.errors.items())

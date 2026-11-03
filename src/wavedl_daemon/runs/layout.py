@@ -13,9 +13,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from wavedl_daemon.runs.model import Operation
+
 
 METRICS_FILE = "metrics.jsonl"
+EVALUATION_FILE = "evaluation.json"
 EXIT_RECORD_FILE = "exit"
+
+# The trainer option through which an operation writes its attempt's results.
+RESULT_OPTIONS = {
+    Operation.TRAIN: ("--metrics_jsonl", METRICS_FILE),
+    Operation.TEST: ("--metrics_json", EVALUATION_FILE),
+}
 
 
 @dataclass(frozen=True)
@@ -44,7 +53,7 @@ class RunPaths:
         return self.attempt(number) / EXIT_RECORD_FILE
 
     def evaluation(self, number: int) -> Path:
-        return self.attempt(number) / "evaluation.json"
+        return self.attempt(number) / EVALUATION_FILE
 
     def output_log(self, number: int) -> Path:
         return self.attempt(number) / "output.log"

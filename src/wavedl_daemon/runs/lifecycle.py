@@ -439,6 +439,9 @@ def _ending(
             return (ending, opened, Observed(cause.phase, cause.native_state, cause.reason))
         case SlurmObservation():
             outcome, confirmed = slurm_outcome(cause.native_state, record)
+            if outcome is Outcome.FAILED and head.cancel_requested:
+                # SIGINT ends the batch script nonzero, which Slurm calls FAILED.
+                outcome = Outcome.CANCELLED
             return (
                 Exited(
                     outcome,

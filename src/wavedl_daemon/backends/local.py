@@ -97,6 +97,90 @@ _DEFAULT_ONLY = {
 }
 
 
+def launch_argv(spec: RunSpec, topology: Topology) -> list[str]:
+    """The trainer command for ``spec``, with execution-side paths."""
+    values = (
+        _TRAIN_VALUES if spec.operation == Operation.TRAIN else _TEST_VALUES
+    )
+    flags = (
+        _TRAIN_FLAGS if spec.operation == Operation.TRAIN else _TEST_FLAGS
+    )
+    config = spec.resolved_config
+    if "import_modules" in config:
+        try:
+            validate_import_modules(config["import_modules"])
+        except ValueError as error:
+            raise UnsupportedPlan(str(error)) from error
+    if spec.operation in {Operation.TEST, Operation.PLOT} and any(
+        not config.get(name) for name in ("checkpoint", "data_path")
+    ):
+        raise UnsupportedPlan("Test and plot require checkpoint and data_path")
+    runtime = spec.runtime
+    argv = [runtime.python, "-u", "-m"]
+    if spec.operation == Operation.TRAIN:
+        # Explicit topology prevents launcher hardware auto-detection from
+        # silently multiplying the request. --num_gpus is accelerate's total
+        # process count across machines.
+        argv += [
+            "wavedl.launcher",
+            "--num_machines",
+            str(topology.num_machines),
+            "--machine_rank",
+            str(topology.machine_rank),
+            "--num_gpus",
+            str(topology.num_machines * topology.processes_per_machine),
+        ]
+        if runtime.device == "cpu":
+            argv.append("--cpu")
+        if config.get("precision") is not None:
+            argv += ["--mixed_precision", str(config["precision"])]
+    else:
+        argv += ["wavedl.test"]
+    for name, value in sorted(config.items()):
+        if name in {"output_dir", "config"} or value is None:
+            continue
+        default_only = _DEFAULT_ONLY.get(spec.operation, {})
+        if name in default_only:
+            if value != default_only[name] or type(value) is not type(
+                default_only[name]
+            ):
+                raise UnsupportedPlan(f"Unsupported resolved option: {name}")
+            continue
+        if name in flags:
+            if type(value) is not bool:
+                raise UnsupportedPlan(f"{name} must be boolean")
+            if value:
+                argv.append(f"--{name}")
+        elif name in values:
+            multiple = (
+                {"constraint", "constraint_weight", "import_modules"}
+                if spec.operation == Operation.TRAIN
+                else {"param_names", "plot_format", "import_modules"}
+            )
+            if isinstance(value, list) and name not in multiple:
+                raise UnsupportedPlan(f"Option does not accept a list: {name}")
+            if value == [] and name in {"constraint", "import_modules"}:
+                continue
+            items = value if isinstance(value, list) else [value]
+            if not items or not all(
+                type(item) in {str, int, float} for item in items
+            ):
+                raise UnsupportedPlan(f"Cannot render resolved option: {name}")
+            if any(
+                isinstance(item, str) and ("\0" in item or item.startswith("--"))
+                for item in items
+            ):
+                raise UnsupportedPlan(f"Unsafe option value: {name}")
+            option = "import" if name == "import_modules" else name
+            argv += [f"--{option}", *(str(item) for item in items)]
+        else:
+            raise UnsupportedPlan(f"Unsupported resolved option: {name}")
+    if spec.operation == Operation.PLOT and "--plot" not in argv:
+        argv.append("--plot")
+    argv += ["--output_dir", spec.execution_path(spec.paths.output)]
+    return argv
+
+
 class LocalBackend(LocalExecution):
     """Plan without side effects; submit only under live dispatch ownership."""
 
@@ -165,87 +249,10 @@ class LocalBackend(LocalExecution):
                 raise UnsupportedPlan(
                     "CUDA Local training requires explicit distinct visible CUDA devices"
                 )
-        values = (
-            _TRAIN_VALUES if spec.operation == Operation.TRAIN else _TEST_VALUES
-        )
-        flags = (
-            _TRAIN_FLAGS if spec.operation == Operation.TRAIN else _TEST_FLAGS
-        )
-        config = spec.resolved_config
-        if "import_modules" in config:
-            try:
-                validate_import_modules(config["import_modules"])
-            except ValueError as error:
-                raise UnsupportedPlan(str(error)) from error
-        if spec.operation in {Operation.TEST, Operation.PLOT} and any(
-            not config.get(name) for name in ("checkpoint", "data_path")
-        ):
-            raise UnsupportedPlan("Test and plot require checkpoint and data_path")
-        argv = [runtime.python, "-u", "-m"]
-        if spec.operation == Operation.TRAIN:
-            # Explicit topology prevents launcher hardware auto-detection from
-            # silently multiplying this single-machine request.
-            argv += [
-                "wavedl.launcher",
-                "--num_machines",
-                "1",
-                "--machine_rank",
-                "0",
-                "--num_gpus",
-                str(topology.processes_per_machine),
-            ]
-            if runtime.device == "cpu":
-                argv.append("--cpu")
-            if config.get("precision") is not None:
-                argv += ["--mixed_precision", str(config["precision"])]
-        else:
-            argv += ["wavedl.test"]
-        for name, value in sorted(config.items()):
-            if name in {"output_dir", "config"} or value is None:
-                continue
-            default_only = _DEFAULT_ONLY.get(spec.operation, {})
-            if name in default_only:
-                if value != default_only[name] or type(value) is not type(
-                    default_only[name]
-                ):
-                    raise UnsupportedPlan(f"Unsupported resolved option: {name}")
-                continue
-            if name in flags:
-                if type(value) is not bool:
-                    raise UnsupportedPlan(f"{name} must be boolean")
-                if value:
-                    argv.append(f"--{name}")
-            elif name in values:
-                multiple = (
-                    {"constraint", "constraint_weight", "import_modules"}
-                    if spec.operation == Operation.TRAIN
-                    else {"param_names", "plot_format", "import_modules"}
-                )
-                if isinstance(value, list) and name not in multiple:
-                    raise UnsupportedPlan(f"Option does not accept a list: {name}")
-                if value == [] and name in {"constraint", "import_modules"}:
-                    continue
-                items = value if isinstance(value, list) else [value]
-                if not items or not all(
-                    type(item) in {str, int, float} for item in items
-                ):
-                    raise UnsupportedPlan(f"Cannot render resolved option: {name}")
-                if any(
-                    isinstance(item, str) and ("\0" in item or item.startswith("--"))
-                    for item in items
-                ):
-                    raise UnsupportedPlan(f"Unsafe option value: {name}")
-                option = "import" if name == "import_modules" else name
-                argv += [f"--{option}", *(str(item) for item in items)]
-            else:
-                raise UnsupportedPlan(f"Unsupported resolved option: {name}")
-        if spec.operation == Operation.PLOT and "--plot" not in argv:
-            argv.append("--plot")
-        argv += ["--output_dir", spec.execution_path(spec.paths.output)]
         return Plan(
             target=self.name,
             spec=spec,
-            argv=tuple(argv),
+            argv=tuple(launch_argv(spec, topology)),
             topology=topology,
             environment=tuple(sorted(runtime.environment.items())),
             warnings=(
