@@ -168,6 +168,7 @@
   "theCredentialIsTooLong": "Khóa truy cập quá dài.",
   "enterAValidBearerCredential": "Khóa truy cập này có vẻ không hợp lệ.",
   "nulNotAllowed": "Không cho phép ký tự NUL.",
+  "leadingDashNotAllowed": "Mục danh sách không được bắt đầu bằng \"-\".",
   "enterCommaSeparatedFiniteNumbers": "Nhập các số hữu hạn, phân cách bằng dấu phẩy.",
   "enterTwoBetaValuesIn01": "Nhập hai giá trị beta trong khoảng [0, 1).",
   "enterCommaSeparatedEpochs": "Nhập các epoch, phân cách bằng dấu phẩy.",

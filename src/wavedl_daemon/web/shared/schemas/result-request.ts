@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { trainingRequestSchema } from './training-request';
+import { listItemText, trainingRequestSchema } from './training-request';
 import { checkpointSourceSchema } from './artifacts';
 const text = z
   .string()
@@ -9,13 +9,11 @@ const text = z
 export const inferenceConfigSchema = z.strictObject({
   data_path: text,
   model: text.nullable(),
-  import_modules: trainingRequestSchema.shape.config.shape.import_modules
-    .refine((modules) => modules.every((module) => !module.startsWith('-')))
-    .default([]),
+  import_modules: trainingRequestSchema.shape.config.shape.import_modules.default([]),
   format: z.enum(['auto', 'npz', 'mat', 'hdf5']),
   input_key: text.nullable(),
   output_key: text.nullable(),
-  param_names: z.array(text).min(1).max(256).nullable(),
+  param_names: z.array(listItemText).min(1).max(256).nullable(),
   input_channels: z.number().int().positive().nullable(),
   batch_size: z.number().int().positive(),
   workers: z.number().int().min(0),

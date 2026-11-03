@@ -10,6 +10,12 @@ const text = z
   .max(8192)
   .refine((value) => !value.includes('\0'), { params: { clientMessageKey: 'nulNotAllowed' } });
 const nullableText = text.nullable();
+/** Upstream's argparse would read a leading-dash list item as a flag. */
+export const listItemText = text
+  .min(1)
+  .refine((value) => !value.startsWith('-'), {
+    params: { clientMessageKey: 'leadingDashNotAllowed' },
+  });
 const csvNumbers = text.refine(
   (value) => value.split(',').every((part) => part.trim() !== '' && Number.isFinite(Number(part))),
   { params: { clientMessageKey: 'enterCommaSeparatedFiniteNumbers' } },
@@ -17,7 +23,7 @@ const csvNumbers = text.refine(
 /** Field types for editable drafts and preferences, before submission compatibility. */
 export const trainingConfigBaseSchema = z.strictObject({
   model: text.min(1),
-  import_modules: z.array(text.min(1)).max(128),
+  import_modules: z.array(listItemText).max(128),
   pretrained: z.boolean(),
   batch_size: integer.min(1),
   lr: finite.positive(),
@@ -72,7 +78,7 @@ export const trainingConfigBaseSchema = z.strictObject({
   fresh: z.boolean(),
   compile: z.boolean(),
   precision: z.enum(['bf16', 'fp16', 'no']),
-  constraint: z.array(text.min(1)).max(128),
+  constraint: z.array(listItemText).max(128),
   constraint_file: nullableText,
   constraint_weight: z.array(finite).min(1).max(128),
   constraint_reduction: z.enum(['mse', 'mae']),

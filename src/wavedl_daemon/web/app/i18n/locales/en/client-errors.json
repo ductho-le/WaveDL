@@ -168,6 +168,7 @@
   "theCredentialIsTooLong": "That access key is too long.",
   "enterAValidBearerCredential": "That doesn't look like a valid access key.",
   "nulNotAllowed": "NUL is not allowed.",
+  "leadingDashNotAllowed": "List entries cannot start with \"-\".",
   "enterCommaSeparatedFiniteNumbers": "Enter comma-separated finite numbers.",
   "enterTwoBetaValuesIn01": "Enter two beta values in [0, 1).",
   "enterCommaSeparatedEpochs": "Enter comma-separated epochs.",

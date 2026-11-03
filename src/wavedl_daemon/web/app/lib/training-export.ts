@@ -59,9 +59,12 @@ export function trainingCommand(draft: TrainingRequest): string {
 
     if (value === true) argv.push(flag);
     else if (Array.isArray(value)) {
-      if (value.some((item) => !Number.isFinite(item) && String(item).startsWith('-')))
+      const items = value.map(String);
+
+      // argparse reads "-1e-7" as a flag; only a plain negative decimal is a value.
+      if (items.some((item) => item.startsWith('-') && !/^-\d*\.?\d+$/.test(item)))
         throw clientError('exportOptionPrefix', {});
-      argv.push(flag, ...value.map(String));
+      argv.push(flag, ...items);
     } else argv.push(`${flag}=${value}`);
   }
 

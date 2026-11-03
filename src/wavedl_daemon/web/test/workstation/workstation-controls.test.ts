@@ -10,6 +10,8 @@ import { planManifestSchema, planPreviewContextSchema } from '../../shared/schem
 import { customIssueParamsSchema } from '../../shared/schemas/client-diagnostic';
 import { configureValidationLocale, translateClientDiagnostic } from '../../app/i18n/client-messages';
 import { trainingConfigBaseSchema, trainingDefaults, trainingFieldMetadata } from '../../shared/schemas/training-request';
+import { inferenceConfigSchema } from '../../shared/schemas/result-request';
+import { trainingCommand } from '../../app/lib/training-export';
 import { loadShellDockSlots } from '../../app/lib/preferences';
 import { trainingChoiceLabel, trainingPresetMessageKeysFor } from '../../app/i18n/dynamic-keys';
 
@@ -108,5 +110,38 @@ describe('workstation control boundaries', () => {
     expect(result.success).toBe(false);
 
     if (!result.success) expect(result.error.issues[0]?.message).not.toBe('Invalid input');
+  });
+
+  it('refuses only list entries that upstream would read as a flag', () => {
+    const config = trainingConfigBaseSchema.shape;
+    const listed = config.constraint.safeParse(['y0 - y1', '-y0']);
+
+    expect(listed.success).toBe(false);
+
+    if (!listed.success)
+      expect(listed.error.issues[0]?.message).toBe('List entries cannot start with "-".');
+    expect(config.import_modules.safeParse(['-m']).success).toBe(false);
+    expect(inferenceConfigSchema.shape.param_names.safeParse(['-a']).success).toBe(false);
+    expect(inferenceConfigSchema.shape.import_modules.safeParse(['-m']).success).toBe(false);
+    expect(config.run_name.parse('-x')).toBe('-x');
+    expect(config.grad_clip.parse(-1e-7)).toBe(-1e-7);
+    expect(inferenceConfigSchema.shape.input_key.parse('-X')).toBe('-X');
+  });
+
+  it('exports negative list numbers only in a form argparse reads as values', () => {
+    const request = (constraint_weight: number[]) =>
+      trainingCommand({
+        backend: 'local',
+        operation: 'train',
+        config: { ...trainingDefaults, grad_clip: -1e-7, constraint_weight },
+        runtime: { python: '/usr/bin/python3', mode: 'existing', device: 'cpu', environment: {} },
+        topology: { num_machines: 1, processes_per_machine: 1, machine_rank: 0 },
+      });
+
+    expect(request([-0.5, -2])).toContain("'--constraint_weight' '-0.5' '-2'");
+    expect(request([-0.5])).toContain("'--grad_clip=-1e-7'");
+    expect(() => request([-1e-7])).toThrow(
+      'Standalone CLI list entries cannot start with an option prefix; use the YAML export.',
+    );
   });
 });
