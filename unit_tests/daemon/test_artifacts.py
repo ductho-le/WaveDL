@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import os
 import threading
 from uuid import uuid4
@@ -12,6 +13,8 @@ from wavedl_daemon.execution.pool import BoundedThreadPool
 from wavedl_daemon.http import artifacts as http_artifacts
 from wavedl_daemon.http.artifacts import _DownloadOwner, artifact_routes
 from wavedl_daemon.runs.artifacts import (
+    CHUNK_BYTES,
+    OpenedArtifact,
     UnsafeArtifactPath,
     artifact_path,
     list_output,
@@ -89,21 +92,88 @@ def test_symlinks_cannot_reach_outside_output(paths):
         open_output(paths.output, "interrupted_checkpoint/secret")
 
 
-def test_a_download_streams_the_size_seen_at_open(paths):
+def test_a_download_aborts_when_the_file_changes_after_open(paths):
     target = paths.output / "training_history.csv"
     artifact = open_output(paths.output, "training_history.csv")
     with target.open("ab") as stream:
         stream.write(b"2,0.4\n")
-    assert artifact.read() == b"epoch,loss\n1,0.5\n"
-    assert artifact.read() == b""
+    with pytest.raises(ValueError, match="changed"):
+        artifact.read()
     artifact.close()
 
     artifact = open_output(paths.output, "best_checkpoint/model.safetensors")
     os.truncate(paths.output / "best_checkpoint" / "model.safetensors", 10)
-    assert artifact.read() == b"weightswei"
-    with pytest.raises(ValueError, match="truncated"):
+    with pytest.raises(ValueError, match="changed"):
         artifact.read()
     artifact.close()
+
+
+def test_a_rewrite_in_place_between_chunks_is_never_delivered(paths):
+    target = paths.output / "rewritten.bin"
+    target.write_bytes(b"A" * CHUNK_BYTES * 2)
+    artifact = open_output(paths.output, "rewritten.bin")
+    assert artifact.read() == b"A" * CHUNK_BYTES
+    with target.open("wb") as stream:
+        stream.write(b"B" * CHUNK_BYTES * 2)
+    with pytest.raises(ValueError, match="changed"):
+        artifact.read()
+    artifact.close()
+
+
+def test_an_undecodable_name_is_left_out_of_the_listing(paths, monkeypatch):
+    scandir = os.scandir
+    real = paths.output / "training_history.csv"
+
+    class Undecodable:
+        name = "bad\udcff.txt"  # how POSIX decodes the byte name b"bad\xff.txt"
+        path = str(real)
+
+        def is_dir(self, follow_symlinks):
+            return False
+
+        def is_file(self, follow_symlinks):
+            return True
+
+        def stat(self, follow_symlinks):
+            return real.stat()
+
+    @contextlib.contextmanager
+    def with_undecodable(directory):
+        with scandir(directory) as entries:
+            extra = [Undecodable()] if directory == str(paths.output) else []
+            yield [*entries, *extra]
+
+    monkeypatch.setattr(os, "scandir", with_undecodable)
+
+    async def check():
+        with BoundedThreadPool(WorkBudget()) as pool:
+            async with client(app_for(paths, pool)) as http:
+                return await http.get(f"/api/runs/{RUN}/artifacts")
+
+    listing = asyncio.run(check())
+    assert listing.status_code == 200
+    assert "training_history.csv" in [item["path"] for item in listing.json()["files"]]
+    assert len(listing.json()["files"]) == 4
+
+
+def test_head_answers_the_download_headers_without_reading(paths, monkeypatch):
+    reads = []
+    monkeypatch.setattr(OpenedArtifact, "read", lambda self: reads.append(self) or b"")
+
+    async def check():
+        with BoundedThreadPool(WorkBudget()) as pool:
+            async with client(app_for(paths, pool)) as http:
+                return await http.head(
+                    f"/api/runs/{RUN}/artifacts/best_checkpoint/model.safetensors"
+                )
+
+    response = asyncio.run(check())
+    assert response.status_code == 200
+    assert response.headers["content-length"] == "140000"
+    assert response.headers["content-type"] == "application/octet-stream"
+    assert response.headers["content-disposition"].startswith("attachment;")
+    assert response.content == b""
+    assert reads == []
 
 
 def test_listing_and_download_over_http_run_off_the_loop(paths, monkeypatch):

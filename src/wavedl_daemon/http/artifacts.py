@@ -9,7 +9,7 @@ from dataclasses import asdict
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.routing import APIRoute
 from starlette.exceptions import HTTPException
 from starlette.responses import Response, StreamingResponse
@@ -114,7 +114,7 @@ def artifact_routes(
             "checkpoints": list(inventory.checkpoints),
         }
 
-    async def download(run_id: str, path: str):
+    async def download(run_id: str, path: str, request: Request):
         owner = _DownloadOwner()
 
         def open_artifact(root):
@@ -140,6 +140,19 @@ def artifact_routes(
             owner.close()
             raise
 
+        filename = re.sub(r"[^A-Za-z0-9._-]", "_", artifact.filename)[:160]
+        filename = filename.strip(".") or "artifact"
+        headers = {
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(artifact.size),
+            "Content-Security-Policy": "sandbox; default-src 'none'",
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+        }
+        if request.method == "HEAD":
+            owner.close()
+            return Response(media_type="application/octet-stream", headers=headers)
+
         async def chunks():
             try:
                 while chunk := await pool.submit(
@@ -149,21 +162,12 @@ def artifact_routes(
             finally:
                 owner.close()
 
-        filename = re.sub(r"[^A-Za-z0-9._-]", "_", artifact.filename)[:160]
-        filename = filename.strip(".") or "artifact"
-        response = _OwnedStreamingResponse(
+        return _OwnedStreamingResponse(
             chunks(),
             owner=owner,
             media_type="application/octet-stream",
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "Content-Length": str(artifact.size),
-                "Content-Security-Policy": "sandbox; default-src 'none'",
-                "X-Content-Type-Options": "nosniff",
-                "Cache-Control": "no-store",
-            },
+            headers=headers,
         )
-        return response
 
     router = APIRouter()
     errors = API_ERRORS | {403: {"model": ErrorResponse}}

@@ -3,7 +3,7 @@
 
 ``output/`` is upstream's ``--output_dir``. While a run is live the trainer
 rewrites files there in place, so a listing is a snapshot and a download
-streams the size it saw at open, aborting if the file shrinks meanwhile.
+streams the size it saw at open, aborting if the file changes meanwhile.
 """
 
 from __future__ import annotations
@@ -37,6 +37,10 @@ class ArtifactNotFound(FileNotFoundError):
 
 
 def _segment(value: str) -> bool:
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False  # undecodable filesystem bytes, which JSON cannot carry
     # The browser also refuses "%", so every listed name downloads.
     return paths.is_segment(value) and "%" not in value
 
@@ -103,16 +107,20 @@ def list_output(output: Path) -> Inventory:
 class OpenedArtifact:
     """One open file and the byte count the download promised."""
 
-    def __init__(self, stream: BinaryIO, size: int, filename: str):
-        self.stream, self.size, self.filename = stream, size, filename
-        self._remaining = size
+    def __init__(self, stream: BinaryIO, filename: str):
+        self.stream, self.filename = stream, filename
+        self._identity = paths.file_identity(os.fstat(stream.fileno()))
+        self.size = self._remaining = self._identity["st_size"]
 
     def read(self) -> bytes:
         if not self._remaining:
             return b""
         chunk = self.stream.read(min(CHUNK_BYTES, self._remaining))
-        if not chunk:
-            raise ValueError("Artifact was truncated during download")
+        # A rewrite in place can keep the size, so only the identity reveals it.
+        if not chunk or self._identity != paths.file_identity(
+            os.fstat(self.stream.fileno())
+        ):
+            raise ValueError("Artifact changed during download")
         self._remaining -= len(chunk)
         return chunk
 
@@ -128,4 +136,4 @@ def open_output(output: Path, name: str) -> OpenedArtifact:
         raise UnsafeArtifactPath("Invalid artifact path") from None
     except (FileNotFoundError, NotADirectoryError, ValueError):
         raise ArtifactNotFound("No such artifact") from None
-    return OpenedArtifact(stream, os.fstat(stream.fileno()).st_size, parts[-1])
+    return OpenedArtifact(stream, parts[-1])
