@@ -36,7 +36,6 @@ class FakeServices:
         self.catalog = Mock()
         self.event_log = Mock()
         self.broker = EventBroker()
-        self.artifacts = Mock()
         self.pool = Mock()
 
     async def resolve_plan(self, run_id):

@@ -39,10 +39,10 @@ class StorageMappingRequest(WireModel):
 
 
 class CheckpointSourceRequest(WireModel):
-    """A source training run's checkpoint; refused until it is rebuilt."""
+    """A checkpoint directory in an ended training run's ``output/``."""
 
     run_id: str
-    generation: str
+    checkpoint: str
 
 
 class PlanRequest(WireModel):

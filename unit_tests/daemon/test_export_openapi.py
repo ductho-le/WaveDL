@@ -38,7 +38,7 @@ def test_openapi_documents_run_lifecycle():
         "/api/datasets/preview",
         "/api/host",
         "/api/runs/{run_id}/artifacts",
-        "/api/runs/{run_id}/artifacts/{generation}/{path}",
+        "/api/runs/{run_id}/artifacts/{path}",
         "/api/runs/{run_id}/events",
         "/api/runs/plan",
         "/api/runs",
@@ -151,7 +151,7 @@ def test_openapi_documents_daemon_errors_not_fastapi_422():
         ("get", "/api/runs/{run_id}/artifacts"): "list_artifacts",
         (
             "get",
-            "/api/runs/{run_id}/artifacts/{generation}/{path}",
+            "/api/runs/{run_id}/artifacts/{path}",
         ): "download_artifact",
         ("get", "/api/runs/{run_id}/events"): "stream_events",
         ("post", "/api/runs/plan"): "plan_run",

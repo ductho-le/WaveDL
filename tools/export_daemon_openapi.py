@@ -37,7 +37,6 @@ class _InertServices(_InertRunService):
         self.catalog = _InertRunService()
         self.event_log = _InertRunService()
         self.broker = _InertRunService()
-        self.artifacts = _InertRunService()
         self.pool = _InertRunService()
 
 

@@ -1,5 +1,5 @@
 # Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Published inventory metadata; download bytes have no response model."""
+"""A run's ``output/`` listing; download bytes have no response model."""
 
 from __future__ import annotations
 
@@ -7,16 +7,11 @@ from wavedl_daemon.http.schemas.common import WireModel
 
 
 class ArtifactFile(WireModel):
+    path: str
     size: int
-    sha256: str
-
-
-class ArtifactGeneration(WireModel):
-    generation: str
-    attempt: int
-    step: int
-    files: dict[str, ArtifactFile]
+    modified: str
 
 
 class ArtifactListing(WireModel):
-    generations: list[ArtifactGeneration]
+    files: list[ArtifactFile]
+    checkpoints: list[str]

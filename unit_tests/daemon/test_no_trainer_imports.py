@@ -26,13 +26,7 @@ ALLOWED: dict[str, set[str]] = {
         "wavedl.core.safe_files",
     },
     "credentials.py": {"wavedl.core.safe_files"},
-    "execution/service_host.py": {"wavedl.core.layout"},
     "http/static.py": {"wavedl.core.safe_files"},
-    "runs/artifacts.py": {
-        "wavedl.core.generations",
-        "wavedl.core.layout",
-        "wavedl.core.safe_files",
-    },
     "runs/catalog.py": {"wavedl.core.safe_files"},
     "runs/dataset_headers.py": {"wavedl.core.safe_files"},
     "runs/dataset_preview.py": {
@@ -43,7 +37,6 @@ ALLOWED: dict[str, set[str]] = {
     "runs/runtime_service.py": {"wavedl.core.safe_files"},
     "runs/service.py": {
         "wavedl.core.inference_cli",
-        "wavedl.core.layout",
         "wavedl.core.training_cli",
     },
     "serve_state.py": {

@@ -1,5 +1,4 @@
 import asyncio
-from types import SimpleNamespace
 
 import pytest
 
@@ -22,20 +21,6 @@ from unit_tests.daemon.test_event_stream_live_boundaries import (
 from wavedl_daemon.events.broker import EventBroker
 
 
-class LogAuthority:
-    """The boundary tool's view of committed rows, read from the run log."""
-
-    def __init__(self, log):
-        self.log = log
-
-    def get(self, run_id):
-        rows = self.log.read_after(run_id, (0, -1), limit=100000)
-        return SimpleNamespace(event_count=len(rows)) if rows else None
-
-    def cursor(self, run_id, attempt):
-        rows = self.log.read_after(run_id, (attempt, -1), limit=100000)
-        return max((row.seq for row in rows if row.attempt == attempt), default=-1)
-
 def test_query_cursor_requires_exact_numeric_pair():
     assert query_cursor(b"attempt=2&seq=7") == {"attempt": 2, "seq": 7}
     assert query_cursor(b"seq=-1&attempt=0") == {"attempt": 0, "seq": -1}
@@ -55,14 +40,14 @@ def test_verifier_rejects_claim_of_local_cursor_or_uncommitted_event():
         "localCursor": None,
         "forwardedControls": [],
         "forwardedEventIds": [[1, 3]],
-        "registry": {"eventCount": 4, "cursors": {"1": 3}},
+        "runLog": {"eventCount": 4, "cursors": {"1": 3}},
     }
     assert verify_boundary_record(base) == {"scope": "asgi-only", "forwardedEvents": 1}
     claimed = {**base, "localCursor": [1, 3]}
     with pytest.raises(ValueError, match="ASGI-only"):
         verify_boundary_record(claimed)
-    uncommitted = {**base, "registry": {"eventCount": 3, "cursors": {"1": 2}}}
-    with pytest.raises(ValueError, match="authority"):
+    uncommitted = {**base, "runLog": {"eventCount": 3, "cursors": {"1": 2}}}
+    with pytest.raises(ValueError, match="run log"):
         verify_boundary_record(uncommitted)
 
 
@@ -87,7 +72,7 @@ def test_real_authenticated_handler_snapshot_and_subsequent_request_cursor(tmp_p
 
                 await real_app(scope, receive, fragment_send)
 
-            boundary = StreamBoundary(fragmented, LogAuthority(log))
+            boundary = StreamBoundary(fragmented, log)
             pending = bytearray()
 
             def disconnect_after_head(payload, disconnected):
@@ -112,12 +97,12 @@ def test_real_authenticated_handler_snapshot_and_subsequent_request_cursor(tmp_p
                 {"attempt": 1, "seq": 2},
             ]
             assert boundary.records[0]["forwardedEventIds"] == [[1, 0], [1, 1], [1, 2]]
-            assert boundary.records[0]["registry"] == {
+            assert boundary.records[0]["runLog"] == {
                 "eventCount": 3,
                 "cursors": {"0": -1, "1": 2},
             }
             assert boundary.records[1]["forwardedEventIds"] == [[1, 3]]
-            assert boundary.records[1]["registry"] == {
+            assert boundary.records[1]["runLog"] == {
                 "eventCount": 4,
                 "cursors": {"1": 3},
             }

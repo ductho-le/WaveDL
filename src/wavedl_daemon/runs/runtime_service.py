@@ -20,7 +20,6 @@ from wavedl_daemon.execution.budget import BudgetExhausted, WorkBudget
 from wavedl_daemon.execution.pool import BoundedThreadPool
 from wavedl_daemon.execution.service_host import AsyncRunService, ServiceHost
 from wavedl_daemon.http.services import DaemonServices
-from wavedl_daemon.runs.artifacts import ArtifactStore
 from wavedl_daemon.runs.catalog import AsyncCatalogService, CatalogService
 from wavedl_daemon.runs.controller import RunController
 from wavedl_daemon.runs.host_profile import HostProfiler
@@ -190,10 +189,6 @@ class _AsyncEventLog:
         )
 
 
-def _unresolved_layout(run_id):
-    raise RuntimeError("Artifacts require owner-resolved layout")
-
-
 class HostedServices(DaemonServices):
     """One inert shared facade, started/closed by the app lifespan."""
 
@@ -222,7 +217,6 @@ class HostedServices(DaemonServices):
         self.run_service = AsyncRunService(self.host)
         self.catalog = AsyncCatalogService(self.host)
         self.event_log = _AsyncEventLog(self.host)
-        self.artifacts = ArtifactStore(_unresolved_layout)
         self._start_task = None
         self._close_task = None
 

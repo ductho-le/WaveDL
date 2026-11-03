@@ -310,13 +310,7 @@ def create_app(
                 resolve_plan=services.resolve_plan,
             )
         )
-        routes.extend(
-            artifact_routes(
-                services.artifacts,
-                services.pool,
-                resolve_layout=services.run_service.layout,
-            )
-        )
+        routes.extend(artifact_routes(services.pool, services.run_service.layout))
 
     from wavedl_daemon.http.static import static_routes
 

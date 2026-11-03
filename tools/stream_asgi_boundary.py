@@ -41,16 +41,25 @@ def query_cursor(raw: bytes):
         return None
 
 
+def committed(log, run_id):
+    """Every committed ``(attempt, seq)`` of a run, read page by page."""
+    positions, cursor = [], (0, -1)
+    while page := log.read_after(run_id, cursor):
+        positions.extend((event.attempt, event.seq) for event in page)
+        cursor = positions[-1]
+    return positions
+
+
 class StreamBoundary:
-    """Observe forwarded bytes and independently query the real registry.
+    """Observe forwarded bytes and independently query the real run log.
 
     The wrapper never modifies a request, response or broker. A disconnected
     request is recorded too, with handlerReturned=False if cancellation escapes.
     Evidence budgets fail closed instead of silently truncating a success claim.
     """
 
-    def __init__(self, app, registry, *, max_requests=64, max_frames=4096):
-        self.app, self.registry = app, registry
+    def __init__(self, app, log, *, max_requests=64, max_frames=4096):
+        self.app, self.log = app, log
         self.max_requests, self.max_frames = max_requests, max_frames
         self.records = []
 
@@ -72,7 +81,7 @@ class StreamBoundary:
             "handlerReturned": False,
             "browserObserved": False,
             "localCursor": None,
-            "registry": None,
+            "runLog": None,
         }
         self.records.append(record)
         pending = b""
@@ -127,18 +136,21 @@ class StreamBoundary:
             attempts = {identity[0] for identity in record["forwardedEventIds"]}
             if record["queryCursor"] is not None:
                 attempts.add(record["queryCursor"]["attempt"])
-            view = self.registry.get(run_id)
-            record["registry"] = {
-                "eventCount": view.event_count if view is not None else 0,
+            positions = committed(self.log, run_id)
+            record["runLog"] = {
+                "eventCount": len(positions),
                 "cursors": {
-                    str(attempt): self.registry.cursor(run_id, attempt)
+                    str(attempt): max(
+                        (seq for number, seq in positions if number == attempt),
+                        default=-1,
+                    )
                     for attempt in sorted(attempts)
                 },
             }
 
 
 def verify_boundary_record(record):
-    """Fail closed on mislabeled evidence and IDs beyond registry authority.
+    """Fail closed on mislabeled evidence and IDs beyond the run log.
 
     This verifies ONLY boundary evidence, not browser rendering, deduplication,
     reconnect behavior, or the client's unobservable local cursor.
@@ -151,9 +163,9 @@ def verify_boundary_record(record):
         or record.get("status") != 200
     ):
         raise ValueError("Not completed ASGI-only stream evidence")
-    registry = record.get("registry")
-    if not isinstance(registry, dict) or type(registry.get("eventCount")) is not int:
-        raise ValueError("Registry evidence missing")
+    log = record.get("runLog")
+    if not isinstance(log, dict) or type(log.get("eventCount")) is not int:
+        raise ValueError("Run log evidence missing")
     identities = record.get("forwardedEventIds")
     if not isinstance(identities, list):
         raise ValueError("Event identity evidence missing")
@@ -166,7 +178,7 @@ def verify_boundary_record(record):
             or any(value > 2**63 - 1 for value in identity)
         ):
             raise ValueError("Invalid boundary event identity")
-        committed = registry.get("cursors", {}).get(str(identity[0]))
-        if type(committed) is not int or committed < identity[1]:
-            raise ValueError("Forwarded identity exceeds registry authority")
+        last = log.get("cursors", {}).get(str(identity[0]))
+        if type(last) is not int or last < identity[1]:
+            raise ValueError("Forwarded identity exceeds the run log")
     return {"scope": "asgi-only", "forwardedEvents": len(identities)}

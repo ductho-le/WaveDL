@@ -10,7 +10,6 @@ if TYPE_CHECKING:
     from wavedl_daemon.events.broker import EventBroker
     from wavedl_daemon.execution.pool import BoundedThreadPool
     from wavedl_daemon.execution.service_host import AsyncRunService
-    from wavedl_daemon.runs.artifacts import ArtifactStore
     from wavedl_daemon.runs.catalog import AsyncCatalogService
     from wavedl_daemon.runs.runtime_service import _AsyncEventLog
 
@@ -23,7 +22,6 @@ class DaemonServices(Protocol):
     catalog: AsyncCatalogService
     event_log: _AsyncEventLog
     broker: EventBroker
-    artifacts: ArtifactStore
     pool: BoundedThreadPool
 
     async def resolve_plan(self, run_id: str) -> str: ...
@@ -49,7 +47,6 @@ def require_services(services: DaemonServices) -> None:
         "catalog",
         "event_log",
         "broker",
-        "artifacts",
         "pool",
     )
     methods = (

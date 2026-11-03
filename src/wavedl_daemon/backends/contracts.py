@@ -90,6 +90,19 @@ class StorageMapping:
 
 
 @dataclass(frozen=True)
+class CheckpointSource:
+    """A checkpoint in an ended training run's ``output/``, read in place.
+
+    ``path`` is the daemon's path to it; the trainer gets the mapped path in
+    ``resolved_config["checkpoint"]``.
+    """
+
+    run_id: str
+    checkpoint: str
+    path: str
+
+
+@dataclass(frozen=True)
 class RunSpec:
     """The run identity and resolved inputs a plan approved.
 
@@ -106,6 +119,7 @@ class RunSpec:
     run_directory: str
     working_directory: str
     storage_map: tuple[StorageMapping, ...] = ()
+    checkpoint_source: CheckpointSource | None = None
 
     def __post_init__(self):
         if not isinstance(self.operation, Operation):
@@ -147,6 +161,11 @@ class RunSpec:
                 "runtime": Runtime(**data["runtime"]),
                 "storage_map": tuple(
                     StorageMapping(**item) for item in data["storage_map"]
+                ),
+                "checkpoint_source": (
+                    None
+                    if data["checkpoint_source"] is None
+                    else CheckpointSource(**data["checkpoint_source"])
                 ),
             }
         )

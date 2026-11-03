@@ -14,6 +14,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from wavedl_daemon.backends.contracts import UnsupportedPlan
@@ -98,8 +99,18 @@ class _Watch:
     kill_at: float | None = None
 
 
+def _require_checkpoint(plan: Plan) -> None:
+    """A test reads its source checkpoint in place, so it must still exist."""
+    source = plan.spec.checkpoint_source
+    if source is not None and not Path(source.path).is_dir():
+        raise FileNotFoundError(
+            f"The checkpoint {source.checkpoint} of run {source.run_id} is gone"
+        )
+
+
 def _spawn(backend: LocalBackend, plan: Plan, head: RunHead) -> Done:
     try:
+        _require_checkpoint(plan)
         probed, handle = backend.spawn(plan, head.attempt)
         # A started Local process is running; nothing queues it.
         running = Observed(Phase.RUNNING, None, None)
@@ -114,6 +125,7 @@ def _spawn(backend: LocalBackend, plan: Plan, head: RunHead) -> Done:
 def _sbatch(backend: SlurmBackend, plan: Plan, head: RunHead) -> Done:
     """Submit once. An unknown sbatch outcome raises and is recovered later."""
     try:
+        _require_checkpoint(plan)
         events: tuple[RunEvent, ...] = (Submitted(backend.submit(plan)),)
     except (UnsupportedPlan, SubmissionRejected, OSError) as error:
         events = (Exited(Outcome.FAILED, True, detail=str(error)[:1000]),)

@@ -14,7 +14,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
-from wavedl_daemon.backends.contracts import UnsupportedPlan
+from wavedl_daemon.backends.contracts import CheckpointSource
 from wavedl_daemon.backends.local import LocalBackend
 from wavedl_daemon.backends.slurm import SlurmBackend
 from wavedl_daemon.backends.slurm_plan import SlurmSite
@@ -255,17 +255,95 @@ def test_slurm_plans_preview_their_batch_script(environment):
     assert len(all_plans(environment.plans)) == 1
 
 
-def test_checkpoint_sources_are_refused_while_rebuilt(environment, tmp_path):
-    body = payload() | {
+def ended_train_run(environment, key, *, returncode=0):
+    run_id = planned_and_submitted(environment, key)["run_id"]
+    tick_until(environment, run_id, lambda view: view.state == "running")
+    environment.supervisor.launches[-1].finish(returncode)
+    tick_until(environment, run_id, lambda view: view.state in {"completed", "failed"})
+    return run_id
+
+
+def from_checkpoint(source, tmp_path, checkpoint="best_checkpoint", **fields):
+    return payload() | {
         "operation": "test",
-        "config": {"data_path": str(tmp_path / "data.npz")},
-        "checkpoint_source": {"run_id": str(uuid4()), "generation": "gen-000001"},
-    }
-    with pytest.raises(UnsupportedPlan, match="checkpoint is being rebuilt"):
-        environment.service.plan(body, "source")
-    response = request(environment.app, "POST", "/api/runs/plan", body=body, key="source")
-    assert response.status_code == 400
-    assert all_plans(environment.plans) == []
+        "config": {"data_path": str(tmp_path / "data.npz"), "model": "cnn"},
+        "checkpoint_source": {"run_id": source, "checkpoint": checkpoint},
+    } | fields
+
+
+def test_a_test_reads_an_ended_runs_checkpoint_in_place(environment, tmp_path):
+    source = ended_train_run(environment, "source")
+    checkpoint = environment.service.settings.run_root / source / "output" / "best_checkpoint"
+    checkpoint.mkdir(parents=True)
+    response = request(
+        environment.app, "POST", "/api/runs/plan", body=from_checkpoint(source, tmp_path), key="test"
+    )
+    assert response.status_code == 200, response.text
+    plan = environment.plans.get(response.json()["plan_id"]).plan
+    assert plan.spec.checkpoint_source == CheckpointSource(
+        source, "best_checkpoint", str(checkpoint)
+    )
+    index = plan.argv.index("--checkpoint")
+    assert plan.argv[index + 1] == str(checkpoint.resolve())
+    run_id = response.json()["run_id"]
+    assert environment.service.get(run_id).summary["source_run_id"] == source
+
+    checkpoint.rmdir()
+    submitted = request(environment.app, "POST", "/api/runs", body={"plan_id": response.json()["plan_id"]})
+    assert submitted.status_code == 202
+    view = tick_until(environment, run_id, lambda view: view.state == "failed")
+    assert view.evidence["reason"] == f"The checkpoint best_checkpoint of run {source} is gone"
+    assert len(environment.supervisor.launches) == 1
+
+
+def test_a_slurm_test_gets_the_checkpoint_through_the_storage_map(environment, tmp_path):
+    source = ended_train_run(environment, "source")
+    run_root = environment.service.settings.run_root
+    (run_root / source / "output" / "epoch_3_checkpoint").mkdir(parents=True)
+    body = from_checkpoint(
+        source,
+        tmp_path,
+        "epoch_3_checkpoint",
+        backend="slurm",
+        storage_map=[{"host_root": str(run_root), "execution_root": "/cluster/runs"}],
+    )
+    response = request(environment.app, "POST", "/api/runs/plan", body=body, key="slurm")
+    assert response.status_code == 200, response.text
+    spec = response.json()["preview"]["spec"]
+    executed = f"/cluster/runs/{source}/output/epoch_3_checkpoint"
+    assert spec["resolved_config"]["checkpoint"] == executed
+    assert executed in response.json()["preview"]["script"]
+
+
+def test_checkpoint_sources_are_refused_unless_ended_and_present(environment, tmp_path):
+    completed = ended_train_run(environment, "completed")
+    (environment.service.settings.run_root / completed / "output" / "best_checkpoint").mkdir(
+        parents=True
+    )
+    failed = ended_train_run(environment, "failed", returncode=1)
+    (environment.service.settings.run_root / failed / "output" / "best_checkpoint").mkdir(
+        parents=True
+    )
+    running = planned_and_submitted(environment, "running")["run_id"]
+    tick_until(environment, running, lambda view: view.state == "running")
+    planned = request(environment.app, "POST", "/api/runs/plan", body=payload(), key="planned")
+    count = len(all_plans(environment.plans))
+    refused = [
+        from_checkpoint(running, tmp_path),
+        from_checkpoint(failed, tmp_path),
+        from_checkpoint(planned.json()["run_id"], tmp_path),
+        from_checkpoint(str(uuid4()), tmp_path),
+        from_checkpoint(completed, tmp_path, "interrupted_checkpoint"),
+        from_checkpoint(completed, tmp_path, "../best_checkpoint"),
+        from_checkpoint(completed, tmp_path, "gen-000001"),
+        from_checkpoint(completed, tmp_path, operation="train"),
+        from_checkpoint(completed, tmp_path)
+        | {"config": {"data_path": str(tmp_path / "d.npz"), "checkpoint": "/x"}},
+    ]
+    for index, body in enumerate(refused):
+        response = request(environment.app, "POST", "/api/runs/plan", body=body, key=f"r{index}")
+        assert response.status_code == 400, (index, response.text)
+    assert len(all_plans(environment.plans)) == count
 
 
 def test_foreign_origin_cancel_does_not_mutate_then_authorized_cancel_succeeds(
@@ -720,7 +798,7 @@ def test_plan_request_round_trip_preserves_json_values_and_omissions():
     body["submission_cwd"] = "/work"
     body["checkpoint_source"] = {
         "run_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-        "generation": "gen-123456",
+        "checkpoint": "best_checkpoint",
     }
 
     def reverse_object_keys(value):
@@ -741,7 +819,7 @@ def test_plan_request_round_trip_preserves_json_values_and_omissions():
     assert dumped["topology"] == {}
     assert "storage_map" in dumped
     assert "submission_cwd" in dumped
-    assert dumped["checkpoint_source"]["generation"] == "gen-123456"
+    assert dumped["checkpoint_source"]["checkpoint"] == "best_checkpoint"
     assert type(dumped["checkpoint_source"]["run_id"]) is str
     assert type(model.config["epochs"]) is int
     assert type(model.config["lr"]) is float

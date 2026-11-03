@@ -24,7 +24,7 @@ from .pool import CancellationToken, WorkDeadlineExceeded
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from wavedl.core.layout import RunLayout
+    from wavedl_daemon.runs.layout import RunPaths
     from wavedl_daemon.runs.service import PlanResponse, RunResponse
 
 
@@ -281,5 +281,5 @@ class AsyncRunService:
     ) -> list[RunResponse]:
         return await self._call("list", limit, offset, state)
 
-    async def layout(self, run_id: str) -> RunLayout:
+    async def layout(self, run_id: str) -> RunPaths:
         return await self._call("layout", run_id)

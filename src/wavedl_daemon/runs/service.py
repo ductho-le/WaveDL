@@ -18,13 +18,13 @@ from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from wavedl.core.inference_cli import inference_defaults, validate_import_modules
-from wavedl.core.layout import RunLayout
 from wavedl.core.training_cli import (
     build_training_parser,
     training_defaults,
     validate_cv_options,
 )
 from wavedl_daemon.backends.contracts import (
+    CheckpointSource,
     Plan,
     Runtime,
     RunSpec,
@@ -34,12 +34,14 @@ from wavedl_daemon.backends.contracts import (
 )
 from wavedl_daemon.backends.local import _TEST_FLAGS, _TEST_VALUES
 from wavedl_daemon.execution.budget import BudgetExhausted
+from wavedl_daemon.runs.artifacts import CHECKPOINT_NAME
 from wavedl_daemon.runs.lifecycle import Ended, Live, RunRef, RunState, status
 from wavedl_daemon.runs.model import (
     AttemptOpened,
     BackendKind,
     CancelRequested,
     Operation,
+    Outcome,
     PlanId,
     RunId,
 )
@@ -51,6 +53,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from wavedl_daemon.backends.contracts import Planner
+    from wavedl_daemon.runs.layout import RunPaths
     from wavedl_daemon.runs.lifecycle import RunHead
     from wavedl_daemon.storage.plans import PlanRecord, PlanStore
     from wavedl_daemon.storage.run_log import RunLog
@@ -127,7 +130,11 @@ def _run_summary(plan: Plan) -> dict:
         "data_path": text("data_path"),
         "epochs": count("epochs", 1),
         "cv": count("cv", 2),
-        "source_run_id": None,
+        "source_run_id": (
+            None
+            if plan.spec.checkpoint_source is None
+            else plan.spec.checkpoint_source.run_id
+        ),
     }
 
 
@@ -162,6 +169,7 @@ def build_spec(
     runtime: Runtime,
     submission_cwd: Path,
     storage_map: tuple[StorageMapping, ...] = (),
+    checkpoint_source: CheckpointSource | None = None,
 ) -> RunSpec:
     """Resolve request paths against the submission directory, then map them.
 
@@ -224,6 +232,7 @@ def build_spec(
         run_directory=str(run_dir),
         working_directory=resolve(str(run_dir)),
         storage_map=mappings,
+        checkpoint_source=checkpoint_source,
     )
 
 
@@ -426,11 +435,6 @@ class RunService:
             },
             required={"backend", "operation", "config", "runtime", "topology"},
         )
-        if "checkpoint_source" in body:
-            raise UnsupportedPlan(
-                "Testing from a run's checkpoint is being rebuilt; "
-                "give the checkpoint path instead"
-            )
         backend_name = body["backend"]
         if type(backend_name) is not str or backend_name not in self.backends:
             raise ValueError("Unknown backend")
@@ -465,6 +469,12 @@ class RunService:
             body["config"],
             allowed=set(body["config"]) if type(body["config"]) is dict else set(),
         )
+        source = None
+        if "checkpoint_source" in body:
+            if operation is Operation.TRAIN or "checkpoint" in config:
+                raise ValueError("Only a test or plot names a checkpoint source")
+            source = self._checkpoint_source(body["checkpoint_source"])
+            config = config | {"checkpoint": source.path}
         config = (
             _training_config(config)
             if operation is Operation.TRAIN
@@ -495,6 +505,7 @@ class RunService:
             runtime=selected,
             submission_cwd=Path(cwd),
             storage_map=mappings,
+            checkpoint_source=source,
         )
         plan = self.backends[backend_name].plan(spec, topology=topology)
         if plan.target != backend_name or plan.spec != spec:
@@ -503,6 +514,38 @@ class RunService:
             plan, idempotency_key=idempotency_key, request_payload=payload
         )
         return self._preview(record)
+
+    def _checkpoint_source(self, value: object) -> CheckpointSource:
+        """A checkpoint of a training run that ended on its own terms.
+
+        Completed and cancelled are the outcomes in which the trainer stopped
+        the way upstream expects, so no later write can reach ``output/``.
+        A failed run may have died inside a checkpoint save, and a lost or
+        unknown one may still be running.
+        """
+        fields = _object(
+            value, allowed={"run_id", "checkpoint"}, required={"run_id", "checkpoint"}
+        )
+        run_id, name = fields["run_id"], fields["checkpoint"]
+        _uuid(run_id)
+        if type(name) is not str or CHECKPOINT_NAME.fullmatch(name) is None:
+            raise ValueError("Invalid checkpoint name")
+        record = self.plans.by_run(run_id)
+        if record is None or record.plan.operation is not Operation.TRAIN:
+            raise UnsupportedPlan("The checkpoint source is not a training run")
+        head = self.log.head(RunId(run_id))
+        if not (
+            head is not None
+            and isinstance(head.stage, Ended)
+            and head.stage.exit.outcome in {Outcome.COMPLETED, Outcome.CANCELLED}
+        ):
+            raise UnsupportedPlan(
+                "The checkpoint source has not completed or been cancelled"
+            )
+        path = record.plan.spec.paths.output / name
+        if not path.is_dir():
+            raise UnsupportedPlan(f"The checkpoint source has no {name}")
+        return CheckpointSource(run_id, name, str(path))
 
     @staticmethod
     def _preview(record: PlanRecord) -> PlanResponse:
@@ -552,11 +595,10 @@ class RunService:
         self._guard()
         return self._view(self._owned(run_id))
 
-    def layout(self, run_id: str) -> RunLayout:
+    def layout(self, run_id: str) -> RunPaths:
         """Resolve persisted identity on the owner thread, without file probing."""
         self._guard()
-        record = self._owned(run_id)
-        return RunLayout(record.plan.spec.paths.run_dir, record.run_id)
+        return self._owned(run_id).plan.spec.paths
 
     def _view(self, record: PlanRecord) -> RunResponse:
         plan = record.plan
