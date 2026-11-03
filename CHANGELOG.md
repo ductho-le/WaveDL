@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Validate diagnostic plot inputs consistently and support dense-field targets; render relative-error boxplot percent labels correctly with and without LaTeX
 - Export all built-in registered model classes and detect YAML-configured WandB logging in the launcher summary
 - Launch the distributed smoke check with a static IPv4 rendezvous configured before worker startup, including macOS loopback defaults
+- Write CLI output as UTF-8 in `wavedl-train`, `wavedl-test` and `wavedl-hpo` (and their training subprocesses) so Unicode status output no longer raises `UnicodeEncodeError` on Windows consoles or non-UTF-8 pipes
+- Accept any positive `--patience`; values above 1000 (the usual way to disable early stopping) were rejected as invalid
 
 ## [1.9.0] - 2026-10-11
 

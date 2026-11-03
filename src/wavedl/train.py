@@ -143,6 +143,7 @@ from wavedl.utils import (
     scaler_target_shape,
     wait_for_everyone,
 )
+from wavedl.utils.stdio import configure_utf8_stdio
 
 
 try:
@@ -1060,6 +1061,7 @@ def train_single_trial(
 # MAIN TRAINING FUNCTION
 # ==============================================================================
 def main():
+    configure_utf8_stdio()
     args, parser = parse_args()
 
     # Load and merge config file if provided

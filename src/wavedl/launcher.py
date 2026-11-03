@@ -37,6 +37,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from wavedl.utils.stdio import configure_utf8_stdio, utf8_stdio_environment
+
 
 def detect_gpus() -> int:
     """Auto-detect available GPUs using nvidia-smi."""
@@ -315,6 +317,7 @@ def print_summary(
 
 def main() -> int:
     """Main entry point for wavedl-train command."""
+    configure_utf8_stdio()
     # Fast path for utility flags (avoid accelerate launch overhead)
     exit_code = handle_fast_path_args()
     if exit_code is not None:
@@ -406,7 +409,9 @@ def main() -> int:
 
     # Launch training
     try:
-        result = subprocess.run(cmd, check=False)
+        result = subprocess.run(
+            cmd, check=False, env=utf8_stdio_environment(dict(os.environ))
+        )
         exit_code = result.returncode
     except KeyboardInterrupt:
         print("\n\n⚠️  Training interrupted by user")

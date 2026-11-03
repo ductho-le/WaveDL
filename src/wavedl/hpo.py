@@ -47,6 +47,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from wavedl.utils.stdio import configure_utf8_stdio
+
 
 try:
     import optuna
@@ -427,7 +429,9 @@ def create_objective(args):
                 result = subprocess.run(
                     cmd,
                     capture_output=True,
-                    text=True,
+                    # wavedl.train always writes UTF-8 (see configure_utf8_stdio)
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=args.timeout,
                     env=env,
                 )
@@ -517,6 +521,7 @@ def create_objective(args):
 
 
 def main():
+    configure_utf8_stdio()
     parser = argparse.ArgumentParser(
         description="WaveDL Hyperparameter Optimization with Optuna",
         formatter_class=argparse.RawDescriptionHelpFormatter,

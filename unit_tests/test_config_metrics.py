@@ -223,6 +223,34 @@ class TestValidateConfig:
         assert len(warnings) == 1
         assert "Gradient accumulation" in warnings[0]
 
+    @pytest.mark.parametrize("patience", [1, 1000, 100000, 10**9])
+    def test_large_patience_is_valid(self, patience):
+        """A large patience (the usual way to disable early stopping) is valid."""
+        from wavedl.utils.config import validate_config
+
+        assert validate_config({"patience": patience}) == []
+
+    @pytest.mark.parametrize("patience", [0, -1, float("inf"), float("nan")])
+    def test_non_positive_or_non_finite_patience_produces_warning(self, patience):
+        """Patience must be a positive finite number."""
+        from wavedl.utils.config import validate_config
+
+        warnings = validate_config({"patience": patience})
+        assert len(warnings) == 1
+        assert "Patience must be positive" in warnings[0]
+
+    def test_cli_patience_100000_passes_training_validation(self, monkeypatch):
+        """`wavedl-train --patience 100000` must not be rejected as invalid."""
+        from wavedl.train import parse_args
+        from wavedl.utils.config import validate_config
+
+        argv = ["wavedl-train", "--model", "cnn", "--data_path", "x.npz"]
+        monkeypatch.setattr("sys.argv", [*argv, "--patience", "100000"])
+        args, parser = parse_args()
+
+        assert args.patience == 100000
+        assert validate_config(vars(args), parser=parser) == []
+
 
 class TestCreateDefaultConfig:
     """Tests for default config creation."""

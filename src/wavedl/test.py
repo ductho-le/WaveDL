@@ -81,6 +81,7 @@ from wavedl.utils import (  # noqa: E402
     plot_scientific_scatter,
     scaler_target_shape,
 )
+from wavedl.utils.stdio import configure_utf8_stdio  # noqa: E402
 
 
 # Optional dependencies for sparse matrix handling (now handled in utils/data.py)
@@ -1347,6 +1348,7 @@ def plot_results(
 # MAIN
 # ==============================================================================
 def main():
+    configure_utf8_stdio()
     args = parse_args()
     from wavedl.models import import_model_modules
 

@@ -336,7 +336,7 @@ def validate_config(
         "lr": (1e-12, 10, "Learning rate must be > 0 and <= 10"),
         "epochs": (1, 100000, "Epochs should be positive"),
         "batch_size": (1, 10000, "Batch size should be positive"),
-        "patience": (1, 1000, "Patience should be positive"),
+        "patience": (1, math.inf, "Patience must be positive"),
         "cv": (0, 100, "CV folds should be 0-100"),
         "grad_accum_steps": (1, 256, "Gradient accumulation steps should be 1-256"),
         "weight_decay": (0, math.inf, "Weight decay must be non-negative"),
