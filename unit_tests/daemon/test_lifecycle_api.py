@@ -349,6 +349,48 @@ def test_checkpoint_sources_are_refused_unless_ended_and_present(environment, tm
     assert len(all_plans(environment.plans)) == count
 
 
+def cancelled_train_run(environment, key, ending):
+    """Cancel a running train run, whose process then ends as ``ending`` says."""
+    run_id = planned_and_submitted(environment, key)["run_id"]
+    tick_until(environment, run_id, lambda view: view.state == "running")
+    launch = environment.supervisor.launches[-1]
+    if ending != "interrupted":
+        launch.cancel = lambda grace_seconds, *, interrupt=False: None
+    request(environment.app, "POST", f"/api/runs/{run_id}/cancel")
+    if ending == "crashed":
+        launch.finish(1)
+    if ending == "killed":
+        tick_until(environment, run_id, lambda view: "cancel_delivered" in kinds(environment, run_id))
+        launch.finish(-9)
+    view = tick_until(environment, run_id, lambda view: view.state == "cancelled")
+    output = environment.service.settings.run_root / run_id / "output"
+    for name in ("best_checkpoint", "interrupted_checkpoint"):
+        (output / name).mkdir(parents=True)
+    return run_id, view.evidence
+
+
+def test_a_cancelled_run_supplies_only_an_interrupted_checkpoint_it_finished(
+    environment, tmp_path
+):
+    def plan(source, checkpoint):
+        body = from_checkpoint(source, tmp_path, checkpoint)
+        key = f"{source}-{checkpoint}"
+        return request(environment.app, "POST", "/api/runs/plan", body=body, key=key)
+
+    interrupted, evidence = cancelled_train_run(environment, "interrupted", "interrupted")
+    assert (evidence["exit_code"], evidence["signal"]) == (130, None)
+    assert plan(interrupted, "interrupted_checkpoint").status_code == 200
+    assert plan(interrupted, "best_checkpoint").status_code == 400
+    killed, evidence = cancelled_train_run(environment, "killed", "killed")
+    assert (evidence["exit_code"], evidence["signal"]) == (None, 9)
+    crashed, evidence = cancelled_train_run(environment, "crashed", "crashed")
+    assert (evidence["exit_code"], evidence["signal"]) == (1, None)
+    for source in (killed, crashed):
+        for checkpoint in ("interrupted_checkpoint", "best_checkpoint"):
+            response = plan(source, checkpoint)
+            assert response.status_code == 400, (source, checkpoint, response.text)
+
+
 def test_foreign_origin_cancel_does_not_mutate_then_authorized_cancel_succeeds(
     environment,
 ):

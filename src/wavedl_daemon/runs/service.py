@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import re
+import signal
 import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -33,6 +34,7 @@ from wavedl_daemon.runs.model import (
     AttemptOpened,
     BackendKind,
     CancelRequested,
+    Exited,
     Operation,
     Outcome,
     PlanId,
@@ -141,6 +143,33 @@ def _evidence(head: RunHead) -> dict:
         ),
         "restart_count": head.restart_count,
     }
+
+
+# What the launcher exits with once it has stopped training after a SIGINT.
+_INTERRUPTED_EXIT = 128 + signal.SIGINT
+
+
+def _supplies(ending: Exited, checkpoint: str) -> bool:
+    """Whether a training run that ended this way left ``checkpoint`` whole.
+
+    No later write can reach ``output/`` of an ended run, but a failed one may
+    have died inside a save, and a lost or unknown one may still be running.
+    A completed trainer finished every save. A cancel's SIGINT may land inside
+    any save, so a cancelled run supplies only the ``interrupted_checkpoint``
+    upstream writes on KeyboardInterrupt, and only when the launcher then
+    stopped on its own: a SIGKILL after the grace leaves a signal, and a crash
+    another code. The launcher also exits 128 + SIGINT after killing training
+    that outlasts its own grace, which this cannot tell apart.
+    """
+    match ending:
+        case Exited(outcome=Outcome.COMPLETED):
+            return True
+        case Exited(outcome=Outcome.CANCELLED, confirmed=True, signal=None):
+            return (
+                ending.exit_code == _INTERRUPTED_EXIT
+                and checkpoint == "interrupted_checkpoint"
+            )
+    return False
 
 
 def build_spec(
@@ -365,13 +394,7 @@ class RunService:
         return self._preview(record)
 
     def _checkpoint_source(self, value: object) -> CheckpointSource:
-        """A checkpoint of a training run that ended on its own terms.
-
-        Completed and cancelled are the outcomes in which the trainer stopped
-        the way upstream expects, so no later write can reach ``output/``.
-        A failed run may have died inside a checkpoint save, and a lost or
-        unknown one may still be running.
-        """
+        """A checkpoint that an ended training run finished writing."""
         fields = _object(
             value, allowed={"run_id", "checkpoint"}, required={"run_id", "checkpoint"}
         )
@@ -386,10 +409,12 @@ class RunService:
         if not (
             head is not None
             and isinstance(head.stage, Ended)
-            and head.stage.exit.outcome in {Outcome.COMPLETED, Outcome.CANCELLED}
+            and _supplies(head.stage.exit, name)
         ):
             raise UnsupportedPlan(
-                "The checkpoint source has not completed or been cancelled"
+                f"The checkpoint source cannot supply {name}: only a completed "
+                "training run can, or a cancelled one its interrupted_checkpoint "
+                "once it stopped on its own"
             )
         path = record.plan.spec.paths.output / name
         # The artifact listing hides a symlinked checkpoint, so refuse it too.
