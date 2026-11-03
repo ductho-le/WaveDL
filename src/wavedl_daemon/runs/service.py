@@ -392,7 +392,8 @@ class RunService:
                 "The checkpoint source has not completed or been cancelled"
             )
         path = record.plan.spec.paths.output / name
-        if not path.is_dir():
+        # The artifact listing hides a symlinked checkpoint, so refuse it too.
+        if path.is_symlink() or not path.is_dir():
             raise UnsupportedPlan(f"The checkpoint source has no {name}")
         return CheckpointSource(run_id, name, str(path))
 

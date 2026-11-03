@@ -283,8 +283,7 @@ def test_a_test_reads_an_ended_runs_checkpoint_in_place(environment, tmp_path):
     assert plan.spec.checkpoint_source == CheckpointSource(
         source, "best_checkpoint", str(checkpoint)
     )
-    index = plan.argv.index("--checkpoint")
-    assert plan.argv[index + 1] == str(checkpoint.resolve())
+    assert f"--checkpoint={checkpoint.resolve()}" in plan.argv
     run_id = response.json()["run_id"]
     assert environment.service.get(run_id).summary["source_run_id"] == source
 
@@ -320,6 +319,9 @@ def test_checkpoint_sources_are_refused_unless_ended_and_present(environment, tm
     (environment.service.settings.run_root / completed / "output" / "best_checkpoint").mkdir(
         parents=True
     )
+    (environment.service.settings.run_root / completed / "output" / "epoch_1_checkpoint").symlink_to(
+        "best_checkpoint", target_is_directory=True
+    )
     failed = ended_train_run(environment, "failed", returncode=1)
     (environment.service.settings.run_root / failed / "output" / "best_checkpoint").mkdir(
         parents=True
@@ -334,6 +336,7 @@ def test_checkpoint_sources_are_refused_unless_ended_and_present(environment, tm
         from_checkpoint(planned.json()["run_id"], tmp_path),
         from_checkpoint(str(uuid4()), tmp_path),
         from_checkpoint(completed, tmp_path, "interrupted_checkpoint"),
+        from_checkpoint(completed, tmp_path, "epoch_1_checkpoint"),
         from_checkpoint(completed, tmp_path, "../best_checkpoint"),
         from_checkpoint(completed, tmp_path, "gen-000001"),
         from_checkpoint(completed, tmp_path, operation="train"),
