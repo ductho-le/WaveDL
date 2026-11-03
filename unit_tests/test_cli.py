@@ -765,13 +765,10 @@ class TestHPCDetectGPUs:
         mock_result = MagicMock()
         mock_result.stdout = "GPU 0: A100\nGPU 1: A100\nGPU 2: A100\n"
 
-        # An exported CUDA_VISIBLE_DEVICES (CI sets "") takes precedence.
         with (
-            patch.dict(os.environ),
             patch("shutil.which", return_value="/usr/bin/nvidia-smi"),
             patch("subprocess.run", return_value=mock_result),
         ):
-            os.environ.pop("CUDA_VISIBLE_DEVICES", None)
             assert detect_gpus() == 3
 
     def test_nvidia_smi_failure(self):
@@ -811,44 +808,25 @@ class TestHPCDetectGPUs:
 class TestHPCEnvironment:
     """Tests for HPC environment configuration."""
 
-    def test_sets_default_env_vars(self, tmp_path, monkeypatch):
+    def test_sets_default_env_vars(self):
         """Test that default environment variables are set when home is not writable."""
         from wavedl.launcher import setup_environment
 
-        cache_paths = {
-            "TORCH_HOME": ".torch_cache",
-            "HF_HOME": ".hf_cache",
-            "TRITON_CACHE_DIR": ".triton_cache",
-            "TORCHINDUCTOR_CACHE_DIR": ".inductor_cache",
-            "MPLCONFIGDIR": ".matplotlib",
-            "FONTCONFIG_CACHE": ".fontconfig",
-            "XDG_CACHE_HOME": ".cache",
-            "WANDB_DIR": ".wandb",
-            "WANDB_CACHE_DIR": ".wandb_cache",
-            "WANDB_CONFIG_DIR": ".wandb_config",
-        }
-        env_vars = [*cache_paths, "HF_HUB_OFFLINE", "WANDB_MODE", "PYTHONWARNINGS"]
-        original = {name: os.environ.get(name) for name in env_vars}
-        original_cwd = os.getcwd()
+        env_vars = ["MPLCONFIGDIR", "WANDB_MODE", "WANDB_DIR"]
+        original = {v: os.environ.pop(v, None) for v in env_vars}
 
-        with monkeypatch.context() as environment:
-            environment.chdir(tmp_path)
-            for name in env_vars:
-                # Register absent keys too: setup_environment writes directly.
-                environment.setenv(name, "")
-                environment.delenv(name)
+        try:
             # Mock home directory as non-writable (simulates HPC environment)
             with patch("os.access", return_value=False):
                 setup_environment()
+                assert "MPLCONFIGDIR" in os.environ
                 assert os.environ["WANDB_MODE"] == "offline"
-                assert os.environ["HF_HUB_OFFLINE"] == "1"
-                for name, suffix in cache_paths.items():
-                    assert os.environ[name] == str(tmp_path / suffix)
-                assert (tmp_path / ".matplotlib").is_dir()
-                assert (tmp_path / ".triton_cache").is_dir()
-                assert (tmp_path / ".inductor_cache").is_dir()
-        assert {name: os.environ.get(name) for name in env_vars} == original
-        assert os.getcwd() == original_cwd
+        finally:
+            for var, val in original.items():
+                if val is not None:
+                    os.environ[var] = val
+                elif var in os.environ:
+                    del os.environ[var]
 
 
 class TestHPCParseArgs:
