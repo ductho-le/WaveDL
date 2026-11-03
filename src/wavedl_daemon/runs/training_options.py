@@ -167,8 +167,9 @@ def _item(option: Option, value: object) -> object:
     if type(value) is not option.type:
         raise ValueError("Option has the wrong type")
     # A leading dash would make upstream's argparse read the value as a flag.
-    if option.type is str and (not value or value.startswith("-")):
-        raise ValueError("Option requires a nonempty value that is not a flag")
+    # The browser allows empty text such as run_name, but an empty path names nothing.
+    if option.type is str and (value.startswith("-") or (option.path and not value)):
+        raise ValueError("Option value must not be a flag or an empty path")
     if option.choices and value not in option.choices:
         raise ValueError("Invalid option choice")
     if option.valid is not None and not option.valid(value):

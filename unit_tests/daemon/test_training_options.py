@@ -109,6 +109,7 @@ def test_resolution_fills_defaults_and_accepts_null_or_empty_only_as_defaults():
     assert set(resolved) == set(TEST)
     assert resolved["plot_format"] == ["png"]
     assert resolve(Operation.TRAIN, {"constraint": [], "run_name": None})["lr"] == 1e-3
+    assert resolve(Operation.TRAIN, {"project_name": "", "run_name": ""})["run_name"] == ""
     for config in (
         {"lr": None},
         {"constraint_weight": []},
@@ -118,6 +119,8 @@ def test_resolution_fills_defaults_and_accepts_null_or_empty_only_as_defaults():
         {"epochs": True},
         {"loss": "unknown"},
         {"lr": 0},
+        {"run_name": "-x"},
+        {"resume": ""},
     ):
         with pytest.raises(ValueError):
             resolve(Operation.TRAIN, config)
