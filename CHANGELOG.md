@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `wavedl-train --metrics_jsonl PATH` appends each epoch's metrics as one JSON line, so tools can follow training live
+
 ### Fixed
 
 - Preserve positional compatibility in `train_single_trial()` while adding keyword-only gradient clipping; record the best validation loss before returning a pruned trial

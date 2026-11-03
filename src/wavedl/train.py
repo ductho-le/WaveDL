@@ -84,6 +84,7 @@ _setup_per_rank_compile_cache()
 # Standard imports (after environment setup)
 # =============================================================================
 import argparse
+import json
 import logging
 import math
 import pickle
@@ -688,6 +689,12 @@ def parse_args() -> tuple[argparse.Namespace, argparse.ArgumentParser]:
         "--project_name", type=str, default="DL-Training", help="WandB project name"
     )
     parser.add_argument("--run_name", type=str, default=None, help="WandB run name")
+    parser.add_argument(
+        "--metrics_jsonl",
+        type=str,
+        default=None,
+        help="Append each epoch's metrics to this file as one JSON object per line",
+    )
 
     args = parser.parse_args()
     return args, parser  # Returns (Namespace, ArgumentParser)
@@ -2061,6 +2068,9 @@ def _run_training(args, accelerator):
                     epoch_stats[f"MAE_Phys_P{i}"] = mae
 
                 history.append(epoch_stats)
+                if args.metrics_jsonl:
+                    with open(args.metrics_jsonl, "a", encoding="utf-8") as file:
+                        file.write(json.dumps(epoch_stats, default=float) + "\n")
 
                 # Console display
                 base_str = f"{epoch + 1:<4} | {avg_train_loss:<8.4f} | {avg_val_loss:<8.4f} | {r2:<6.4f} | {pcc:<6.4f} | {grad_norm_tracker.avg:<6.4f} | {current_lr:<8.2e} | {avg_mae:<8.4f}"

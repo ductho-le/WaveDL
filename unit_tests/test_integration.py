@@ -10,6 +10,7 @@ End-to-end tests that verify components work together correctly:
 Author: Ductho Le (ductho.le@outlook.com)
 """
 
+import json
 import os
 import tempfile
 
@@ -698,6 +699,7 @@ class TestCLIEndToEnd:
 
         npz_path = temp_training_data["npz_path"]
         output_dir = os.path.join(temp_training_data["temp_dir"], "train_output")
+        metrics_path = os.path.join(temp_training_data["temp_dir"], "metrics.jsonl")
 
         # Build command - use python -m for cross-platform compatibility
         cmd = [
@@ -720,6 +722,8 @@ class TestCLIEndToEnd:
             "42",
             "--mixed_precision",
             "no",  # Ensure MPS compat (bf16 requires PyTorch >= 2.6)
+            "--metrics_jsonl",
+            metrics_path,
         ]
 
         # Run training subprocess
@@ -746,6 +750,10 @@ class TestCLIEndToEnd:
         assert os.path.exists(os.path.join(output_dir, "best_checkpoint")), (
             "Best checkpoint not saved"
         )
+        with open(metrics_path, encoding="utf-8") as file:
+            epochs = [json.loads(line) for line in file]
+        assert [epoch["epoch"] for epoch in epochs] == [1, 2]
+        assert {"train_loss", "val_loss", "lr"} <= epochs[0].keys()
 
     def test_wavedl_train_list_models(self):
         """E2E: wavedl-train --list_models works via subprocess."""
