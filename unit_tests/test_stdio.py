@@ -17,7 +17,6 @@ import io
 import os
 import subprocess
 import sys
-from types import SimpleNamespace
 
 import pytest
 
@@ -106,14 +105,14 @@ class TestEntryPointsConfigureStdio:
 
         captured = {}
 
-        def fake_run(cmd, **kwargs):
-            captured.update(kwargs)
-            return SimpleNamespace(returncode=0)
+        def fake_run(cmd, env, **kwargs):
+            captured["env"] = env
+            return 0
 
         monkeypatch.setattr(launcher, "configure_utf8_stdio", lambda: None)
         monkeypatch.setattr(launcher, "setup_environment", lambda: None)
         monkeypatch.setattr(launcher, "print_summary", lambda *args: None)
-        monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+        monkeypatch.setattr(launcher, "_run_training_process", fake_run)
         monkeypatch.setattr(
             sys,
             "argv",

@@ -416,6 +416,67 @@ def test_training_cleanup_runs_when_setup_fails(monkeypatch):
     accelerator.free_memory.assert_called_once()
 
 
+def test_training_cleanup_releases_models_before_backend(monkeypatch):
+    """DDP models must be released before the process group is destroyed."""
+    from unittest.mock import MagicMock
+
+    from wavedl import train
+
+    order = []
+    accelerator = MagicMock()
+    accelerator.free_memory.side_effect = lambda: order.append("free_memory")
+    accelerator.end_training.side_effect = lambda: order.append("end_training")
+    monkeypatch.setattr(train.gc, "collect", lambda: order.append("gc"))
+    monkeypatch.setattr(train.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(
+        train.dist, "destroy_process_group", lambda: order.append("destroy")
+    )
+    monkeypatch.setattr(train, "_run_training", lambda *args: order.append("train"))
+    train._run_training_and_cleanup(None, accelerator)
+    assert order == ["train", "free_memory", "gc", "end_training", "destroy"]
+
+
+def test_training_cleanup_failure_keeps_training_error(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from wavedl import train
+
+    accelerator = MagicMock()
+    accelerator.end_training.side_effect = OSError("tracker")
+    monkeypatch.setattr(train.dist, "is_initialized", lambda: False)
+
+    def fail(*args):
+        raise RuntimeError("training")
+
+    monkeypatch.setattr(train, "_run_training", fail)
+    with pytest.raises(BaseExceptionGroup) as raised:
+        train._run_training_and_cleanup(None, accelerator)
+    assert [type(error) for error in raised.value.exceptions] == [
+        RuntimeError,
+        OSError,
+    ]
+    assert "training: RuntimeError: training" in str(raised.value)
+
+
+def test_failed_model_release_skips_backend_shutdown(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from wavedl import train
+
+    accelerator = MagicMock()
+    accelerator.free_memory.side_effect = RuntimeError("release")
+    destroyed = []
+    monkeypatch.setattr(train.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(
+        train.dist, "destroy_process_group", lambda: destroyed.append(True)
+    )
+    monkeypatch.setattr(train, "_run_training", lambda *args: None)
+    with pytest.raises(BaseExceptionGroup, match="backend shutdown skipped"):
+        train._run_training_and_cleanup(None, accelerator)
+    accelerator.end_training.assert_not_called()
+    assert destroyed == []
+
+
 @pytest.mark.parametrize("loss_name", ["mae", "huber"])
 def test_hpo_uses_comparable_mse_for_different_training_losses(
     tmp_path, monkeypatch, loss_name
@@ -508,8 +569,6 @@ def test_failed_export_cli_has_nonzero_outcome(tmp_path, monkeypatch):
 
 
 def test_launcher_cv_and_precision_use_single_consistent_process(monkeypatch):
-    from types import SimpleNamespace
-
     from wavedl import launcher
 
     captured = []
@@ -517,9 +576,9 @@ def test_launcher_cv_and_precision_use_single_consistent_process(monkeypatch):
     monkeypatch.setattr(launcher, "detect_gpus", lambda: 4)
     monkeypatch.setattr(launcher, "setup_environment", lambda: None)
     monkeypatch.setattr(
-        launcher.subprocess,
-        "run",
-        lambda cmd, **kwargs: (captured.append(cmd) or SimpleNamespace(returncode=0)),
+        launcher,
+        "_run_training_process",
+        lambda cmd, env=None, **kwargs: captured.append(cmd) or 0,
     )
     assert launcher.main() == 0
     assert "--num_processes=1" in captured[0]
@@ -653,8 +712,6 @@ def test_inprocess_trial_enforces_timeout(tmp_path, monkeypatch):
 
 
 def test_launcher_preserves_precision_from_yaml(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
     from wavedl import launcher
 
     config = tmp_path / "config.yaml"
@@ -665,9 +722,9 @@ def test_launcher_preserves_precision_from_yaml(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(launcher, "setup_environment", lambda: None)
     monkeypatch.setattr(
-        launcher.subprocess,
-        "run",
-        lambda cmd, **kwargs: (captured.append(cmd) or SimpleNamespace(returncode=0)),
+        launcher,
+        "_run_training_process",
+        lambda cmd, env=None, **kwargs: captured.append(cmd) or 0,
     )
     assert launcher.main() == 0
     assert "--mixed_precision=no" in captured[0]
@@ -841,8 +898,6 @@ def test_inprocess_pruned_trial_records_best_val_loss_and_supports_patience_one(
 
 
 def test_launcher_detects_wandb_from_yaml_config(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
     from wavedl import launcher
 
     config = tmp_path / "config.yaml"
@@ -852,11 +907,7 @@ def test_launcher_detects_wandb_from_yaml_config(tmp_path, monkeypatch):
         sys, "argv", ["train", "--config", str(config), "--num_gpus", "1"]
     )
     monkeypatch.setattr(launcher, "setup_environment", lambda: None)
-    monkeypatch.setattr(
-        launcher.subprocess,
-        "run",
-        lambda cmd, **kwargs: SimpleNamespace(returncode=0),
-    )
+    monkeypatch.setattr(launcher, "_run_training_process", lambda *a, **k: 0)
     monkeypatch.setattr(
         launcher,
         "print_summary",

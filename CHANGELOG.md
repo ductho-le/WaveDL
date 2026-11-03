@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Launch the distributed smoke check with a static IPv4 rendezvous configured before worker startup, including macOS loopback defaults
 - Write CLI output as UTF-8 in `wavedl-train`, `wavedl-test` and `wavedl-hpo` (and their training subprocesses) so Unicode status output no longer raises `UnicodeEncodeError` on Windows consoles or non-UTF-8 pipes
 - Accept any positive `--patience`; values above 1000 (the usual way to disable early stopping) were rejected as invalid
+- `wavedl-train` no longer leaves training processes running after Ctrl+C, SIGTERM (e.g. Slurm/PBS preemption) or SIGHUP: the launcher owns the training process group (multi-GPU ranks included), forwards the signal, force-kills after a 30 s grace period, stops processes left behind after a normal exit, and exits with `128 + signal`
+- Release Accelerate-prepared models before destroying the distributed process group, avoiding a possible Gloo/DDP deadlock at interpreter exit; cleanup failures no longer hide the training error
+
+### Added
+
+- `wavedl-train --cpu` trains on CPU; `--cpu --num_gpus N` runs N real Gloo processes on one machine
 
 ## [1.9.0] - 2026-10-11
 

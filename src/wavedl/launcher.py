@@ -17,6 +17,9 @@ Usage:
     # Multi-GPU is automatic (uses all available GPUs)
     wavedl-train --model resnet18 --data_path train.npz --num_gpus 4
 
+Interrupting the launcher (Ctrl+C, or SIGTERM when a scheduler preempts the
+job) stops every training process it started; see ``_run_training_process``.
+
 Example SLURM script:
     #!/bin/bash
     #SBATCH --nodes=1
@@ -31,13 +34,269 @@ Author: Ductho Le (ductho.le@outlook.com)
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
+import select
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from wavedl.utils.stdio import configure_utf8_stdio, utf8_stdio_environment
+
+
+# Seconds a signalled training group gets to shut down (e.g. write an emergency
+# checkpoint) before it is force-killed.
+_GRACE_SECONDS = 30.0
+# Seconds processes left behind by a normally exiting launch get after SIGTERM.
+_ORPHAN_GRACE_SECONDS = 1.0
+_POLL_SECONDS = 0.05
+_FORWARDED_SIGNALS = tuple(
+    getattr(signal, name)
+    for name in ("SIGTERM", "SIGINT", "SIGHUP")
+    if hasattr(signal, name)
+)
+
+
+class _ChildExitObserver:
+    """Detect the training leader's exit without reaping it.
+
+    While the leader stays unreaped its PID, which is also the ID of the process
+    group it leads, cannot be reused. Signalling the group is therefore safe
+    until the final ``wait()``.
+    """
+
+    def __init__(self, proc: subprocess.Popen):
+        self.proc = proc
+        self.exited = False
+        self._queue = None
+        if not hasattr(os, "waitid"):  # macOS and the BSDs use kqueue instead.
+            self._queue = select.kqueue()
+            try:
+                self._queue.control(
+                    [
+                        select.kevent(
+                            proc.pid,
+                            filter=select.KQ_FILTER_PROC,
+                            flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                            fflags=select.KQ_NOTE_EXIT,
+                        )
+                    ],
+                    0,
+                    0,
+                )
+            except ProcessLookupError:
+                # Our own unreaped child can only be missing once it has exited.
+                self.exited = True
+            except BaseException:
+                self.close()
+                raise
+
+    def observe(self) -> bool:
+        """Return whether the leader has exited (never reaps it)."""
+        if not self.exited:
+            if self._queue is None:
+                status = os.waitid(
+                    os.P_PID, self.proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT
+                )
+                self.exited = status is not None
+            else:
+                for event in self._queue.control(None, 1, 0):
+                    if event.fflags & select.KQ_NOTE_EXIT:
+                        self.exited = True
+        return self.exited
+
+    def close(self) -> None:
+        if self._queue is not None:
+            self._queue.close()
+
+
+def _leader_exited(observer: _ChildExitObserver, timeout: float = 0.1) -> bool:
+    deadline = time.monotonic() + timeout
+    while not observer.observe():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.01)
+    return True
+
+
+def _signal_group(pgid: int, signum: int, observer: _ChildExitObserver) -> None:
+    try:
+        os.killpg(pgid, signum)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        # macOS refuses to signal a group whose only remaining member is our
+        # exited (unreaped) leader. Anything else is a real failure.
+        if not _leader_exited(observer):
+            raise
+
+
+def _group_alive(pgid: int) -> bool:
+    """Whether a group whose leader has exited still has running members."""
+    if sys.platform.startswith("linux"):
+        try:
+            entries = os.listdir("/proc")
+        except OSError:
+            return True  # Unknown: let the caller's deadline decide.
+        for name in entries:
+            if not name.isdigit():
+                continue
+            try:
+                with open(f"/proc/{name}/stat", "rb") as stat:
+                    data = stat.read()
+            except OSError:
+                continue  # Exited while scanning.
+            # Fields after the parenthesised command: state, ppid, pgrp, ...
+            state, _ppid, pgrp = data[data.rfind(b")") + 2 :].split(maxsplit=3)[:3]
+            if int(pgrp) == pgid and state not in (b"Z", b"X"):
+                return True
+        return False
+    # Linux delivers signals to zombies, but macOS/BSD reject zombie-only groups.
+    try:
+        os.killpg(pgid, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
+def _stop_group(
+    proc: subprocess.Popen,
+    observer: _ChildExitObserver,
+    signum: int,
+    timeout: float,
+    leader_only: bool = False,
+) -> None:
+    """Signal the owned group (or its leader), wait, SIGKILL leftovers, reap."""
+    if leader_only:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(proc.pid, signum)
+    else:
+        _signal_group(proc.pid, signum, observer)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if observer.observe() and not _group_alive(proc.pid):
+            break
+        time.sleep(_POLL_SECONDS)
+    _signal_group(proc.pid, signal.SIGKILL, observer)
+    proc.wait()
+
+
+def _announce_signal(signum: int) -> None:
+    # The terminal may already be gone (SIGHUP); never let reporting abort cleanup.
+    with contextlib.suppress(OSError, ValueError):
+        print(
+            f"\n\n⚠️  Training interrupted ({signal.Signals(signum).name}); "
+            f"stopping training processes (forced after {_GRACE_SECONDS:g}s)",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+def _supervise_group(
+    proc: subprocess.Popen, received: list[int], leader_only: bool
+) -> int:
+    try:
+        observer = _ChildExitObserver(proc)
+        try:
+            while not received and not observer.observe():
+                time.sleep(_POLL_SECONDS)
+            if received:
+                _announce_signal(received[0])
+                _stop_group(proc, observer, received[0], _GRACE_SECONDS, leader_only)
+            else:
+                # The leader exited on its own; stop anything it left behind.
+                _stop_group(proc, observer, signal.SIGTERM, _ORPHAN_GRACE_SECONDS)
+        finally:
+            observer.close()
+    except BaseException as error:
+        if proc.returncode is None:  # Leader unreaped: its group ID is still ours.
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError as cleanup_error:
+                error.add_note(f"launcher group kill failed: {cleanup_error}")
+            try:
+                proc.wait(timeout=5)
+            except Exception as cleanup_error:
+                error.add_note(f"launcher reap failed: {cleanup_error}")
+        raise
+    return proc.returncode
+
+
+def _supervise_child(proc: subprocess.Popen, received: list[int]) -> int:
+    """Fallback without process-group ownership (Windows): child only."""
+    try:
+        while not received:
+            try:
+                return proc.wait(timeout=_POLL_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass
+        _announce_signal(received[0])
+        if received[0] != signal.SIGINT:
+            # Ctrl+C already reached the child through the shared console.
+            proc.terminate()
+        try:
+            proc.wait(timeout=_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+    except BaseException:
+        if proc.returncode is None:
+            proc.kill()
+            proc.wait()
+        raise
+    return proc.returncode
+
+
+def _run_training_process(
+    cmd: list[str],
+    env: dict[str, str] | None = None,
+    *,
+    signal_leader_only: bool = False,
+) -> int:
+    """Run the training command and return a shell-style exit code.
+
+    On POSIX the child starts its own session, so accelerate/torchrun, every rank
+    and their DataLoader workers share one process group the launcher owns.
+    SIGTERM (e.g. Slurm/PBS preemption), SIGINT (Ctrl+C) and SIGHUP are
+    forwarded to the whole group, as a terminal would, or only to the leader
+    when ``signal_leader_only`` (torchrun forwards to its ranks itself, and a
+    second copy could interrupt their emergency checkpoint). Once the group
+    has finished, or after ``_GRACE_SECONDS``, it is SIGKILLed. Processes left
+    behind after a normal exit are stopped as well. A forwarded signal yields
+    ``128 + signum``; a child killed by signal N yields ``128 + N``.
+    """
+    received: list[int] = []
+
+    def record(signum, _frame):
+        if not received:  # Repeats must not restart the grace period.
+            received.append(signum)
+
+    previous = {}
+    try:
+        # Installed before spawning so a signal during Popen is not lost.
+        for signum in _FORWARDED_SIGNALS:
+            handler = signal.getsignal(signum)
+            if handler is signal.SIG_IGN or handler is None:
+                continue  # Respect e.g. nohup; unknown handlers can't be restored.
+            previous[signum] = handler
+            signal.signal(signum, record)
+        owns_group = os.name == "posix" and (
+            hasattr(os, "waitid") or hasattr(select, "kqueue")
+        )
+        proc = subprocess.Popen(cmd, env=env, start_new_session=owns_group)
+        if owns_group:
+            returncode = _supervise_group(proc, received, signal_leader_only)
+        else:
+            returncode = _supervise_child(proc, received)
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+    if received:
+        return 128 + received[0]
+    return 128 - returncode if returncode < 0 else returncode
 
 
 def detect_gpus() -> int:
@@ -223,10 +482,15 @@ For full training options, see: python -m wavedl.train --help
 
     # HPC-specific arguments
     parser.add_argument(
+        "--cpu",
+        action="store_true",
+        help="Train on CPU; --num_gpus then sets the number of CPU processes",
+    )
+    parser.add_argument(
         "--num_gpus",
         type=int,
         default=None,
-        help="Number of GPUs to use (default: auto-detect)",
+        help="Number of GPUs, or CPU processes with --cpu (default: auto-detect)",
     )
     parser.add_argument(
         "--num_machines",
@@ -279,6 +543,10 @@ For full training options, see: python -m wavedl.train --help
         parser.error("--main_process_ip is required for multi-node training.")
     if args.main_process_port is not None and not 1 <= args.main_process_port <= 65535:
         parser.error("--main_process_port must be between 1 and 65535.")
+    if args.cpu and args.num_gpus is not None and args.num_gpus > 64:
+        parser.error("--cpu supports at most 64 processes.")
+    if args.cpu and args.num_machines > 1:
+        parser.error("--cpu supports only single-machine training.")
     return args, remaining
 
 
@@ -337,7 +605,10 @@ def main() -> int:
         return 1
 
     # Auto-detect GPUs if not specified
-    if args.num_gpus is not None:
+    if args.cpu:
+        num_gpus = args.num_gpus or 1
+        print(f"Using CPU training ({num_gpus} process(es))")
+    elif args.num_gpus is not None:
         num_gpus = args.num_gpus
         print(f"Using NUM_GPUS={num_gpus} (set via command line)")
     else:
@@ -386,6 +657,9 @@ def main() -> int:
         f"--dynamo_backend={args.dynamo_backend}",
     ]
 
+    if args.cpu:
+        cmd.append("--cpu")
+
     # Explicitly set multi_gpu to suppress accelerate auto-detection warning
     if num_gpus * args.num_machines > 1:
         cmd.append("--multi_gpu")
@@ -398,6 +672,37 @@ def main() -> int:
 
     cmd += ["-m", "wavedl.train"] + train_args
 
+    env = None
+    # torchrun-based launches forward signals to their ranks themselves.
+    torchrun_launch = num_gpus * args.num_machines > 1
+    if not args.cpu and torchrun_launch:
+        # torchrun starts each rank of a script in its own session, outside the
+        # group this launcher signals; keep accelerate's setup but run ranks as
+        # in-process workers that stay in the launcher-owned group.
+        cmd[2] = "wavedl.distributed_launch"
+    elif args.cpu and num_gpus > 1:
+        # accelerate's --cpu launch runs a single process; use torchrun directly
+        # for real multi-process (Gloo) CPU training on this machine.
+        env = os.environ.copy()
+        env.update(
+            ACCELERATE_USE_CPU="true",
+            ACCELERATE_MIXED_PRECISION=args.mixed_precision,
+            ACCELERATE_DYNAMO_BACKEND=args.dynamo_backend.upper(),
+            CUDA_VISIBLE_DEVICES="",
+        )
+        cmd = [
+            sys.executable,
+            "-m",
+            "torch.distributed.run",
+            "--standalone",
+            f"--nproc_per_node={num_gpus}",
+            "--local_addr=127.0.0.1",
+            "--start-method=spawn",
+            "--run-path",
+            str(Path(__file__).with_name("train.py").resolve()),
+            *train_args,
+        ]
+
     # Create output directory if specified
     for i, arg in enumerate(train_args):
         if arg == "--output_dir" and i + 1 < len(train_args):
@@ -409,13 +714,11 @@ def main() -> int:
 
     # Launch training
     try:
-        result = subprocess.run(
-            cmd, check=False, env=utf8_stdio_environment(dict(os.environ))
+        exit_code = _run_training_process(
+            cmd,
+            utf8_stdio_environment(env if env is not None else dict(os.environ)),
+            signal_leader_only=torchrun_launch,
         )
-        exit_code = result.returncode
-    except KeyboardInterrupt:
-        print("\n\n⚠️  Training interrupted by user")
-        exit_code = 130
     except OSError as error:
         print(f"Error: Could not launch training: {error}", file=sys.stderr)
         exit_code = 1

@@ -577,6 +577,7 @@ WaveDL automatically enables performance optimizations for modern GPUs:
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `--num_gpus` | **Auto-detected** | Number of GPUs to use. By default, automatically detected via `nvidia-smi`. Set explicitly to override |
+| `--cpu` | off | Train on CPU; `--num_gpus N` then runs N CPU processes (single machine, at most 64) |
 | `--num_machines` | `1` | Number of machines in distributed setup |
 | `--mixed_precision` | `bf16` | Precision mode: `bf16`, `fp16`, or `no` |
 | `--dynamo_backend` | `no` | PyTorch Dynamo backend |
