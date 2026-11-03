@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import type { ConnectionSession } from '../../lib/connection-session';
-import { ArtifactClient, pngPreviewBlob, type Artifact } from '../../lib/artifact-client';
+import {
+  ArtifactClient,
+  pngPreviewBlob,
+  type Artifact,
+  type Inventory,
+} from '../../lib/artifact-client';
 import { artifactDownloadName } from '../../lib/artifact-download';
 import type { RunMonitorSnapshot } from '../../lib/run-monitor';
 
 const { isActive } = usePageActive();
-const { t } = useI18n({ useScope: 'global' });
+const { t, locale } = useI18n({ useScope: 'global' });
 const shellLayout = useShellLayout();
 
 const props = defineProps<{
@@ -18,7 +23,8 @@ const session = computed(() => toRaw(props.session));
 const connected = shallowRef(false);
 const scopeGeneration = shallowRef(0);
 const emit = defineEmits<{ runSelected: [runId: string] }>();
-const artifacts = shallowRef<readonly Artifact[]>([]);
+const emptyInventory: Inventory = { files: [], checkpoints: [] };
+const inventory = shallowRef<Inventory>(emptyInventory);
 const busy = shallowRef(false);
 const message = shallowRef('');
 const downloadStatus = shallowRef('');
@@ -46,7 +52,7 @@ function reset() {
   scope = new AbortController();
   epoch++;
   scopeGeneration.value++;
-  artifacts.value = [];
+  inventory.value = emptyInventory;
   busy.value = false;
   message.value = '';
   downloadStatus.value = '';
@@ -87,7 +93,7 @@ async function refresh() {
   try {
     const items = await new ArtifactClient(session.value).list(props.runId, scope.signal);
 
-    if (current === epoch) artifacts.value = items;
+    if (current === epoch) inventory.value = items;
   } catch {
     if (current === epoch) message.value = 'results.artifactsFailed';
   } finally {
@@ -112,9 +118,9 @@ async function consume(artifact: Artifact, preview = false) {
       if (current !== epoch) return;
       clearImage();
       imageUrl.value = URL.createObjectURL(image);
-      previewPath.value = `${artifact.generation}/${artifact.path}`;
+      previewPath.value = artifact.path;
     } else {
-      const name = await artifactDownloadName(artifact, artifacts.value);
+      const name = await artifactDownloadName(artifact, inventory.value.files);
 
       if (current !== epoch) return;
       const url = URL.createObjectURL(blob);
@@ -155,7 +161,7 @@ onBeforeUnmount(() => {
           @click="refresh"
           >{{ busy ? t('results.working') : t('results.refresh') }}</Button
         ><Button
-          v-if="artifacts.length"
+          v-if="inventory.files.length"
           variant="outline"
           @click="shellLayout.setActiveTab('artifacts')"
           >{{ t('results.openArtifacts') }}</Button
@@ -177,7 +183,7 @@ onBeforeUnmount(() => {
       :freshness="monitor.freshness"
     />
     <ArtifactList
-      :artifacts="artifacts"
+      :artifacts="inventory.files"
       :busy="busy"
       :image-url="imageUrl"
       :preview-path="previewPath"
@@ -185,19 +191,23 @@ onBeforeUnmount(() => {
       @preview="consume($event, true)"
     />
     <Teleport
-      v-if="panelTarget && parkedArtifacts && artifacts.length"
+      v-if="panelTarget && parkedArtifacts && inventory.files.length"
       :to="isActive ? panelTarget : parkedArtifacts"
       defer
     >
       <ul class="flex flex-col gap-3" :aria-label="t('results.artifact')">
         <li
-          v-for="artifact in artifacts"
-          :key="`${artifact.generation}/${artifact.path}`"
+          v-for="artifact in inventory.files"
+          :key="artifact.path"
           class="break-all rounded-lg border p-3 text-sm"
         >
           {{ artifact.path }}
           <p class="text-xs text-muted-foreground">
-            {{ artifact.generation }} / {{ artifact.attempt }}
+            {{ artifact.size.toLocaleString(locale === 'vi' ? 'vi-VN' : 'en-US') }}
+            {{ t('results.bytes') }} ·
+            <time :datetime="artifact.modified">{{
+              new Date(artifact.modified).toLocaleString(locale === 'vi' ? 'vi-VN' : 'en-US')
+            }}</time>
           </p>
           <Button variant="outline" size="sm" :disabled="busy" @click="consume(artifact)">{{
             t('results.download')
@@ -209,13 +219,13 @@ onBeforeUnmount(() => {
       v-if="connected"
       :key="scopeGeneration"
       :session="session"
-      :artifacts="artifacts"
+      :artifacts="inventory.files"
     />
     <ResultOperationForm
-      v-if="runId && artifacts.length"
+      v-if="runId && inventory.checkpoints.length"
       :key="`${runId}:${scopeGeneration}`"
       :session="session"
-      :artifacts="artifacts"
+      :checkpoints="inventory.checkpoints"
       @run-selected="emit('runSelected', $event)"
     />
     <div v-if="imageUrl" class="flex flex-col gap-3">

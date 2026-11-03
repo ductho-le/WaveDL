@@ -110,37 +110,9 @@ function json(body: FixtureResponse) {
 async function setup(
   options: {
     deadlineMs?: number;
-    partialGeneration?: number | 'all';
-    malformedGeneration?: number;
-    metadataFault?: 'authentication' | 'identity' | 'protocol' | 'checksum';
+    checkpoints?: string[];
   } = {},
 ) {
-  const bestBytes = new TextEncoder().encode(JSON.stringify({ schema_version: 1, kind: 'best' }));
-
-  const periodicBytes = new TextEncoder().encode(
-    JSON.stringify({ schema_version: 1, kind: 'periodic' }),
-  );
-
-  const sourceBytes = new TextEncoder().encode('published-inference-state');
-  const malformedBytes = new TextEncoder().encode('{malformed');
-
-  async function hash(bytes: Uint8Array<ArrayBuffer>) {
-    return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), (byte) =>
-      byte.toString(16).padStart(2, '0'),
-    ).join('');
-  }
-
-  const bestHash = await hash(bestBytes),
-    periodicHash = await hash(periodicBytes),
-    sourceHash = await hash(sourceBytes),
-    malformedHash = await hash(malformedBytes);
-
-  const sourceFiles = {
-    'model_weights.pth': { size: sourceBytes.length, sha256: sourceHash },
-    'training_meta.pkl': { size: sourceBytes.length, sha256: sourceHash },
-    'scaler.pkl': { size: sourceBytes.length, sha256: sourceHash },
-  };
-
   const keys: string[] = [],
     bodies: string[] = [],
     routes: string[] = [];
@@ -151,10 +123,11 @@ async function setup(
     rejectPlotPolicy = false;
 
   let current = train;
-  let metadataStarted = false;
+  let inventoryFault: 'authentication' | 'identity' | 'protocol' | null = null;
   let inventoryGate = Promise.resolve();
+  let planGate = Promise.resolve();
   let trainingPlan = approved();
-  let alteredPlot: 'data' | 'runtime' | 'map' | 'digest' | 'topology' | 'imports' | null = null;
+  let alteredPlot: 'data' | 'runtime' | 'map' | 'checkpoint' | 'topology' | 'imports' | null = null;
 
   const session = new ConnectionSession({
     origin: 'http://localhost:8765',
@@ -165,10 +138,10 @@ async function setup(
 
       if (path === '/api/health')
         return json({
-          daemon_id: metadataStarted && options.metadataFault === 'identity' ? 'other' : 'daemon',
+          daemon_id: inventoryFault === 'identity' ? 'other' : 'daemon',
           build_id: '1.8.1',
-          protocol_min: metadataStarted && options.metadataFault === 'protocol' ? 2 : 1,
-          protocol_max: metadataStarted && options.metadataFault === 'protocol' ? 2 : 1,
+          protocol_min: inventoryFault === 'protocol' ? 2 : 1,
+          protocol_max: inventoryFault === 'protocol' ? 2 : 1,
         });
 
       if (path === `/api/runs/${train.run_id}`) return json(current);
@@ -176,59 +149,18 @@ async function setup(
       if (path.endsWith('/artifacts')) {
         await inventoryGate;
 
+        if (inventoryFault === 'authentication') return new Response('', { status: 401 });
+
         return json({
-          generations: [1, 2, 3, 4, 5, 6].map((generation) => {
-            const files = {
-              'checkpoint_selection.json': {
-                size:
-                  generation === options.malformedGeneration
-                    ? malformedBytes.length
-                    : generation === 6
-                      ? periodicBytes.length
-                      : bestBytes.length,
-                sha256:
-                  generation === options.malformedGeneration
-                    ? malformedHash
-                    : generation === 6
-                      ? periodicHash
-                      : bestHash,
-              },
-            };
-
-            if (options.partialGeneration !== 'all' && generation !== options.partialGeneration)
-              Object.assign(files, sourceFiles);
-
-            return {
-              generation: `gen-${String(generation).padStart(6, '0')}`,
-              attempt: 1,
-              step: 7 - generation,
-              files,
-            };
-          }),
-        });
-      }
-
-      if (path.endsWith('checkpoint_selection.json')) {
-        metadataStarted = true;
-        const generation = Number(path.match(/gen-(\d+)/)?.[1] ?? 0);
-
-        if (generation === 5 && options.metadataFault === 'authentication')
-          return new Response('', { status: 401 });
-
-        const bytes =
-          generation === options.malformedGeneration
-            ? malformedBytes
-            : generation === 5 && options.metadataFault === 'checksum'
-              ? new Uint8Array(bestBytes.length)
-              : path.includes('gen-000006')
-                ? periodicBytes
-                : bestBytes;
-
-        return new Response(bytes, {
-          headers: {
-            'content-type': 'application/octet-stream',
-            'content-length': String(bytes.length),
-          },
+          files: [
+            {
+              path: 'best_checkpoint/model.safetensors',
+              size: 25,
+              modified: '2026-11-03T10:00:00+00:00',
+            },
+            { path: 'training_history.csv', size: 10, modified: '2026-11-03T10:00:01+00:00' },
+          ],
+          checkpoints: options.checkpoints ?? ['best_checkpoint', 'epoch_5_checkpoint'],
         });
       }
 
@@ -243,8 +175,8 @@ async function setup(
 
         if (rejectPlotPolicy)
           return new Response('GPU allocation must equal processes_per_machine', { status: 422 });
+        await planGate;
         const source = fixtureTrainingManifestSchema.parse(trainingPlan.preview.spec);
-        const generation = request.checkpoint_source.generation;
 
         const manifest = {
           schema_version: 1,
@@ -259,19 +191,9 @@ async function setup(
           storage_map: source.storage_map ?? [],
           checkpoint_source: {
             ...request.checkpoint_source,
-            manifest_sha256: await hash(
-              new TextEncoder().encode(`${JSON.stringify(trainingPlan.preview.spec)}\n`),
-            ),
-            complete_sha256: 'a'.repeat(64),
-            files: {
-              'checkpoint_selection.json': { size: bestBytes.length, sha256: bestHash },
-            },
-            selection: { schema_version: 1, kind: 'best' },
+            path: `/isolated/run/output/${request.checkpoint_source.checkpoint}`,
           },
         };
-
-        if (generation !== `gen-${String(options.partialGeneration).padStart(6, '0')}`)
-          Object.assign(manifest.checkpoint_source.files, sourceFiles);
 
         if (alteredPlot === 'data') manifest.resolved_config.data_path = '/changed/train.npz';
 
@@ -280,7 +202,7 @@ async function setup(
         if (alteredPlot === 'map')
           manifest.storage_map = [{ host_root: '/approved', execution_root: '/changed' }];
 
-        if (alteredPlot === 'digest') manifest.checkpoint_source.manifest_sha256 = 'b'.repeat(64);
+        if (alteredPlot === 'checkpoint') manifest.checkpoint_source.checkpoint = 'epoch_5_checkpoint';
 
         if (alteredPlot === 'imports')
           manifest.resolved_config.import_modules = ['unapproved.module'];
@@ -392,6 +314,18 @@ async function setup(
 
       return () => release();
     },
+    holdPlotPlan: () => {
+      let release = () => {};
+
+      planGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+
+      return () => release();
+    },
+    faultInventory: (value: typeof inventoryFault) => {
+      inventoryFault = value;
+    },
     loseSubmit: () => {
       lost = true;
     },
@@ -447,7 +381,7 @@ describe('actual captured automatic plot coordinator', () => {
       }
     }
 
-    expect(keys[0]).toBe(`web-autoplot-v1:${train.run_id}:${train.request_id}:gen-000005`);
+    expect(keys[0]).toBe(`web-autoplot-v1:${train.run_id}:${train.request_id}:best_checkpoint`);
     expect(keys[1]).toBe(keys[0]);
   });
   it.each([
@@ -524,38 +458,16 @@ describe('actual captured automatic plot coordinator', () => {
     },
   );
   it.each(['capture', 'detach'])(
-    'does not let an old pending preview digest overwrite a newer %s scope',
+    'does not let an old pending plot plan overwrite a newer %s scope',
     async (change) => {
       const owner = await setup();
       const plan = await owner.approve();
-      const originalDigest = crypto.subtle.digest.bind(crypto.subtle);
-      let release = () => {};
-
-      const gate = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-
-      let sourceDigests = 0;
-      let held = false;
-
-      const spy = vi.spyOn(crypto.subtle, 'digest').mockImplementation(async (algorithm, data) => {
-        const result = await originalDigest(algorithm, data);
-
-        if (
-          new TextDecoder().decode(data) === `${JSON.stringify(plan.preview.spec)}\n` &&
-          ++sourceDigests === 2
-        ) {
-          held = true;
-          await gate;
-        }
-
-        return result;
-      });
+      const release = owner.holdPlotPlan();
 
       try {
         owner.controller.capture(train, plan);
         const work = owner.controller.observeFresh(train);
-        await vi.waitFor(() => expect(held).toBe(true));
+        await vi.waitFor(() => expect(owner.bodies).toHaveLength(1));
 
         if (change === 'capture') {
           const next: RunView = {
@@ -576,14 +488,13 @@ describe('actual captured automatic plot coordinator', () => {
         expect(owner.routes).not.toContain('POST /api/runs');
       } finally {
         release();
-        spy.mockRestore();
         owner.controller.dispose();
         owner.session.detach();
       }
     },
   );
   it.each(['replace', 'clear'])(
-    'disarms revoked source approval before metadata or planning: %s',
+    'disarms revoked source approval before inventory or planning: %s',
     async (change) => {
       const owner = await setup();
       const plan = await owner.approve();
@@ -607,11 +518,11 @@ describe('actual captured automatic plot coordinator', () => {
     },
   );
 
-  const alterations: Array<'data' | 'runtime' | 'map' | 'digest' | 'imports'> = [
+  const alterations: Array<'data' | 'runtime' | 'map' | 'checkpoint' | 'imports'> = [
     'data',
     'runtime',
     'map',
-    'digest',
+    'checkpoint',
     'imports',
   ];
 
@@ -685,7 +596,7 @@ describe('actual captured automatic plot coordinator', () => {
     expect(request.storage_map).toEqual(mappings);
     expect(request.config.data_path).toBe('/approved/train.npz');
     expect(request.runtime.python).toBe('/approved/python');
-    expect(request.checkpoint_source.generation).toBe('gen-000005');
+    expect(request.checkpoint_source.checkpoint).toBe('best_checkpoint');
     owner.controller.dispose();
     owner.session.detach();
   });
@@ -778,14 +689,17 @@ describe('actual captured automatic plot coordinator', () => {
     deadline.controller.dispose();
     deadline.session.detach();
   });
-  it('selects latest numerical best of five publications, never later periodic or greatest step', async () => {
-    const { controller, session, bodies, approve } = await setup();
+  it('plans from the best checkpoint, never a later periodic or interrupted one', async () => {
+    const { controller, session, bodies, approve } = await setup({
+      checkpoints: ['best_checkpoint', 'epoch_9_checkpoint', 'interrupted_checkpoint'],
+    });
+
     controller.capture(train, await approve());
     await controller.observeFresh(train);
     expect(controller.state.value.status).toBe('submitted');
     expect(controller.state.value.plotRunId).toBe(plot.run_id);
     const request = resultRequestSchema.parse(parseJson(bodies[0] ?? '{}'));
-    expect(request.checkpoint_source.generation).toBe('gen-000005');
+    expect(request.checkpoint_source).toEqual({ run_id: train.run_id, checkpoint: 'best_checkpoint' });
     expect(request.config.data_path).toBe('/approved/train.npz');
     expect(request.runtime.python).toBe('/approved/python');
     await controller.observeFresh(train);
@@ -793,57 +707,48 @@ describe('actual captured automatic plot coordinator', () => {
     controller.dispose();
     session.detach();
   });
-  it('skips a partial newest best publication and selects the older complete source', async () => {
-    const { controller, session, bodies, approve } = await setup({ partialGeneration: 5 });
-    controller.capture(train, await approve());
-    await controller.observeFresh(train);
-    expect(controller.state.value.status).toBe('submitted');
-    expect(resultRequestSchema.parse(parseJson(bodies[0] ?? '{}')).checkpoint_source.generation).toBe('gen-000004');
-    controller.dispose();
-    session.detach();
-  });
-  it('skips malformed newest checkpoint metadata and selects an older verified publication', async () => {
-    const { controller, session, bodies, approve } = await setup({ malformedGeneration: 5 });
-    controller.capture(train, await approve());
-    await controller.observeFresh(train);
-    expect(controller.state.value.status).toBe('submitted');
-    expect(resultRequestSchema.parse(parseJson(bodies[0] ?? '{}')).checkpoint_source.generation).toBe('gen-000004');
-    controller.dispose();
-    session.detach();
-  });
-  it('refuses partial publications without planning, submitting or cancelling any plot', async () => {
-    const owner = await setup({ partialGeneration: 'all' });
-
-    try {
-      owner.controller.capture(train, await owner.approve());
-      await owner.controller.observeFresh(train);
-      expect(owner.controller.state.value.status).toBe('unavailable');
-      expect(translateClientDiagnostic('en', owner.controller.state.value.message)).toContain(
-        'incomplete',
-      );
-      expect(owner.session.snapshot().status).toBe('connected');
-      await owner.controller.retry();
-      await owner.controller.observeFresh(train);
-      expect(owner.bodies).toHaveLength(0);
-      expect(owner.routes.some((route) => route.startsWith('POST'))).toBe(false);
-    } finally {
-      owner.controller.dispose();
-      owner.session.detach();
-    }
-  });
-  it.each(['authentication', 'identity', 'protocol', 'checksum'] as const)(
-    'revokes automatic plotting instead of falling back after a metadata %s fault',
-    async (metadataFault) => {
-      const owner = await setup({ metadataFault });
+  it.each([{ checkpoints: [] }, { checkpoints: ['epoch_5_checkpoint', 'interrupted_checkpoint'] }])(
+    'refuses a run without a best checkpoint %j without planning, submitting or cancelling any plot',
+    async ({ checkpoints }) => {
+      const owner = await setup({ checkpoints });
 
       try {
         owner.controller.capture(train, await owner.approve());
+        await owner.controller.observeFresh(train);
+        expect(owner.controller.state.value.status).toBe('unavailable');
+        expect(translateClientDiagnostic('en', owner.controller.state.value.message)).toContain(
+          'incomplete',
+        );
+        expect(owner.session.snapshot().status).toBe('connected');
+        await owner.controller.retry();
+        await owner.controller.observeFresh(train);
+        expect(owner.bodies).toHaveLength(0);
+        expect(owner.routes.some((route) => route.startsWith('POST'))).toBe(false);
+      } finally {
+        owner.controller.dispose();
+        owner.session.detach();
+      }
+    },
+  );
+  const faults: Array<'authentication' | 'identity' | 'protocol'> = [
+    'authentication',
+    'identity',
+    'protocol',
+  ];
+
+  it.each(faults)(
+    'revokes automatic plotting after an inventory %s fault',
+    async (fault) => {
+      const owner = await setup();
+
+      try {
+        owner.controller.capture(train, await owner.approve());
+        owner.faultInventory(fault);
         await owner.controller.observeFresh(train);
         expect(owner.controller.state.value.status).toBe('stopped');
         expect(owner.session.api).toBeNull();
         expect(owner.bodies).toHaveLength(0);
         expect(owner.routes).not.toContain('POST /api/runs');
-        expect(owner.routes.some((route) => route.includes('gen-000004'))).toBe(false);
       } finally {
         owner.controller.dispose();
         owner.session.detach();

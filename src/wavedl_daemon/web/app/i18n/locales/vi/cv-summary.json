@@ -1,10 +1,7 @@
 {
   "publicationEvidence": "Bằng chứng xuất bản, chưa chắc hoàn tất",
   "title": "Tổng hợp kiểm định chéo",
-  "help": "Bản công bố hoàn tất đã xác minh, không phải bằng chứng lần chạy hoàn tất thành công. Bản tổng hợp này không phải trọng số mô hình. Chọn đúng thế hệ và lần chạy; không tự suy đoán thế hệ mới nhất.",
-  "publication": "Bản công bố tổng hợp",
-  "choose": "Chọn bản công bố tổng hợp",
-  "source": "{generation} · lần chạy {attempt}",
+  "help": "Đọc từ tệp cv_summary.json của lần chạy này. Bản tổng hợp này không phải trọng số mô hình.",
   "load": "Tải bản tổng hợp đã xác minh",
   "loading": "Đang xác minh bản tổng hợp…",
   "failed": "Không thể xác minh bản tổng hợp hoặc định dạng không được hỗ trợ. Hãy làm mới bản công bố và thử lại.",

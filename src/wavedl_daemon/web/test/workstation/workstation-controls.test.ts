@@ -37,15 +37,15 @@ describe('workstation control boundaries', () => {
     expect(locateRequestSchema.safeParse({ root: 'data', path: 1 }).success).toBe(false);
   });
 
-  it('rejects unknown, stale, empty and non-string publication ids', () => {
-    const choices = segmentedSelectionSchema(['gen-000001', 'gen-000002']);
+  it('rejects unknown, stale, empty and non-string checkpoint choices', () => {
+    const choices = segmentedSelectionSchema(['best_checkpoint', 'epoch_5_checkpoint']);
 
-    expect(choices.parse('gen-000002')).toBe('gen-000002');
+    expect(choices.parse('epoch_5_checkpoint')).toBe('epoch_5_checkpoint');
 
-    for (const value of ['gen-000003', '', 2, {}, null])
+    for (const value of ['interrupted_checkpoint', '', 2, {}, null])
       expect(choices.safeParse(value).success).toBe(false);
 
-    expect(segmentedSelectionSchema(['gen-000001']).safeParse('gen-000002').success).toBe(false);
+    expect(segmentedSelectionSchema(['best_checkpoint']).safeParse('epoch_5_checkpoint').success).toBe(false);
   });
 
   it('keeps every selectable training default among its declared choices', () => {

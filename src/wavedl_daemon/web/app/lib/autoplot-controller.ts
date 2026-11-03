@@ -23,8 +23,7 @@ import {
   storageMapSchema,
 } from '../../shared/schemas/storage-mapping';
 import type { ConnectionSession } from './connection-session';
-import { ArtifactClient, type Artifact, type SelectionMetadata } from './artifact-client';
-import { checkpointOptions, type CheckpointOption } from './result-operations';
+import { ArtifactClient, type Checkpoint } from './artifact-client';
 import {
   approvedTrainingManifestSchema, trainingPlanPreviewSchema, approvedTrainingConfigSchema,
   sourcePlotManifestSchema, approvedPlotManifestSchema,
@@ -151,27 +150,6 @@ function canonical(value: Json): string {
   return JSON.stringify(value);
 }
 
-const inferenceWeightNames = new Set([
-  'model.safetensors',
-  'model.bin',
-  'pytorch_model.bin',
-  'model_weights.pth',
-]);
-
-/** A best publication is usable for automatic plots only when its inference state is complete. */
-function hasInferenceSource(artifacts: readonly Artifact[], generation: string): boolean {
-  const paths = new Set(
-    artifacts
-      .flatMap((artifact) => artifact.generation === generation ? [artifact.path] : []),
-  );
-
-  return (
-    paths.has('training_meta.pkl') &&
-    paths.has('scaler.pkl') &&
-    [...inferenceWeightNames].some((name) => paths.has(name))
-  );
-}
-
 /** Bounded browser-local continuation of one explicitly approved training run. */
 export class AutoPlotController {
   readonly state = shallowRef<AutomaticPlotState>({
@@ -186,8 +164,6 @@ export class AutoPlotController {
   #plan: PlanView | null = null;
   #sourcePlan: PlanView | null = null;
   #sourceApi: DaemonApi | null = null;
-  #sourceFiles: Artifact[] = [];
-  #sourceSelection: SelectionMetadata | null = null;
   #scope = new AbortController();
   #revision = -1;
   #daemonId = '';
@@ -377,51 +353,12 @@ export class AutoPlotController {
 
     try {
       const client = new ArtifactClient(this.session);
-      const artifacts = await client.list(run.run_id, signal);
-
-      const candidates = artifacts.filter(
-        (item) => item.attempt === run.attempt && item.path === 'checkpoint_selection.json',
-      );
-
-      candidates.sort((left, right) => {
-        const a = BigInt(left.generation.slice(4)),
-          b = BigInt(right.generation.slice(4));
-
-        return a < b ? 1 : a > b ? -1 : 0;
-      });
-      const publications: CheckpointOption[] = [];
-      let incompleteBest = false;
-
-      for (const candidate of candidates) {
-        if (!this.#current(signal)) return;
-        let options: readonly CheckpointOption[];
-
-        try {
-          options = await checkpointOptions(this.session, [candidate], signal);
-        } catch {
-          // Hash-covered malformed metadata can be skipped. Transport, authority
-          // and byte-integrity faults revoke the connection, so the scope check
-          // below prevents falling back after those failures.
-          if (!this.#current(signal)) return;
-          continue;
-        }
-
-        const option = options[0];
-
-        if (option?.classification.kind === 'best') {
-          if (!hasInferenceSource(artifacts, candidate.generation)) {
-            incompleteBest = true;
-            continue;
-          }
-
-          publications.push(option);
-          break;
-        }
-      }
+      const inventory = await client.list(run.run_id, signal);
 
       if (!this.#current(signal)) return;
+      const best = inventory.checkpoints.find((item) => item.name === 'best_checkpoint');
 
-      if (!publications.length && incompleteBest) {
+      if (!best) {
         this.stop();
         this.state.value = {
           status: 'unavailable',
@@ -432,19 +369,12 @@ export class AutoPlotController {
         return;
       }
 
-      this.#intent = this.#deriveIntent(run, publications[0]);
+      this.#intent = this.#deriveIntent(run, best);
 
       if (!this.#intent) return;
-      const selected = publications[0];
-
-      if (!selected) return;
-      this.#sourceFiles = artifacts.filter(
-        (item) => item.generation === selected.artifact.generation,
-      );
-      this.#sourceSelection = selected.classification;
       this.#sourceAttempt = run.attempt;
 
-      // Re-read lifecycle after metadata downloads; it may have requeued meanwhile.
+      // Re-read lifecycle after the inventory read; it may have requeued meanwhile.
       const latest = await this.session.perform((api, scoped) => api.getRun(run.run_id, scoped), {
         signal,
       });
@@ -467,7 +397,7 @@ export class AutoPlotController {
         return;
       }
 
-      for (const option of publications) client.assertSelection(option.artifact);
+      client.assertSelection(best);
       await this.#execute(signal);
     } catch {
       this.#error(parent);
@@ -475,25 +405,20 @@ export class AutoPlotController {
       if (this.#scope.signal === parent) this.#busy = false;
     }
   }
-  #deriveIntent(run: RunView, selected: CheckpointOption | undefined): AutoPlotIntent | null {
+  #deriveIntent(run: RunView, selected: Checkpoint): AutoPlotIntent | null {
     const captured = this.#request;
     const sourceRun = this.#run;
 
     if (
       !captured ||
       !sourceRun ||
-      !selected?.selectable ||
-      selected.classification.kind !== 'best' ||
-      selected.artifact.runId !== run.run_id ||
-      selected.artifact.attempt !== run.attempt ||
+      selected.runId !== run.run_id ||
       captured.config.cv > 0 ||
       run.cancellation_requested ||
       run.backend !== captured.backend
     )
       return null;
-    // observeFresh has already selected the newest complete, verified best.
     // Once this intent exists, retries execute it directly with the same key.
-    const source = selected.artifact;
     const config = captured.config;
 
     const request: ResultRequest = {
@@ -501,7 +426,7 @@ export class AutoPlotController {
       operation: 'plot',
       runtime: captured.runtime,
       topology: { num_machines: 1, processes_per_machine: 1, machine_rank: 0 },
-      checkpoint_source: { run_id: run.run_id, generation: source.generation },
+      checkpoint_source: { run_id: run.run_id, checkpoint: selected.name },
       config: {
         ...inferenceDefaults,
         data_path: config.data_path,
@@ -517,7 +442,7 @@ export class AutoPlotController {
 
     return {
       request: resultRequestSchema.parse(request),
-      idempotencyKey: `web-autoplot-v1:${sourceRun.run_id}:${sourceRun.request_id}:${source.generation}`,
+      idempotencyKey: `web-autoplot-v1:${sourceRun.run_id}:${sourceRun.request_id}:${selected.name}`,
     };
   }
   async #execute(signal: AbortSignal): Promise<void> {
@@ -533,7 +458,7 @@ export class AutoPlotController {
 
       if (!this.#current(signal)) return;
 
-      if (!(await this.#validatePlotPlan(plan, intent, signal)) || !this.#current(signal)) return;
+      if (!this.#validatePlotPlan(plan, intent, signal) || !this.#current(signal)) return;
       this.#plan = plan;
     } else {
       const plan = this.#plan;
@@ -590,20 +515,10 @@ export class AutoPlotController {
 
     if (this.#current(signal)) this.#complete(result);
   }
-  async #validatePlotPlan(
-    plan: PlanView,
-    intent: AutoPlotIntent,
-    signal: AbortSignal,
-  ): Promise<boolean> {
+  #validatePlotPlan(plan: PlanView, intent: AutoPlotIntent, signal: AbortSignal): boolean {
     const parent = this.#scope.signal;
     const sourcePlan = this.#sourcePlan;
     const sourceApi = this.#sourceApi;
-
-    const files = Object.fromEntries(
-      this.#sourceFiles.map((file) => [file.path, { size: file.size, sha256: file.sha256 }]),
-    );
-
-    const selection = this.#sourceSelection ? { ...this.#sourceSelection } : null;
 
     const current = (): boolean =>
       this.#scope.signal === parent &&
@@ -626,18 +541,6 @@ export class AutoPlotController {
       const plot = parsedPlot.data;
       const pin = plot.checkpoint_source;
 
-      const digest = Array.from(
-        new Uint8Array(
-          await crypto.subtle.digest(
-            'SHA-256',
-            new TextEncoder().encode(`${JSON.stringify(sourcePlan.preview.spec)}\n`),
-          ),
-        ),
-        (byte) => byte.toString(16).padStart(2, '0'),
-      ).join('');
-
-      if (!current()) return false;
-
       if (
         plot.run_id !== plan.run_id ||
         plan.preview.target !== intent.request.backend ||
@@ -648,10 +551,7 @@ export class AutoPlotController {
         canonical(plot.resolved_config.import_modules ?? []) !==
           canonical(source.resolved_config.import_modules ?? []) ||
         pin.run_id !== intent.request.checkpoint_source.run_id ||
-        pin.generation !== intent.request.checkpoint_source.generation ||
-        pin.manifest_sha256 !== digest ||
-        canonical(pin.files ?? null) !== canonical(files) ||
-        canonical(pin.selection ?? null) !== canonical(selection)
+        pin.checkpoint !== intent.request.checkpoint_source.checkpoint
       )
         throw clientError('plotAuthorityChanged', {});
 
@@ -757,8 +657,6 @@ export class AutoPlotController {
     this.#plan = null;
     this.#sourcePlan = null;
     this.#sourceApi = null;
-    this.#sourceFiles = [];
-    this.#sourceSelection = null;
     this.#busy = false;
 
     if (this.#timer) clearTimeout(this.#timer);

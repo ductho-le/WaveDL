@@ -1,10 +1,7 @@
 {
   "publicationEvidence": "Publication evidence, not completion",
   "title": "Cross-validation summary",
-  "help": "Verified completed publication, not proof of successful run completion. This summary is not model weights. Select an exact generation and attempt; no latest-generation inference is used.",
-  "publication": "Summary publication",
-  "choose": "Choose a summary publication",
-  "source": "{generation} · attempt {attempt}",
+  "help": "Read from this run's cv_summary.json. This summary is not model weights.",
   "load": "Load verified summary",
   "loading": "Verifying summary…",
   "failed": "The summary could not be verified or does not match the supported format. Refresh publications and try again.",

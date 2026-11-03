@@ -2,7 +2,7 @@ import { jsonObjectSchema } from '../../shared/schemas/json';
 import type { FixtureResponse } from './fixture-schemas';
 import { describe, expect, it } from 'vitest';
 import { inferenceDefaults, resultRequestSchema } from '../../shared/schemas/result-request';
-import { ResultOperations, checkpointOptions } from '../../app/lib/result-operations';
+import { ResultOperations } from '../../app/lib/result-operations';
 import { ArtifactClient } from '../../app/lib/artifact-client';
 import { CatalogApi } from '../../app/lib/catalog-api';
 import { ConnectionSession } from './session-fixture';
@@ -68,19 +68,7 @@ function json(body: FixtureResponse) {
   return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
 }
 
-async function setup(kind = 'best', fold?: number) {
-  const classification = { schema_version: 1, kind };
-
-  if (fold !== undefined) Object.assign(classification, { fold });
-
-  const bytes = new TextEncoder().encode(
-    JSON.stringify(classification),
-  );
-
-  const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), (byte) =>
-    byte.toString(16).padStart(2, '0'),
-  ).join('');
-
+async function setup() {
   const keys: Array<string | null> = [];
   const bodies: string[] = [];
 
@@ -103,22 +91,14 @@ async function setup(kind = 'best', fold?: number) {
 
       if (path.endsWith('/artifacts'))
         return json({
-          generations: [
+          files: [
             {
-              generation: 'gen-000001',
-              attempt: 1,
-              step: 5,
-              files: { 'checkpoint_selection.json': { size: bytes.length, sha256: hash } },
+              path: 'best_checkpoint/model.safetensors',
+              size: 1,
+              modified: '2026-11-03T10:00:00+00:00',
             },
           ],
-        });
-
-      if (path.endsWith('checkpoint_selection.json'))
-        return new Response(bytes, {
-          headers: {
-            'content-type': 'application/octet-stream',
-            'content-length': String(bytes.length),
-          },
+          checkpoints: ['best_checkpoint', 'epoch_5_checkpoint'],
         });
 
       if (path === '/api/runs/plan') {
@@ -144,20 +124,20 @@ async function setup(kind = 'best', fold?: number) {
 
   await session.connect('token');
   const data = await new CatalogApi(session).resolve('data', 'test.npz');
-  const metadata = (await new ArtifactClient(session).list(sourceRun))[0];
+  const [best, periodic] = (await new ArtifactClient(session).list(sourceRun)).checkpoints;
 
-  if (!metadata) throw new Error('Missing metadata');
+  if (!best || !periodic) throw new Error('Missing checkpoints');
 
   const draft = resultRequestSchema.parse({
     backend: 'local',
     operation: 'test',
     config: { ...inferenceDefaults, data_path: data.path },
-    checkpoint_source: { run_id: sourceRun, generation: metadata.generation },
+    checkpoint_source: { run_id: sourceRun, checkpoint: best.name },
     runtime: { python: '/usr/bin/python3', mode: 'existing', device: 'cpu', environment: {} },
     topology: { num_machines: 1, processes_per_machine: 1, machine_rank: 0 },
   });
 
-  return { session, data, metadata, draft, keys, bodies, workflow: new ResultOperations(session) };
+  return { session, data, best, periodic, draft, keys, bodies, workflow: new ResultOperations(session) };
 }
 
 describe('explicit published inference workflow', () => {
@@ -177,101 +157,97 @@ describe('explicit published inference workflow', () => {
     const draft = resultRequestSchema.safeParse({
       ...resultOperationDefaults,
       config: { ...resultOperationDefaults.config, data_path: '/data/test.npz' },
-      checkpoint_source: { run_id: sourceRun, generation: 'gen-000001' },
+      checkpoint_source: { run_id: sourceRun, checkpoint: 'best_checkpoint' },
       runtime: { ...resultOperationDefaults.runtime, python: '/usr/bin/python3' },
     });
 
     expect(draft.success).toBe(true);
 
     if (draft.success) expect(draft.data.backend).toBe('local');
+    expect(resultRequestSchema.safeParse(resultOperationDefaults).success).toBe(false);
   });
+  it.each(['gen-000001', 'epoch__checkpoint', 'best_checkpoint/model.safetensors', 'fold_1'])(
+    'rejects checkpoint source name %s',
+    (checkpoint) => {
+      const draft = createResultOperationDefaults();
+
+      expect(
+        resultRequestSchema.safeParse({
+          ...draft,
+          config: { ...draft.config, data_path: '/data/test.npz' },
+          checkpoint_source: { run_id: sourceRun, checkpoint },
+          runtime: { ...draft.runtime, python: '/usr/bin/python3' },
+        }).success,
+      ).toBe(false);
+    },
+  );
   it('plans exact source and freezes approval, reusing unchanged retry key', async () => {
-    const { workflow, draft, data, metadata, keys, bodies } = await setup();
-    await workflow.prepare(draft, data, metadata);
+    const { workflow, draft, data, best, keys, bodies } = await setup();
+    workflow.prepare(draft, data, best);
     await workflow.preview();
-    await workflow.prepare(draft, data, metadata);
+    workflow.prepare(draft, data, best);
     await workflow.preview();
     expect(keys[0]).toBe(keys[1]);
     expect(resultRequestSchema.parse(JSON.parse(bodies[0] ?? '{}')).checkpoint_source).toEqual({
       run_id: sourceRun,
-      generation: 'gen-000001',
+      checkpoint: 'best_checkpoint',
     });
     expect(jsonObjectSchema.parse(resultRequestSchema.parse(JSON.parse(bodies[0] ?? '{}')).config).checkpoint).toBeUndefined();
     expect((await workflow.submit()).run_id).toBe(ids.run_id);
     workflow.invalidate();
     await expect(workflow.submit()).rejects.toThrow();
   });
-  it('never selects CV summary or anonymous folds automatically', async () => {
-    for (const kind of ['cross_validation_summary', 'cross_validation_fold']) {
-      const { workflow, draft, data, metadata } = await setup(kind);
-      await expect(workflow.prepare(draft, data, metadata)).rejects.toThrow('CV');
-    }
-
-    const { workflow, draft, data, metadata } = await setup('cross_validation_fold', 2);
-    await workflow.prepare(draft, data, metadata);
-    await workflow.preview();
-    expect(workflow.approved).not.toBeNull();
-  });
   it('rejects unrelated dataset/source and stale connection grants', async () => {
-    const { workflow, draft, data, metadata, session } = await setup();
-    await expect(
-      workflow.prepare(
-        { ...draft, checkpoint_source: { ...draft.checkpoint_source, generation: 'gen-000002' } },
-        data,
-        metadata,
-      ),
-    ).rejects.toThrow('exact');
-    await workflow.prepare(draft, data, metadata);
+    const { workflow, draft, data, best, periodic, session } = await setup();
+
+    for (const checkpoint_source of [
+      { ...draft.checkpoint_source, checkpoint: periodic.name },
+      { ...draft.checkpoint_source, run_id: ids.run_id },
+    ])
+      expect(() => workflow.prepare({ ...draft, checkpoint_source }, data, best)).toThrow('exact');
+    expect(() => workflow.prepare(draft, data, { ...best })).toThrow();
+    workflow.prepare(draft, data, best);
     await workflow.preview();
     session.detach();
     expect(workflow.approved).toBeNull();
-    await expect(workflow.prepare(draft, data, metadata)).rejects.toThrow();
-  });
-  it('offers verified typed source labels and disables summary/anonymous CV folds', async () => {
-    for (const [kind, fold, selectable] of [
-      ['best', undefined, true],
-      ['periodic', undefined, true],
-      ['interrupted', undefined, true],
-      ['cross_validation_summary', undefined, false],
-      ['cross_validation_fold', undefined, false],
-      ['cross_validation_fold', 2, true],
-    ] as const) {
-      const { session, metadata } = await setup(kind, fold);
-      const options = await checkpointOptions(session, [metadata]);
-      expect(options[0]?.classification.kind).toBe(kind);
-      expect(options[0]?.selectable).toBe(selectable);
-      expect(options[0]?.label).toContain(kind.replaceAll('_', ' '));
-      session.detach();
-      await expect(checkpointOptions(session, [metadata])).rejects.toThrow();
-    }
+    expect(() => workflow.prepare(draft, data, best)).toThrow();
   });
   it('rejects prepared selections after reconnect before sending a preview request', async () => {
-    const { workflow, draft, data, metadata, session, bodies } = await setup();
-    await workflow.prepare(draft, data, metadata);
+    const { workflow, draft, data, best, session, bodies } = await setup();
+    workflow.prepare(draft, data, best);
     expect(await session.reconnect('replacement-token')).toBe(true);
 
     await expect(workflow.preview()).rejects.toThrow('current connection');
     expect(bodies).toHaveLength(0);
     expect(workflow.approved).toBeNull();
+    expect(() => workflow.prepare(draft, data, best)).toThrow();
 
     const currentData = await new CatalogApi(session).resolve('data', 'test.npz');
-    const currentMetadata = (await new ArtifactClient(session).list(sourceRun))[0];
+    const currentBest = (await new ArtifactClient(session).list(sourceRun)).checkpoints[0];
 
-    if (!currentMetadata) throw new Error('Missing current metadata');
-    await workflow.prepare(draft, currentData, currentMetadata);
+    if (!currentBest) throw new Error('Missing current checkpoint');
+    workflow.prepare(draft, currentData, currentBest);
     await workflow.preview();
     expect(bodies).toHaveLength(1);
     expect(workflow.approved).not.toBeNull();
     session.detach();
   });
-  it('plans diagnostic plots using an explicitly classified CV fold', async () => {
-    const { workflow, draft, data, metadata, bodies } = await setup('cross_validation_fold', 3);
-    await workflow.prepare({ ...draft, operation: 'plot' }, data, metadata);
+  it('plans diagnostic plots from an explicitly chosen periodic checkpoint', async () => {
+    const { workflow, draft, data, periodic, bodies } = await setup();
+    workflow.prepare(
+      {
+        ...draft,
+        operation: 'plot',
+        checkpoint_source: { run_id: periodic.runId, checkpoint: periodic.name },
+      },
+      data,
+      periodic,
+    );
     await workflow.preview();
     expect(resultRequestSchema.parse(JSON.parse(bodies[0] ?? '{}')).operation).toBe('plot');
     expect(resultRequestSchema.parse(JSON.parse(bodies[0] ?? '{}')).checkpoint_source).toEqual({
       run_id: sourceRun,
-      generation: metadata.generation,
+      checkpoint: 'epoch_5_checkpoint',
     });
   });
 });

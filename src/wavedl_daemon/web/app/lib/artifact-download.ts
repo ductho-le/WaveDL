@@ -38,23 +38,14 @@ export async function artifactDownloadName(
   artifact: Artifact,
   inventory: readonly Artifact[] = [],
 ): Promise<string> {
-  if (
-    !isUuid(artifact.runId) ||
-    !/^[0-9a-f]{64}$/u.test(artifact.sha256) ||
-    !/^gen-\d{6,}$/.test(artifact.generation) ||
-    artifact.generation.length > 64
-  )
-    throw clientError('artifactProvenanceTooLong', {});
-  const prefix = `${artifact.runId}_${artifact.generation}_`;
+  if (!isUuid(artifact.runId)) throw clientError('invalidRunIdentity', {});
+  const prefix = `${artifact.runId}_`;
   const budget = Math.min(180, 255 - encoder.encode(prefix).byteLength);
 
   const paths = [
     ...new Set([
       artifact.path,
-      ...inventory
-        .flatMap((other) =>
-          other.runId === artifact.runId && other.generation === artifact.generation ? [other.path] : [],
-        ),
+      ...inventory.flatMap((other) => (other.runId === artifact.runId ? [other.path] : [])),
     ]),
   ];
 

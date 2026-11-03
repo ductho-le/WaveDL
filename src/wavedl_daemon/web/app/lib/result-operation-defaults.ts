@@ -7,7 +7,7 @@ export function createResultOperationDefaults(): ResultRequest {
     storage_map: [],
     operation: 'test',
     config: structuredClone(inferenceDefaults),
-    checkpoint_source: { run_id: '', generation: '' },
+    checkpoint_source: { run_id: '', checkpoint: '' },
     runtime: { python: '', mode: 'existing', device: 'cpu', environment: {} },
     topology: { num_machines: 1, processes_per_machine: 1, machine_rank: 0 },
   };

@@ -4,32 +4,28 @@ import { artifactDownloadName } from '../../app/lib/artifact-download';
 
 const artifact: Artifact = {
   runId: '22222222-2222-4222-8222-222222222222',
-  generation: 'gen-000001',
-  attempt: 1,
-  step: 0,
   path: 'results/metrics.csv',
   size: 5,
-  sha256: 'a'.repeat(64),
+  modified: '2026-11-03T10:00:00+00:00',
 };
 
 describe('artifact download provenance', () => {
-  it.each(['../unsafe', '', 'a'.repeat(63), 'A'.repeat(64)])(
-    'rejects unverified digest data in a filename label: %s',
-    async (sha256) => {
-      await expect(artifactDownloadName({ ...artifact, sha256 })).rejects.toThrow('provenance');
+  it.each(['../unsafe', '', '22222222-2222-4222-8222-22222222222'])(
+    'rejects an unverified run identity in a filename label: %s',
+    async (runId) => {
+      await expect(artifactDownloadName({ ...artifact, runId })).rejects.toThrow('run identity');
     },
   );
   it.each(['metrics.csv', 'model.onnx'])(
-    'keeps full run and generation identity for %s',
+    'keeps full run identity for %s',
     async (path) => {
       const names = await Promise.all([
         artifactDownloadName({ ...artifact, path }),
-        artifactDownloadName({ ...artifact, path, generation: 'gen-000002' }),
         artifactDownloadName({ ...artifact, path, runId: '33333333-3333-4333-8333-333333333333' }),
       ]);
 
-      expect(new Set(names).size).toBe(3);
-      expect(names[0]).toBe(`${artifact.runId}_${artifact.generation}_${path}`);
+      expect(new Set(names).size).toBe(2);
+      expect(names[0]).toBe(`${artifact.runId}_${path}`);
       expect(names.every((name) => name.endsWith(path))).toBe(true);
       expect(await artifactDownloadName({ ...artifact, path })).toBe(names[0]);
     },
@@ -45,7 +41,7 @@ describe('artifact download provenance', () => {
       const name = await artifactDownloadName({ ...artifact, path });
       expect(name).not.toMatch(/[\p{Cc}\p{Cf}<>:"/\\|?*]/u);
       expect(name).not.toMatch(/[. ]$/u);
-      expect(name.startsWith(`${artifact.runId}_${artifact.generation}_`)).toBe(true);
+      expect(name.startsWith(`${artifact.runId}_`)).toBe(true);
     }
 
     expect(
@@ -57,11 +53,7 @@ describe('artifact download provenance', () => {
   });
   it('bounds multibyte and API-sized names without splitting Unicode or losing ordinary extensions', async () => {
     for (const path of [`${'測🌊'.repeat(1000)}.onnx`, `${'a'.repeat(4096)}.csv`]) {
-      const name = await artifactDownloadName({
-        ...artifact,
-        path,
-        generation: `gen-${'9'.repeat(60)}`,
-      });
+      const name = await artifactDownloadName({ ...artifact, path });
 
       expect(new TextEncoder().encode(name).byteLength).toBeLessThanOrEqual(255);
       expect(name).toContain('.');
@@ -69,15 +61,10 @@ describe('artifact download provenance', () => {
       expect(name).not.toContain('\ufffd');
     }
   });
-  it('fails closed rather than silently truncating unrepresentable generation provenance', async () => {
-    await expect(
-      artifactDownloadName({ ...artifact, generation: `gen-${'9'.repeat(61)}` }),
-    ).rejects.toThrow('provenance');
-  });
-  it('disambiguates sanitized aliases within one publication', async () => {
+  it('disambiguates sanitized aliases within one run', async () => {
     const aliases = [
-      { ...artifact, path: 'left/a?.csv', sha256: 'a'.repeat(64) },
-      { ...artifact, path: 'right/a*.csv', sha256: 'b'.repeat(64) },
+      { ...artifact, path: 'left/a?.csv' },
+      { ...artifact, path: 'right/a*.csv' },
     ];
 
     const names = await Promise.all(aliases.map((item) => artifactDownloadName(item, aliases)));
@@ -85,11 +72,12 @@ describe('artifact download provenance', () => {
     expect(names.every((name) => name.endsWith('.csv'))).toBe(true);
   });
   it.each([
+    ['best_checkpoint/model.safetensors', 'epoch_5_checkpoint/model.safetensors'],
     ['left/metrics.csv', 'right/metrics.csv'],
     ['metrics.csv', 'METRICS.csv'],
     ['ＦＵＬＬ.csv', 'FULL.csv'],
     ['CON.csv', '_CON.csv'],
-  ])('separates %s from %s even when their verified bytes are identical', async (left, right) => {
+  ])('separates %s from %s even when their bytes are identical', async (left, right) => {
     const aliases = [left, right].map((path) => ({ ...artifact, path }));
     const names = await Promise.all(aliases.map((item) => artifactDownloadName(item, aliases)));
     expect(new Set(names.map((name) => name.toLowerCase())).size).toBe(2);
@@ -97,10 +85,15 @@ describe('artifact download provenance', () => {
     for (const [index, item] of aliases.entries())
       expect(await artifactDownloadName(item, [...aliases].reverse())).toBe(names[index]);
   });
-  it('retains unique nested labels and ignores aliases owned by another publication', async () => {
-    const other = { ...artifact, path: 'elsewhere/metrics.csv', generation: 'gen-000002' };
+  it('retains unique nested labels and ignores aliases owned by another run', async () => {
+    const other = {
+      ...artifact,
+      path: 'elsewhere/metrics.csv',
+      runId: '33333333-3333-4333-8333-333333333333',
+    };
+
     expect(await artifactDownloadName(artifact, [artifact, other])).toBe(
-      `${artifact.runId}_${artifact.generation}_metrics.csv`,
+      `${artifact.runId}_metrics.csv`,
     );
   });
   it('disambiguates long paths with a shared truncated prefix and identical bytes', async () => {
@@ -115,7 +108,7 @@ describe('artifact download provenance', () => {
   });
   it('disambiguates a short sibling deliberately matching a truncated final label', async () => {
     const long = { ...artifact, path: `${'a'.repeat(300)}.csv` };
-    const prefix = `${artifact.runId}_${artifact.generation}_`;
+    const prefix = `${artifact.runId}_`;
     const short = { ...artifact, path: (await artifactDownloadName(long)).slice(prefix.length) };
     const inventory = [long, short];
     const names = await Promise.all(inventory.map((item) => artifactDownloadName(item, inventory)));
@@ -123,7 +116,7 @@ describe('artifact download provenance', () => {
     expect(names.every((name) => new TextEncoder().encode(name).byteLength <= 255)).toBe(true);
   });
   it('refuses deliberately chained generated aliases instead of publishing an ambiguous label', async () => {
-    const prefix = `${artifact.runId}_${artifact.generation}_`;
+    const prefix = `${artifact.runId}_`;
     const long = { ...artifact, path: `${'a'.repeat(300)}.csv` };
     const first = { ...artifact, path: (await artifactDownloadName(long)).slice(prefix.length) };
 

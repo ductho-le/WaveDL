@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import type { AcceptableValue } from 'reka-ui';
-import { segmentedSelectionSchema } from '../../../shared/schemas/workstation-controls';
 import type { Artifact } from '../../lib/artifact-client';
 import type { ConnectionSession } from '../../lib/connection-session';
 import { loadCvSummary, type CvMetric, type CvSummary } from '../../lib/cv-summary';
@@ -9,15 +7,10 @@ const props = defineProps<{ session: ConnectionSession; artifacts: readonly Arti
 const { t, locale } = useI18n({ useScope: 'global' });
 const id = useId();
 
-const publications = computed(() =>
-  props.artifacts.filter((artifact) => artifact.path === 'cv_summary.json'),
+const publication = computed(
+  () => props.artifacts.find((artifact) => artifact.path === 'cv_summary.json') ?? null,
 );
 
-const selectionSchema = computed(() =>
-  segmentedSelectionSchema(publications.value.map((artifact) => artifact.generation)),
-);
-
-const selected = shallowRef<Artifact | null>(null);
 const summary = shallowRef<CvSummary | null>(null);
 const busy = shallowRef(false);
 const failed = shallowRef(false);
@@ -28,7 +21,6 @@ function reset() {
   scope.abort();
   scope = new AbortController();
   epoch++;
-  selected.value = null;
   summary.value = null;
   busy.value = false;
   failed.value = false;
@@ -52,26 +44,16 @@ watch(
   { immediate: true },
 );
 
-function choose(generation: AcceptableValue) {
-  const parsed = selectionSchema.value.safeParse(generation);
-  const artifact = parsed.success ? publications.value.find((item) => item.generation === parsed.data) : undefined;
-  scope.abort();
-  scope = new AbortController();
-  epoch++;
-  selected.value = artifact ?? null;
-  summary.value = null;
-  busy.value = false;
-  failed.value = false;
-}
-
 async function load() {
-  if (!selected.value || busy.value) return;
+  const artifact = publication.value;
+
+  if (!artifact || busy.value) return;
   const current = epoch;
   busy.value = true;
   failed.value = false;
 
   try {
-    const result = await loadCvSummary(props.session, selected.value, scope.signal);
+    const result = await loadCvSummary(props.session, artifact, scope.signal);
 
     if (current === epoch) summary.value = result;
   } catch {
@@ -104,30 +86,10 @@ onBeforeUnmount(() => {
 });
 </script>
 <template>
-  <section v-if="publications.length" class="flex flex-col gap-4" :aria-labelledby="`${id}-title`">
+  <section v-if="publication" class="flex flex-col gap-4" :aria-labelledby="`${id}-title`">
     <h3 :id="`${id}-title`" class="text-lg font-semibold">{{ t('cv.title') }}</h3>
     <InfoChip :label="t('cv.publicationEvidence')" :text="t('cv.help')" uncertain />
-    <label :for="`${id}-source`">{{ t('cv.publication') }}</label>
-    <Select :model-value="selected?.generation ?? ''" :disabled="busy" @update:model-value="choose">
-      <SelectTrigger
-        :id="`${id}-source`"
-        :aria-label="t('cv.publication')"
-        :data-value="selected?.generation ?? ''"
-        ><SelectValue :placeholder="t('cv.choose')"
-      /></SelectTrigger>
-      <SelectContent
-        ><SelectGroup>
-          <SelectItem
-            v-for="artifact in publications"
-            :key="artifact.generation"
-            :value="artifact.generation"
-          >
-            {{ t('cv.source', { generation: artifact.generation, attempt: artifact.attempt }) }}
-          </SelectItem>
-        </SelectGroup></SelectContent
-      >
-    </Select>
-    <Button variant="outline" :disabled="!selected || busy" @click="load">{{
+    <Button variant="outline" :disabled="busy" @click="load">{{
       busy ? t('cv.loading') : t('cv.load')
     }}</Button>
     <p v-if="failed" role="alert">{{ t('cv.failed') }}</p>

@@ -4,13 +4,14 @@ import {
   ArtifactClient,
   BLOB_BUDGET,
   parseInventory,
-  parseSelectionMetadata,
   pngPreviewBlob,
 } from '../../app/lib/artifact-client';
 import { ConnectionSession } from './session-fixture';
+import type { Json } from '../../app/lib/daemon-api';
 
 const run = '22222222-2222-4222-8222-222222222222';
 const health = { daemon_id: 'daemon-one', build_id: '1.8.1', protocol_min: 1, protocol_max: 1 };
+const modified = '2026-11-03T10:00:00.123456+00:00';
 
 function json(body: FixtureResponse) {
   return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
@@ -19,23 +20,13 @@ function json(body: FixtureResponse) {
 async function setup(
   bytes = new TextEncoder().encode('published'),
   size = bytes.length,
-  wrongHash = false,
+  path = 'best_checkpoint/model weights.bin',
 ) {
-  const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), (byte) =>
-    byte.toString(16).padStart(2, '0'),
-  ).join('');
-
   const calls: Array<{ path: string; init?: RequestInit }> = [];
 
   const inventory = {
-    generations: [
-      {
-        generation: 'gen-000001',
-        attempt: 1,
-        step: 3,
-        files: { 'weights.bin': { size, sha256: wrongHash ? '0'.repeat(64) : hash } },
-      },
-    ],
+    files: [{ path, size, modified }],
+    checkpoints: ['best_checkpoint'],
   };
 
   const session = new ConnectionSession({
@@ -61,37 +52,66 @@ async function setup(
 }
 
 describe('published artifact authority', () => {
-  it('preserves strict inventory keys and safe-integer bounds during decoding', () => {
-    const generation = {
-      generation: 'gen-000001',
-      attempt: 1,
-      step: 0,
-      files: { 'weights.bin': { size: Number.MAX_SAFE_INTEGER, sha256: 'a'.repeat(64) } },
-    };
+  it('decodes nested output files and checkpoint names bound to the run', () => {
+    const inventory = parseInventory(
+      {
+        files: [
+          { path: 'best_checkpoint/model.safetensors', size: Number.MAX_SAFE_INTEGER, modified },
+          { path: 'fold_1/model.pth', size: 0, modified: '2026-11-03T10:00:00Z' },
+        ],
+        checkpoints: ['best_checkpoint', 'epoch_12_checkpoint', 'interrupted_checkpoint'],
+      },
+      run,
+    );
 
-    expect(parseInventory({ generations: [generation] }, run)[0]?.size).toBe(Number.MAX_SAFE_INTEGER);
-
-    for (const value of [
-      { generations: [generation], extra: true },
-      { generations: [{ ...generation, extra: true }] },
-      { generations: [{ ...generation, attempt: 0 }] },
-      { generations: [{ ...generation, step: 0.5 }] },
-      { generations: [generation, generation] },
-      { generations: [{ ...generation, files: { 'weights.bin': { size: 1e100, sha256: 'a'.repeat(64) } } }] },
-      { generations: [{ ...generation, files: { '../weights.bin': { size: 0, sha256: 'a'.repeat(64) } } }] },
-    ]) {
-      expect(() => parseInventory(value, run)).toThrow();
-    }
+    expect(inventory.files).toEqual([
+      { runId: run, path: 'best_checkpoint/model.safetensors', size: Number.MAX_SAFE_INTEGER, modified },
+      { runId: run, path: 'fold_1/model.pth', size: 0, modified: '2026-11-03T10:00:00Z' },
+    ]);
+    expect(inventory.checkpoints).toEqual([
+      { runId: run, name: 'best_checkpoint' },
+      { runId: run, name: 'epoch_12_checkpoint' },
+      { runId: run, name: 'interrupted_checkpoint' },
+    ]);
+    expect(() => parseInventory({ files: [], checkpoints: [] }, 'not-a-run')).toThrow();
   });
 
-  it('keeps absent checkpoint coordinates omitted and rejects explicit nulls', () => {
-    const metadata = parseSelectionMetadata({ schema_version: 1, kind: 'best' });
+  it('rejects key drift, unsafe sizes, unzoned times, duplicates and unknown checkpoint names', () => {
+    const file = { path: 'training_history.csv', size: 1, modified };
 
-    expect(Object.keys(metadata)).toEqual(['schema_version', 'kind']);
-    expect(Object.isFrozen(metadata)).toBe(true);
-    expect(() => parseSelectionMetadata({ schema_version: 1, kind: 'best', source_seq: null })).toThrow();
-    expect(() => parseSelectionMetadata({ schema_version: 1, kind: 'best', extra: 0 })).toThrow();
-    expect(parseSelectionMetadata({ schema_version: 1, kind: 'cross_validation_fold' })).toEqual({ schema_version: 1, kind: 'cross_validation_fold' });
+    const malformed: Json[] = [
+      { files: [file], checkpoints: [], extra: true },
+      { files: [file] },
+      { files: [{ ...file, extra: true }], checkpoints: [] },
+      { files: [{ ...file, size: 1e100 }], checkpoints: [] },
+      { files: [{ ...file, size: -1 }], checkpoints: [] },
+      { files: [{ ...file, size: 0.5 }], checkpoints: [] },
+      { files: [{ ...file, modified: '2026-11-03T10:00:00' }], checkpoints: [] },
+      { files: [{ ...file, modified: '2026-11-03' }], checkpoints: [] },
+      { files: [file, file], checkpoints: [] },
+      { files: [], checkpoints: ['best_checkpoint', 'best_checkpoint'] },
+      { files: [], checkpoints: ['gen-000001'] },
+      { files: [], checkpoints: ['epoch_x_checkpoint'] },
+      { files: [], checkpoints: ['fold_1/best_checkpoint'] },
+    ];
+
+    for (const value of malformed) expect(() => parseInventory(value, run)).toThrow();
+  });
+
+  it('bounds inventory and rejects unsafe paths', () => {
+    for (const path of ['../weights', 'x%2Fy', 'x:y', 'x\\y', '/x', 'x//y', 'x/./y', 'x\u0000y'])
+      expect(() =>
+        parseInventory({ files: [{ path, size: 2, modified }], checkpoints: [] }, run),
+      ).toThrow();
+
+    const files = Array.from({ length: 16385 }, (_, index) => ({
+      path: `file-${index}.bin`,
+      size: 0,
+      modified,
+    }));
+
+    expect(() => parseInventory({ files, checkpoints: [] }, run)).toThrow();
+    expect(parseInventory({ files: files.slice(1), checkpoints: [] }, run).files).toHaveLength(16384);
   });
 
   it('limits raster preview dimensions before handing bytes to the decoder', async () => {
@@ -108,12 +128,6 @@ describe('published artifact authority', () => {
     await expect(pngPreviewBlob(new Blob(['<svg/>']))).rejects.toThrow('PNG');
   });
   it('discards a late streamed response when the owning session detaches', async () => {
-    const bytes = new Uint8Array([1, 2]);
-
-    const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), (byte) =>
-      byte.toString(16).padStart(2, '0'),
-    ).join('');
-
     let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
 
     const session = new ConnectionSession({
@@ -125,16 +139,7 @@ describe('published artifact authority', () => {
         if (path === '/api/health') return json(health);
 
         if (path.endsWith('/artifacts'))
-          return json({
-            generations: [
-              {
-                generation: 'gen-000001',
-                attempt: 1,
-                step: 0,
-                files: { 'weights.bin': { size: 2, sha256: hash } },
-              },
-            ],
-          });
+          return json({ files: [{ path: 'weights.bin', size: 2, modified }], checkpoints: [] });
 
         return new Response(
           new ReadableStream<Uint8Array>({
@@ -149,7 +154,7 @@ describe('published artifact authority', () => {
 
     await session.connect('token');
     const client = new ArtifactClient(session);
-    const artifact = (await client.list(run))[0];
+    const artifact = (await client.list(run)).files[0];
 
     if (!artifact) throw new Error('Missing artifact');
     const pending = client.verifiedBlob(artifact);
@@ -159,38 +164,14 @@ describe('published artifact authority', () => {
     session.detach();
     await failure;
   });
-  it('bounds inventory and rejects paths, ambiguous generation and unsafe numeric records', () => {
-    for (const path of ['../weights', 'x%2Fy', 'x:y', 'x\\y', '/x', 'x\u0000y'])
-      expect(() =>
-        parseInventory(
-          {
-            generations: [
-              {
-                generation: 'gen-000001',
-                attempt: 1,
-                step: 0,
-                files: { [path]: { size: 2, sha256: 'a'.repeat(64) } },
-              },
-            ],
-          },
-          run,
-        ),
-      ).toThrow();
-    expect(() => parseInventory({ generations: [], unknown: true }, run)).toThrow();
-    expect(() =>
-      parseInventory(
-        { generations: [{ generation: 'gen-000001', attempt: 0, step: 0, files: {} }] },
-        run,
-      ),
-    ).toThrow();
-  });
-  it('only publishes exact size/hash bytes and keeps credentials out of URLs', async () => {
+  it('downloads exact-size bytes by encoded output path and keeps credentials out of URLs', async () => {
     const { client, calls } = await setup();
-    const artifact = (await client.list(run))[0];
+    const artifact = (await client.list(run)).files[0];
 
     if (!artifact) throw new Error('Missing artifact');
     expect(await (await client.verifiedBlob(artifact)).text()).toBe('published');
-    const download = calls.find((call) => call.path.endsWith('weights.bin'));
+    const download = calls.at(-1);
+    expect(download?.path).toBe(`/api/runs/${run}/artifacts/best_checkpoint/model%20weights.bin`);
     expect(download?.init?.redirect).toBe('error');
     expect(download?.init?.credentials).toBe('omit');
     expect(new Headers(download?.init?.headers).get('Authorization')).toBe(
@@ -198,15 +179,13 @@ describe('published artifact authority', () => {
     );
     expect(calls.every((call) => !call.path.includes('secret-token'))).toBe(true);
   });
-  it('rejects checksum mismatch and truncation without publishing', async () => {
-    for (const kind of ['checksum', 'truncated']) {
-      const { client } = await setup(
-        new Uint8Array([1, 2]),
-        kind === 'truncated' ? 3 : 2,
-        kind === 'checksum',
-      );
-
-      const artifact = (await client.list(run))[0];
+  it('rejects truncated and oversized bodies without publishing', async () => {
+    for (const { bytes, size } of [
+      { bytes: new Uint8Array([1, 2]), size: 3 },
+      { bytes: new Uint8Array([1, 2]), size: 1 },
+    ]) {
+      const { client } = await setup(bytes, size);
+      const artifact = (await client.list(run)).files[0];
 
       if (!artifact) throw new Error('Missing artifact');
       await expect(client.verifiedBlob(artifact)).rejects.toThrow();
@@ -214,23 +193,19 @@ describe('published artifact authority', () => {
   });
   it('refuses oversized allocation before issuing download and invalidates detached grants', async () => {
     const { client, calls, session } = await setup(new Uint8Array([1]), BLOB_BUDGET + 1);
-    const artifact = (await client.list(run))[0];
+    const inventory = await client.list(run);
+    const artifact = inventory.files[0];
+    const checkpoint = inventory.checkpoints[0];
 
-    if (!artifact) throw new Error('Missing artifact');
+    if (!artifact || !checkpoint) throw new Error('Missing inventory');
     await expect(client.verifiedBlob(artifact)).rejects.toThrow(
       'This artifact exceeds the 64 MiB browser memory budget. Use the CLI to export it.',
     );
     expect(calls.some((call) => call.path.endsWith('weights.bin'))).toBe(false);
+    expect(() => client.assertSelection(checkpoint)).not.toThrow();
+    expect(() => client.assertSelection({ ...checkpoint })).toThrow();
     session.detach();
     expect(() => client.assertSelection(artifact)).toThrow();
-  });
-  it('rejects forged and invalid CV metadata', () => {
-    expect(() => parseSelectionMetadata({ schema_version: 1, kind: 'best', fold: 1 })).toThrow();
-    expect(() =>
-      parseSelectionMetadata({ schema_version: 1, kind: 'best', source_seq: true }),
-    ).toThrow();
-    expect(
-      parseSelectionMetadata({ schema_version: 1, kind: 'cross_validation_fold', fold: 2 }),
-    ).toEqual({ schema_version: 1, kind: 'cross_validation_fold', fold: 2 });
+    expect(() => client.assertSelection(checkpoint)).toThrow();
   });
 });

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { trainingRequestSchema } from './training-request';
+import { checkpointSourceSchema } from './artifacts';
 const text = z
   .string()
   .min(1)
@@ -56,10 +57,7 @@ export const resultRequestSchema = z.strictObject({
   runtime: trainingRequestSchema.shape.runtime,
   topology: trainingRequestSchema.shape.topology,
   operation: z.enum(['test', 'plot']),
-  checkpoint_source: z.strictObject({
-    run_id: z.string().uuid(),
-    generation: z.string().regex(/^gen-\d{6,}$/),
-  }),
+  checkpoint_source: checkpointSourceSchema,
   config: inferenceConfigSchema,
 });
 export type ResultRequest = z.infer<typeof resultRequestSchema>;

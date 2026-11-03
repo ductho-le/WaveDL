@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { jsonObjectSchema } from './json';
 import { trainingConfigSchema } from './training-request';
+import { checkpointSourceSchema } from './artifacts';
 
 export const approvedTrainingManifestSchema = jsonObjectSchema.and(z.object({
   run_id: z.string(),
@@ -25,10 +26,5 @@ export const sourcePlotManifestSchema = jsonObjectSchema.and(z.object({ resolved
 export const approvedPlotManifestSchema = sourcePlotManifestSchema.and(z.object({
   operation: z.literal('plot'),
   run_id: z.string(),
-  checkpoint_source: jsonObjectSchema.and(z.object({
-    run_id: z.string(),
-    generation: z.string(),
-    manifest_sha256: z.string(),
-    complete_sha256: z.string().regex(/^[0-9a-f]{64}$/),
-  })),
+  checkpoint_source: jsonObjectSchema.and(z.object(checkpointSourceSchema.shape)),
 }));

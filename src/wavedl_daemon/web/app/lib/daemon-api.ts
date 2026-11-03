@@ -524,9 +524,9 @@ export class DaemonApi {
 
     return this.#json(await this.#request(path, 'GET', undefined, signal));
   }
-  /** Artifact bytes only; consumers must bound, hash and recheck before publishing. */
+  /** Artifact bytes only; consumers must bound and recheck before publishing. */
   async downloadResponse(path: string, signal?: AbortSignal): Promise<Response> {
-    if (!/^\/api\/runs\/[0-9a-f-]{36}\/artifacts\/gen-\d{6,}\/.+/.test(path) || path.includes('?'))
+    if (!/^\/api\/runs\/[0-9a-f-]{36}\/artifacts\/.+/.test(path) || path.includes('?'))
       throw DaemonApiError.fromKey('response', 'invalidArtifactDownloadRoute');
     this.#apiUrl(path);
     await this.health(signal);

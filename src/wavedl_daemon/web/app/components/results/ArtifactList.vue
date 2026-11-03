@@ -30,10 +30,8 @@ defineEmits<{ download: [artifact: Artifact]; preview: [artifact: Artifact] }>()
     <div class="grid grid-cols-[repeat(auto-fit,minmax(min(100%,16rem),1fr))] gap-4">
       <Card
         v-for="artifact in artifacts"
-        :key="`${artifact.generation}/${artifact.path}`"
-        :data-artifact-generation="artifact.generation"
+        :key="artifact.path"
         :data-artifact-path="artifact.path"
-        :data-artifact-attempt="artifact.attempt"
         :data-artifact-size="artifact.size"
       >
         <CardHeader
@@ -41,19 +39,21 @@ defineEmits<{ download: [artifact: Artifact]; preview: [artifact: Artifact] }>()
         >
         <CardContent class="flex flex-col gap-4">
           <img
-            v-if="imageUrl && previewPath === `${artifact.generation}/${artifact.path}`"
+            v-if="imageUrl && previewPath === artifact.path"
             :src="imageUrl"
             :alt="t('results.verifiedPlot')"
             class="max-h-56 w-full rounded-md object-contain"
           />
           <div class="flex flex-wrap gap-2">
-            <Badge variant="outline"
-              >{{ t('results.generationAttempt') }} {{ artifact.generation }} /
-              {{ artifact.attempt }}</Badge
-            >
             <Badge variant="secondary"
               >{{ artifact.size.toLocaleString(locale === 'vi' ? 'vi-VN' : 'en-US') }}
               {{ t('results.bytes') }}</Badge
+            >
+            <Badge variant="outline"
+              >{{ t('results.modified') }}
+              <time :datetime="artifact.modified">{{
+                new Date(artifact.modified).toLocaleString(locale === 'vi' ? 'vi-VN' : 'en-US')
+              }}</time></Badge
             >
           </div>
           <div class="flex flex-wrap gap-2" role="group" :aria-label="t('results.actions')">

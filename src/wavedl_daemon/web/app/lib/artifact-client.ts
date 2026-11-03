@@ -1,19 +1,25 @@
 import { clientError } from '../i18n/client-messages';
 import { ConnectionSession, ConnectionSessionError } from './connection-session';
 import { toRaw } from 'vue';
-import { DaemonApiError, isUuid, parseJson, type Json } from './daemon-api';
+import { DaemonApiError, isUuid, type Json } from './daemon-api';
 
-import { artifactPathSchema, inventorySchema, selectionMetadataSchema } from '../../shared/schemas/artifacts';
-import type { z } from 'zod';
+import { inventorySchema } from '../../shared/schemas/artifacts';
 
 export interface Artifact {
   readonly runId: string;
-  readonly generation: string;
-  readonly attempt: number;
-  readonly step: number;
   readonly path: string;
   readonly size: number;
-  readonly sha256: string;
+  readonly modified: string;
+}
+
+export interface Checkpoint {
+  readonly runId: string;
+  readonly name: string;
+}
+
+export interface Inventory {
+  readonly files: readonly Artifact[];
+  readonly checkpoints: readonly Checkpoint[];
 }
 
 export const BLOB_BUDGET = 64 * 1024 * 1024;
@@ -44,41 +50,28 @@ export async function pngPreviewBlob(blob: Blob): Promise<Blob> {
   return new Blob([blob], { type: 'image/png' });
 }
 
-const scopes = new WeakMap<Artifact, { session: ConnectionSession; revision: number }>();
+const scopes = new WeakMap<Artifact | Checkpoint, { session: ConnectionSession; revision: number }>();
 
 const fail = (): never => {
   throw DaemonApiError.fromKey('response', 'invalidArtifactInventory');
 };
 
-export function artifactPath(value: unknown): value is string {
-  return artifactPathSchema.safeParse(value).success;
-}
-
-export function parseInventory(value: Json, runId: string): Artifact[] {
+export function parseInventory(value: Json, runId: string): Inventory {
   const parsed = inventorySchema.safeParse(value);
 
   if (!isUuid(runId) || !parsed.success) return fail();
-  const result: Artifact[] = [];
-  const seen = new Set<string>();
+  const { files, checkpoints } = parsed.data;
 
-  for (const item of parsed.data.generations) {
-    if (seen.has(item.generation)) return fail();
-    seen.add(item.generation);
+  if (
+    new Set(files.map((file) => file.path)).size !== files.length ||
+    new Set(checkpoints).size !== checkpoints.length
+  )
+    return fail();
 
-    for (const [path, record] of Object.entries(item.files)) {
-      if (result.length >= 16384) return fail();
-      result.push(Object.freeze({
-        runId,
-        generation: item.generation,
-        attempt: item.attempt,
-        step: item.step,
-        path,
-        ...record,
-      }));
-    }
-  }
-
-  return result;
+  return Object.freeze({
+    files: Object.freeze(files.map((file) => Object.freeze({ runId, ...file }))),
+    checkpoints: Object.freeze(checkpoints.map((name) => Object.freeze({ runId, name }))),
+  });
 }
 
 /** Inventory grants are memory-only and belong to one verified connection. */
@@ -87,11 +80,11 @@ export class ArtifactClient {
   constructor(session: ConnectionSession) {
     this.session = toRaw(session);
   }
-  async list(runId: string, signal?: AbortSignal): Promise<readonly Artifact[]> {
+  async list(runId: string, signal?: AbortSignal): Promise<Inventory> {
     if (!isUuid(runId)) throw clientError('invalidRunIdentity', {});
     const revision = this.session.snapshot().revision;
 
-    const records = await this.session.perform(
+    const inventory = await this.session.perform(
       async (api, scoped) =>
         parseInventory(await api.read(`/api/runs/${runId}/artifacts`, scoped), runId),
       { signal },
@@ -100,12 +93,13 @@ export class ArtifactClient {
     if (revision !== this.session.snapshot().revision || !this.session.api)
       throw ConnectionSessionError.fromKey('stale', 'artifactRefreshRequired');
 
-    for (const record of records) scopes.set(record, { session: this.session, revision });
+    for (const record of [...inventory.files, ...inventory.checkpoints])
+      scopes.set(record, { session: this.session, revision });
 
-    return Object.freeze(records);
+    return inventory;
   }
-  assertSelection(artifact: Artifact): void {
-    const scope = scopes.get(artifact);
+  assertSelection(record: Artifact | Checkpoint): void {
+    const scope = scopes.get(record);
 
     if (
       !scope ||
@@ -126,7 +120,7 @@ export class ArtifactClient {
         const path = artifact.path.split('/').map(encodeURIComponent).join('/');
 
         const response = await api.downloadResponse(
-          `/api/runs/${artifact.runId}/artifacts/${artifact.generation}/${path}`,
+          `/api/runs/${artifact.runId}/artifacts/${path}`,
           scoped,
         );
 
@@ -165,14 +159,9 @@ export class ArtifactClient {
 
           if (offset !== artifact.size)
             throw DaemonApiError.fromKey('response', 'artifactIsTruncated');
-          const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-          const hash = Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
           scoped.throwIfAborted();
           api.assertResponseCurrent(response);
           this.assertSelection(artifact);
-
-          if (hash !== artifact.sha256)
-            throw DaemonApiError.fromKey('response', 'artifactChecksumChanged');
 
           return new Blob([bytes], { type: 'application/octet-stream' });
         } finally {
@@ -184,26 +173,4 @@ export class ArtifactClient {
       { signal, timeoutMs: 60000 },
     );
   }
-  async selectionMetadata(artifact: Artifact, signal?: AbortSignal): Promise<SelectionMetadata> {
-    if (artifact.path !== 'checkpoint_selection.json' || artifact.size > 4096)
-      throw clientError('checkpointMetadataRequired', {});
-    const blob = await this.verifiedBlob(artifact, signal);
-
-    return parseSelectionMetadata(parseJson(await blob.text()));
-  }
-}
-
-export type SelectionMetadata = z.infer<typeof selectionMetadataSchema>;
-
-export function parseSelectionMetadata(value: Json): SelectionMetadata {
-  const parsed = selectionMetadataSchema.safeParse(value);
-
-  if (!parsed.success) return fail();
-  const result: SelectionMetadata = { schema_version: 1, kind: parsed.data.kind };
-
-  if (parsed.data.fold !== undefined) result.fold = parsed.data.fold;
-
-  if (parsed.data.source_seq !== undefined) result.source_seq = parsed.data.source_seq;
-
-  return Object.freeze(result);
 }
