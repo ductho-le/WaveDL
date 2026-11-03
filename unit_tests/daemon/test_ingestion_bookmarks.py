@@ -236,9 +236,7 @@ def test_active_poll_accepts_matching_durable_handle(tmp_path):
     path = owned / "attempts" / "1" / "events.jsonl"
     path.parent.mkdir(parents=True)
     path.write_bytes(b"".join(encode(event) for event in records(run_id, 2)))
-    handle = Handle(
-        "local", run_id, "request", 1, "owner", str(owned), raw_json='{"adopted":true}'
-    )
+    handle = Handle("local", run_id, "request", 1, "owner", str(owned))
     record = SimpleNamespace(**handle.to_dict(), handle=handle)
 
     class OwnedController(Controller):

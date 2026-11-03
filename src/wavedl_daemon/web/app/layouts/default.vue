@@ -7,7 +7,6 @@ import { authRedirect } from '../lib/auth-routing';
 import { navigationPath, runIdForPath, sectionForPath, sectionPath } from '../shell/sections';
 import { connectionStatusKey } from '../constants/shellConnection';
 
-const AdoptRunPanel = defineAsyncComponent(() => import('../components/runs/AdoptRunPanel.vue'));
 const router = useRouter();
 const route = useRoute();
 const { t } = useI18n({ useScope: 'global' });
@@ -42,7 +41,6 @@ const connection = useDaemonConnection({
 const { state, api } = connection;
 const automaticPlots = useAutomaticPlots(connection.session);
 const automaticPlotState = automaticPlots.state;
-const overlay = shallowRef<'adopt' | null>(null);
 const auth = useWorkstationAuth();
 const appearance = shallowRef(loadAppearance());
 const section = computed(() => sectionForPath(route.path));
@@ -50,8 +48,6 @@ const section = computed(() => sectionForPath(route.path));
 provideWorkstationLocale(computed(() => appearance.value.language));
 
 useHead(() => ({ htmlAttrs: { lang: appearance.value.language } }));
-
-const adoptionOpened = shallowRef(false);
 
 const reportFailure = computed(() => {
   const revision = state.value.revision;
@@ -80,25 +76,12 @@ watch(
   },
 );
 
-watch(overlay, (value) => {
-  if (value === 'adopt') adoptionOpened.value = true;
-});
-
-watch(
-  () => sectionForPath(route.path),
-  // Adopt belongs to Experiments; arriving there (e.g. to open it) must not close it.
-  (current) => {
-    if (current !== 'experiments') overlay.value = null;
-  },
-);
-
 function appearanceChanged(value: AppearancePreferences): void {
   appearance.value = value;
   refreshAppearance();
 }
 
 async function monitorRun(runId: string): Promise<void> {
-  overlay.value = null;
   await router.push(sectionPath('experiments', runId));
 }
 
@@ -110,7 +93,6 @@ const context = {
   automaticPlots,
   reportFailure,
   revision,
-  overlay,
   appearance,
   appearanceChanged,
   monitorRun,
@@ -137,17 +119,9 @@ onScopeDispose(() => systemTheme?.removeEventListener('change', refreshAppearanc
 <template>
   <WorkstationShell
     v-if="section !== 'connection'"
-    v-model:overlay="overlay"
     :status="state.status"
     :section="section"
   >
-    <template #adopt>
-      <AdoptRunPanel
-        v-if="adoptionOpened && !!api"
-        :session="connection.session"
-        @adopted-run-id="monitorRun"
-      />
-    </template>
     <AutomaticPlotStatus
       :state="automaticPlotState"
       @retry="automaticPlots.retry"

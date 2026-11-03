@@ -51,10 +51,6 @@ if TYPE_CHECKING:
     from wavedl_daemon.storage.settings import Settings
 
 
-class ForeignRun(ValueError):
-    """Standalone/foreign runs cannot be controlled without verified adoption."""
-
-
 def _uuid(value: str) -> None:
     if type(value) is not str or str(UUID(value)) != value:
         raise ValueError("Identity must be a canonical UUID")
@@ -475,8 +471,6 @@ class RunService:
         _uuid(run_id)
         record = self.plan_store.get_by_run_id(run_id)
         if record is None:
-            if self.registry is not None and self.registry.get(run_id) is not None:
-                raise ForeignRun("Run requires verified adoption")
             raise KeyError(run_id)
         return record
 

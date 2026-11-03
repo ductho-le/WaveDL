@@ -99,7 +99,6 @@ def hosted_app(fake_services):
 
 def test_dataset_routes_are_api_routes(fake_services):
     paths = {
-        "/api/runs/adopt",
         "/api/models",
         "/api/browse",
         "/api/browse/resolve",
@@ -220,7 +219,7 @@ def test_every_api_route_is_fastapi(fake_services):
         if route.path.startswith("/api")
     ]
     assert (
-        len(routes) == 19
+        len(routes) == 18
     )  # Bootstrap is separately covered with credentials enabled.
     assert all(isinstance(route, APIRoute) for route in routes)
 
@@ -231,7 +230,6 @@ def test_every_api_route_is_fastapi(fake_services):
         ("/api/bootstrap", 4096),
         ("/api/runs/plan", 65536),
         ("/api/runs", 4096),
-        ("/api/runs/adopt", 8192),
         ("/api/browse/resolve", 8192),
         ("/api/datasets/inspect", 16384),
         ("/api/datasets/preview", 65536),

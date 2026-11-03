@@ -3,7 +3,6 @@ export const WORKSTATION_SECTIONS = {
   project: 'project',
   datasets: 'datasets',
   results: 'results',
-  adopt: 'adopt',
   connection: 'connection',
   settings: 'settings',
 } as const;

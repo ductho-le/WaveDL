@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Command, Import, PanelRight, Maximize2, Minimize2 } from '@lucide/vue';
+import { Command, PanelRight, Maximize2, Minimize2 } from '@lucide/vue';
 import { connectionStatusKey } from '../../constants/shellConnection';
 
 const { t } = useI18n({ useScope: 'global' });
@@ -23,18 +23,6 @@ const statusLabel = computed(() => t(connectionStatusKey[state.value.status]));
   >
     <span class="shell-status-dot" :data-status="state.status" aria-hidden="true" />
     <span class="hidden lg:inline">{{ statusLabel }}</span>
-  </Button>
-  <Button
-    v-if="activeSection === 'experiments'"
-    class="hidden sm:inline-flex"
-    variant="outline"
-    size="icon"
-    data-testid="nav-adopt"
-    :aria-label="t('shell.adoptStandaloneRun')"
-    :title="t('shell.adoptStandaloneRun')"
-    @click="navigate('adopt')"
-  >
-    <Import aria-hidden="true" />
   </Button>
   <Button
     variant="ghost"

@@ -290,7 +290,6 @@ def create_app(
     )
 
     if services is not None:
-        from wavedl_daemon.http.adoption import adoption_routes
         from wavedl_daemon.http.artifacts import artifact_routes
         from wavedl_daemon.http.catalog import catalog_routes
         from wavedl_daemon.http.events import event_routes
@@ -299,7 +298,6 @@ def create_app(
         from wavedl_daemon.http.preview import preview_routes
         from wavedl_daemon.http.runs import lifecycle_routes
 
-        routes.extend(adoption_routes(services))
         routes.extend(inspection_routes(services))
         routes.extend(preview_routes(services))
         routes.extend(host_routes(services))

@@ -1,5 +1,4 @@
 {
-  "ownershipOnly": "Ownership confirmed, supervision unverified",
   "exactIdentity": "Exact artifact identity",
   "explicitSource": "Explicit checkpoint, approved plan",
   "trustedCode": "Trusted runtime code only",
@@ -62,17 +61,6 @@
   "selectExperiment": "Select an experiment first.",
   "verifiedPlot": "Verified published diagnostic plot",
   "closePlot": "Close plot",
-  "adoptAria": "Adopt standalone run",
-  "adoptTitle": "Adopt a standalone run",
-  "adoptHelp": "Explicitly register a verified daemon-side run directory. The daemon checks its manifest and ownership; browsing does not register anything.",
-  "standaloneDirectory": "Standalone run directory",
-  "selectedDirectory": "Selected directory: {path}",
-  "retainedRequest": "Retained request: {path} · attempt {attempt}. Reconnect and reselect this exact directory before retrying. The same idempotency key will be reused.",
-  "runtimeAttempt": "Runtime attempt",
-  "attemptHelp": "Choose the exact existing attempt. No process is started, attached, or cancelled.",
-  "waiting": "Waiting for acknowledgement…",
-  "retryAdoption": "Retry retained adoption",
-  "confirmAdoption": "Confirm adoption",
   "verifying": "Verifying checkpoint classifications…",
   "noClassification": "No published checkpoint classification is available.",
   "classificationFailed": "Checkpoint classifications could not be verified. Refresh artifacts.",
@@ -82,8 +70,5 @@
   "artifactsFailed": "Artifacts could not be loaded. Verify the connection and refresh.",
   "downloadRequested": "Verified artifact download requested. Your browser controls where it is saved.",
   "budget": "This artifact exceeds the 64 MiB browser budget. Export with the CLI.",
-  "verificationFailed": "Artifact verification failed or download was interrupted. No file was published.",
-  "chooseDirectory": "Choose the run directory, not a file.",
-  "adopted": "Daemon ownership confirmed. This does not establish live supervision, runtime capability, or successful completion. No process was submitted or cancelled.",
-  "adoptionInvalid": "Choose a current daemon directory and positive attempt before adoption."
+  "verificationFailed": "Artifact verification failed or download was interrupted. No file was published."
 }

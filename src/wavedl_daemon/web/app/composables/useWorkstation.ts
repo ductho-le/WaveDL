@@ -5,8 +5,6 @@ import type { AppearancePreferences } from '../lib/preferences';
 import type { useAutomaticPlots } from './useAutomaticPlots';
 import type { useDaemonConnection } from './useDaemonConnection';
 
-export type WorkstationOverlay = 'adopt' | null;
-
 export type WorkstationConnection = ReturnType<typeof useDaemonConnection>;
 
 export type WorkstationAutomaticPlots = ReturnType<typeof useAutomaticPlots>;
@@ -19,7 +17,6 @@ export interface WorkstationContext {
   automaticPlots: WorkstationAutomaticPlots;
   reportFailure: ComputedRef<(error: DaemonApiError) => void>;
   revision: ComputedRef<number>;
-  overlay: ShallowRef<WorkstationOverlay>;
   appearance: ShallowRef<AppearancePreferences>;
   appearanceChanged(value: AppearancePreferences): void;
   monitorRun(runId: string): Promise<void>;

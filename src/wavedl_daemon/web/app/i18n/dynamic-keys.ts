@@ -7,7 +7,6 @@ export const workstationNavigationMessageKeys = {
   project: 'shell.newTrainingRun',
   datasets: 'shell.datasets',
   results: 'shell.results',
-  adopt: 'shell.adoptStandaloneRun',
   connection: 'shell.connection',
   settings: 'shell.settings',
 } as const;

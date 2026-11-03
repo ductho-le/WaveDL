@@ -1,5 +1,4 @@
 {
-  "ownershipOnly": "Đã xác nhận quyền sở hữu, chưa xác minh giám sát",
   "exactIdentity": "Định danh tệp chính xác",
   "explicitSource": "Checkpoint rõ ràng, kế hoạch đã duyệt",
   "trustedCode": "Chỉ chạy mã đáng tin cậy",
@@ -62,17 +61,6 @@
   "selectExperiment": "Trước tiên hãy chọn một thí nghiệm.",
   "verifiedPlot": "Biểu đồ chẩn đoán đã công bố và xác minh",
   "closePlot": "Đóng biểu đồ",
-  "adoptAria": "Tiếp nhận lần chạy độc lập",
-  "adoptTitle": "Tiếp nhận một lần chạy độc lập",
-  "adoptHelp": "Đăng ký rõ ràng thư mục lần chạy đã xác minh phía daemon. Daemon kiểm tra bản kê khai và quyền sở hữu; duyệt thư mục không đăng ký bất cứ thứ gì.",
-  "standaloneDirectory": "Thư mục lần chạy độc lập",
-  "selectedDirectory": "Thư mục đã chọn: {path}",
-  "retainedRequest": "Yêu cầu được giữ lại: {path} · lần chạy {attempt}. Kết nối lại và chọn lại đúng thư mục này trước khi thử lại. Khóa idempotency cũ sẽ được dùng lại.",
-  "runtimeAttempt": "Lần thực thi",
-  "attemptHelp": "Chọn đúng lần chạy hiện có. Không tiến trình nào được khởi động, gắn kết hoặc hủy.",
-  "waiting": "Đang chờ xác nhận…",
-  "retryAdoption": "Thử lại yêu cầu tiếp nhận đã giữ",
-  "confirmAdoption": "Xác nhận tiếp nhận",
   "verifying": "Đang xác minh phân loại điểm kiểm tra…",
   "noClassification": "Chưa có phân loại điểm kiểm tra được công bố.",
   "classificationFailed": "Không thể xác minh phân loại điểm kiểm tra. Hãy làm mới tệp kết quả.",
@@ -82,8 +70,5 @@
   "artifactsFailed": "Không thể tải tệp kết quả. Hãy kiểm tra kết nối và làm mới.",
   "downloadRequested": "Đã yêu cầu tải xuống tệp kết quả đã xác minh. Trình duyệt của bạn quyết định nơi lưu tệp.",
   "budget": "Tệp này vượt giới hạn 64 MiB của trình duyệt. Hãy xuất bằng CLI.",
-  "verificationFailed": "Xác minh tệp thất bại hoặc tải xuống bị gián đoạn. Không có tệp nào được công bố.",
-  "chooseDirectory": "Chọn thư mục lần chạy, không phải tệp.",
-  "adopted": "Đã xác nhận quyền sở hữu của daemon. Điều này không xác lập giám sát trực tiếp, khả năng thực thi hay hoàn tất thành công. Không tiến trình nào được gửi hoặc hủy.",
-  "adoptionInvalid": "Chọn thư mục daemon hiện hành và số lần chạy dương trước khi tiếp nhận."
+  "verificationFailed": "Xác minh tệp thất bại hoặc tải xuống bị gián đoạn. Không có tệp nào được công bố."
 }

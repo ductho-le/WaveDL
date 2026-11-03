@@ -45,9 +45,6 @@ class FakeServices:
     async def health(self):
         return {}
 
-    async def adopt(self, path, *, attempt=None, idempotency_key):
-        raise AssertionError("Unexpected adoption")
-
     async def inspect(self, root, path):
         raise AssertionError("Unexpected inspection")
 

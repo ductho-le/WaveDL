@@ -675,28 +675,8 @@ body {
 .shell-skip-link:focus {
   transform: translateY(0);
 }
-.shell-overlay {
-  display: flex;
-  min-height: 0;
-  max-height: calc(100dvh - 2rem);
-  flex-direction: column;
-  overflow: hidden;
-}
-.shell-overlay-wide {
-  width: min(60rem, calc(100vw - 2rem));
-  max-width: 60rem;
-}
-.shell-overlay-header {
-  display: flex;
-  justify-content: flex-end;
-}
 .shell-overlay-close {
   margin-left: auto;
-}
-.shell-overlay-body {
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
 }
 .shell-command-palette {
   width: min(36rem, calc(100vw - 2rem));

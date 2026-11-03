@@ -12,11 +12,9 @@ import httpx
 import pytest
 from starlette.requests import ClientDisconnect, Request
 
-from unit_tests.daemon import test_adoption_service as adoption_tests
 from unit_tests.daemon.conftest import route_app
 from wavedl.core.events import HelloPayload
-from wavedl.core.protocol import Envelope, ProtocolError, decode, encode
-from wavedl.journal import RunJournal, bootstrap_run
+from wavedl.core.protocol import Envelope, ProtocolError, encode
 from wavedl_daemon.events.broker import EventBroker
 from wavedl_daemon.events.ingestion import Ingestor
 from wavedl_daemon.events.journal_reader import JournalReader
@@ -39,7 +37,6 @@ from .test_hosted_app import Backend
 
 
 RUN_ID = "00000000-0000-4000-8000-000000000001"
-latest_adoption = adoption_tests.adoption_service
 
 
 def event(seq, attempt=1):
@@ -608,88 +605,6 @@ def test_cross_thread_wakeups_coalesce_bounded_callbacks_and_preserve_overflow()
             subscription.loop.call_soon_threadsafe = original_schedule
 
     asyncio.run(scenario())
-
-
-def test_adopted_latest_attempt_ingests_historical_metrics_without_old_provenance(
-    latest_adoption,
-):
-    service, original = latest_adoption
-    run_id, layout = original.layout.run_id, original.layout
-    first_hello = decode(layout.journal(1).read_bytes().splitlines()[0])
-    metrics = [
-        Envelope(
-            run_id,
-            1,
-            "metric",
-            step,
-            first_hello.ts,
-            {"name": "loss", "step": step, "value": float(step)},
-        )
-        for step in (1, 2)
-    ]
-    layout.journal(1).write_bytes(
-        b"".join(encode(item) for item in [first_hello, *metrics])
-    )
-    second = bootstrap_run(
-        layout.run_dir,
-        resolved_config={"epochs": 1},
-        runtime=original.request_manifest.runtime,
-        environment={},
-    )
-    assert second.attempt == 2
-    payload = HelloPayload.from_dict(first_hello.payload)
-    with RunJournal(second, hello=payload) as journal:
-        journal.emit(
-            "supersede",
-            {
-                "source_attempt": 1,
-                "step": 1,
-                "generation": "gen-restored",
-            },
-        )
-        journal.emit("metric", {"name": "loss", "step": 2, "value": 20.0})
-    response = asyncio.run(
-        service.adopt(str(layout.run_dir), idempotency_key="latest-two")
-    )
-    assert response.attempt == 2
-    broker = EventBroker()
-    ingestor = Ingestor(service.registry, service.controller, broker, service.pool)
-
-    async def scenario():
-        # Parent metric visibility can lag: retry must not reject the already
-        # verified active hello or advance its uncommitted projection cursor.
-        with pytest.raises(ProtocolError):
-            await ingestor.poll_once(response.plan_id, run_id, 2, layout.journal(2))
-        assert service.registry.cursor(run_id, 2) == -1
-        assert (
-            service.controller.accept_runtime_events(response.plan_id, []).status
-            == NegotiationStatus.ACCEPTED
-        )
-        await ingestor.poll_once(
-            response.plan_id, run_id, 1, layout.journal(1), historical=True
-        )
-        await ingestor.poll_once(response.plan_id, run_id, 2, layout.journal(2))
-
-    asyncio.run(scenario())
-    assert [(row.step, row.value) for row in service.registry.metrics(run_id)] == [
-        (1, 1.0),
-        (2, 20.0),
-    ]
-    provenance = service.provenance.get(response.plan_id)
-    assert provenance.attempt == 2
-    with sqlite3.connect(service.registry.path) as connection:
-        assert connection.execute(
-            "SELECT attempt FROM runtime_provenance"
-        ).fetchall() == [(2,)]
-    store = EventLogStore(service.registry.path)
-    assert [(item.attempt, item.seq) for item in store.read_after(run_id)][:3] == [
-        (1, 0),
-        (1, 1),
-        (1, 2),
-    ]
-    store.close()
-    with pytest.raises(ProtocolError, match="active attempt"):
-        ingestor.push(response.plan_id, run_id, 1, [first_hello])
 
 
 def test_unregistered_historical_record_never_rejects_active_runtime(tmp_path):

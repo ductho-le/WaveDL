@@ -624,7 +624,7 @@ def test_unknown_programming_failure_is_500_not_bad_request(environment, monkeyp
     assert "private" not in response.text
 
 
-def test_foreign_registry_run_requires_verified_adoption(environment, tmp_path):
+def test_foreign_registry_run_is_not_found(environment, tmp_path):
     app, service, *_ = environment
     foreign_id = str(uuid4())
     with Registry(tmp_path / "foreign" / "registry.db") as registry:
@@ -634,7 +634,7 @@ def test_foreign_registry_run_requires_verified_adoption(environment, tmp_path):
             )
         service.registry = registry
         response = request(app, "POST", f"/api/runs/{foreign_id}/cancel")
-        assert response.status_code == 400
+        assert response.status_code == 404
         assert request(app, "GET", f"/api/runs/{uuid4()}").status_code == 404
 
 

@@ -21,13 +21,11 @@ from wavedl_daemon.events.ingestion import (
     Ingestor,
     archived_execution_matches,
     registered_handle_matches,
-    standalone_adoption,
 )
 from wavedl_daemon.execution.budget import BudgetExhausted, WorkBudget
 from wavedl_daemon.execution.pool import BoundedThreadPool
 from wavedl_daemon.execution.service_host import AsyncRunService, ServiceHost
 from wavedl_daemon.http.services import DaemonServices
-from wavedl_daemon.runs.adoption_service import VerifiedAdoptionService
 from wavedl_daemon.runs.artifacts import ArtifactStore
 from wavedl_daemon.runs.catalog import AsyncCatalogService, CatalogService
 from wavedl_daemon.runs.controller import SubmissionController
@@ -79,38 +77,23 @@ class ServiceSession:
         self._history_epoch = 0
 
     @staticmethod
-    def _attempts(layout, current, selected=None):
+    def _attempts(layout, current, selected):
         result = []
         with open_directory(layout.attempts) as directory:
-            if selected is not None:
-                # Managed ancestry comes from SQLite, not directory names.
-                if len(selected) > 4096 or any(
-                    type(number) is not int or not 1 <= number <= current
-                    for number in selected
-                ):
-                    raise ValueError("Invalid bounded registered attempt selection")
-                for number in selected:
-                    try:
-                        with directory.open_directory(str(number)) as attempt:
-                            attempt.verify_private_owner()
-                            attempt.guard()
-                    except FileNotFoundError:
-                        continue
-                    result.append(number)
-                return sorted(result)
-            # Explicit standalone adoption retains its separate verification
-            # path: each historical candidate must pass full standalone proof.
-            for count, entry in enumerate(directory.entries(), 1):
-                if count > 4096:
-                    raise ValueError("Attempt inventory exceeds monitoring bound")
-                if (
-                    entry.is_directory
-                    and entry.name.isdecimal()
-                    and str(int(entry.name)) == entry.name
-                ):
-                    number = int(entry.name)
-                    if 1 <= number <= current:
-                        result.append(number)
+            # Managed ancestry comes from SQLite, not directory names.
+            if len(selected) > 4096 or any(
+                type(number) is not int or not 1 <= number <= current
+                for number in selected
+            ):
+                raise ValueError("Invalid bounded registered attempt selection")
+            for number in selected:
+                try:
+                    with directory.open_directory(str(number)) as attempt:
+                        attempt.verify_private_owner()
+                        attempt.guard()
+                except FileNotFoundError:
+                    continue
+                result.append(number)
         return sorted(result)
 
     def _lineage_attempts(self, record, epoch):
@@ -230,16 +213,6 @@ class ServiceSession:
             self.host_profiler = HostProfiler(
                 sys.executable, Path.cwd(), self.pool, self.backends, budget=self.budget
             )
-            self.adoptions = VerifiedAdoptionService(
-                self.settings,
-                plans,
-                executions,
-                provenance,
-                self.registry,
-                self.controller,
-                self.pool,
-                self.backends,
-            )
             return self
         except BaseException:
             stack.close()
@@ -280,11 +253,7 @@ class ServiceSession:
                     # diagnostics; no active-runtime cursor/provenance writes.
                     layout = RunLayout(Path(record.handle.run_dir), record.run_id)
                     try:
-                        selected = (
-                            None
-                            if standalone_adoption(record)
-                            else self._lineage_attempts(record, epoch)
-                        )
+                        selected = self._lineage_attempts(record, epoch)
                         attempts = await self.pool.submit(
                             lambda token,
                             layout=layout,
@@ -295,7 +264,7 @@ class ServiceSession:
                         ).wait()
                         failure = None
                         for attempt in self._attempt_batch(
-                            attempts, record.attempt, epoch if selected is None else 0
+                            attempts, record.attempt, 0
                         ):
                             try:
                                 await self.ingestor.poll_once(
@@ -463,14 +432,6 @@ class HostedServices(DaemonServices):
                     for key, value in sorted(session.controller.dispatch_errors.items())
                 ],
             }
-        )
-
-    async def adopt(self, path, *, attempt=None, idempotency_key):
-        return await self.host.call(
-            lambda session: session.adoptions.adopt(
-                path, attempt=attempt, idempotency_key=idempotency_key
-            ),
-            concurrent_async=True,
         )
 
     async def inspect(self, root, path):

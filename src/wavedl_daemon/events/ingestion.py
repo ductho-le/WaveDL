@@ -40,14 +40,6 @@ def registered_handle_matches(record, handle):
     )
 
 
-def standalone_adoption(record):
-    """A stored explicit adoption is distinct from managed startup evidence."""
-    return registered_handle_matches(record, getattr(record, "handle", None)) and (
-        record.handle.backend == "local"
-        and record.handle.raw_json == '{"adopted":true}'
-    )
-
-
 def archived_execution_matches(current, archived):
     return (
         archived.plan_id == current.plan_id
@@ -223,15 +215,10 @@ class Ingestor:
         expected = Path(record.run_dir) / "attempts" / str(attempt) / "events.jsonl"
         if Path(path).absolute() != expected.absolute():
             raise ProtocolError("Historical journal differs from registered run source")
-        if standalone_adoption(record):
-            # Standalone predecessors have no daemon activation snapshots. The
-            # explicit adoption authorizes their independent full verification
-            # on the filesystem worker, never a managed-run fallback.
-            return True
         if not registered_handle_matches(record, getattr(record, "handle", None)):
             raise ProtocolError("Historical journal lacks registered execution lineage")
         if same_pending_attempt:
-            return False
+            return
         store = self.controller.execution_store
         # Immutable history is ordered by attempt. Indexed offset probes bound
         # each identity check to at most 63 single-record owner-thread reads,
@@ -249,7 +236,7 @@ class Ingestor:
             archived = page[0]
             if archived.attempt == attempt:
                 if archived_execution_matches(record, archived):
-                    return False
+                    return
                 break
             if archived.attempt < attempt:
                 lower = middle + 1
@@ -300,9 +287,8 @@ class Ingestor:
                     raise ProtocolError(
                         "Active journal differs from registered run source"
                     )
-        adopted_history = False
         if historical:
-            adopted_history = self._historical_identity(plan_id, run_id, attempt, path)
+            self._historical_identity(plan_id, run_id, attempt, path)
         key = (run_id, attempt)
         if key in self._busy:
             return self.registry.cursor(run_id, attempt)
@@ -358,19 +344,6 @@ class Ingestor:
                     if historical
                     else None
                 )
-                proof = None
-                if adopted_history:
-                    from wavedl_daemon.runs.adoption import verify_standalone_run
-
-                    proof = anchors.enter_context(
-                        verify_standalone_run(
-                            Path(path).parent.parent.parent, attempt=attempt
-                        )
-                    )
-                if proof is not None and (
-                    proof.layout.run_id != run_id or proof.attempt != attempt
-                ):
-                    raise ProtocolError("Historical standalone proof identity differs")
                 if root is not None:
                     root.verify_private_owner()
                     root.guard()
@@ -386,18 +359,12 @@ class Ingestor:
                         and not getattr(reader, "historical_hello", False)
                     ):
                         checked_hello(page[0])
-                        if proof is not None and canonical_event(
-                            page[0]
-                        ) != canonical_event(proof.hello):
-                            raise ProtocolError("Historical standalone hello changed")
                         reader.historical_hello = True
                     events.extend(page)
                     if not page:
                         break
                 if root is not None:
                     root.guard()
-                if proof is not None:
-                    proof.guard()
             token.check()
             return events, reader.snapshot()
 

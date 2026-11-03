@@ -9,10 +9,9 @@ import { isUuid } from '../lib/daemon-api-schemas';
  *   the canvas. Gate teleported bodies by activeSection, not the section's v-show.
  * - useShellLayout().setActiveTab('logs' | 'artifacts') selects and opens a tab;
  *   useShellPanelTabs() can register a section-specific subset of the real tabs.
- * - WorkstationShell exposes an `actions` slot beside its Experiments Adopt action.
- *   Connection and Settings are pages; Adopt is an overlay on Experiments.
+ * - WorkstationShell exposes an `actions` slot. Connection and Settings are pages.
  */
-import { FileChartColumn, Layers, Database, Plus, Cable, Settings2, Import } from '@lucide/vue';
+import { FileChartColumn, Layers, Database, Plus, Cable, Settings2 } from '@lucide/vue';
 import {
   WORKSTATION_SECTIONS,
   type PrimaryWorkstationSection,
@@ -21,7 +20,7 @@ import {
 
 export type { PrimaryWorkstationSection, WorkstationSection };
 
-export type ShellCommand = 'adopt' | 'connection' | 'settings';
+export type ShellCommand = 'connection' | 'settings';
 
 export interface ShellNavigationDescriptor<
   Section extends WorkstationSection = WorkstationSection,
@@ -64,13 +63,6 @@ export const SHELL_PRIMARY_NAVIGATION: readonly ShellNavigationDescriptor<Primar
 export const SHELL_ACTION_NAVIGATION: readonly ShellNavigationDescriptor<
   Exclude<WorkstationSection, PrimaryWorkstationSection>
 >[] = [
-  {
-    id: WORKSTATION_SECTIONS.adopt,
-    labelKey: 'shell.adoptStandaloneRun',
-    icon: Import,
-    path: '/experiments',
-    command: 'adopt',
-  },
   {
     id: WORKSTATION_SECTIONS.connection,
     labelKey: 'shell.connection',

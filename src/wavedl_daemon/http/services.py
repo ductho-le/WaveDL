@@ -10,7 +10,6 @@ if TYPE_CHECKING:
     from wavedl_daemon.events.broker import EventBroker
     from wavedl_daemon.execution.pool import BoundedThreadPool
     from wavedl_daemon.execution.service_host import AsyncRunService
-    from wavedl_daemon.runs.adoption_service import AdoptionResponse
     from wavedl_daemon.runs.artifacts import ArtifactStore
     from wavedl_daemon.runs.catalog import AsyncCatalogService
     from wavedl_daemon.runs.runtime_service import _AsyncEventLog
@@ -30,10 +29,6 @@ class DaemonServices(Protocol):
     async def resolve_plan(self, run_id: str) -> str: ...
 
     async def health(self) -> dict: ...
-
-    async def adopt(
-        self, path: str, *, attempt: int | None = None, idempotency_key: str
-    ) -> AdoptionResponse: ...
 
     async def inspect(self, root: str, path: str) -> dict: ...
 
@@ -60,7 +55,6 @@ def require_services(services: DaemonServices) -> None:
     methods = (
         "resolve_plan",
         "health",
-        "adopt",
         "inspect",
         "preview",
         "host_profile",
