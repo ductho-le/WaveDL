@@ -1,49 +1,86 @@
 """Real authenticated ASGI routes over fragmented loopback HTTP, not API mocks.
 
-The adapter below is test-owned HTTP framing, not a production ASGI server. SQLite,
-ingestion, authentication and replay/live delivery are real; runtime negotiation is
-deliberately the small accepted-controller test seam.
+The adapter below is test-owned HTTP framing, not a production ASGI server. The
+SQLite run log, authentication and replay/live delivery are real.
 """
 
 import asyncio
 import json
 import time
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass
-from types import SimpleNamespace
+from pathlib import Path
 
 import httpx
 import pytest
 from fastapi import FastAPI
 
-from wavedl.core.protocol import Envelope, decode
 from wavedl_daemon.events.broker import EventBroker
-from wavedl_daemon.events.ingestion import Ingestor
 from wavedl_daemon.http.app import SecurityBoundary
 from wavedl_daemon.http.events import event_routes
-from wavedl_daemon.runs.negotiation import NegotiationStatus
-from wavedl_daemon.storage.event_log import EventLogStore
-from wavedl_daemon.storage.registry import Registry
+from wavedl_daemon.runs.lifecycle import RunRef
+from wavedl_daemon.runs.model import (
+    AttemptOpened,
+    BackendKind,
+    Exited,
+    Metric,
+    Operation,
+    Outcome,
+    PlanId,
+    RunId,
+    SlurmHandle,
+    Submitted,
+    Submitting,
+)
+from wavedl_daemon.storage.database import open_database
+from wavedl_daemon.storage.ownership import acquire_dispatch_lock
+from wavedl_daemon.storage.run_log import Expect, New, RunLog, encode
 
 
 RUN = "00000000-0000-4000-8000-000000000001"
 TOKEN = "event-boundary-test-private-token"
 
 
-def event(seq, attempt=1):
-    return Envelope(
-        RUN,
-        attempt,
-        "log",
-        seq,
-        "2026-10-11T00:00:00Z",
-        {"message": "Tiếng Việt 🌊", "level": "info", "stream": "stdout"},
+@contextmanager
+def open_log(root, *, notify=lambda run_id: None):
+    """A real schema 1 database under its dispatch lock."""
+    with acquire_dispatch_lock(Path(root) / "dispatch.lock") as lock:
+        connection = open_database(Path(root) / "registry.db", dispatch_lock=lock)
+        try:
+            yield RunLog(connection, notify=notify)
+        finally:
+            connection.close()
+
+
+def start(log):
+    """A submitted Slurm run, which is the backend whose attempts requeue."""
+    ref = RunRef(
+        RunId(RUN), PlanId("test-owned-plan"), BackendKind.SLURM, Operation.TRAIN, Path("/r")
+    )
+    events = [AttemptOpened("submit", None), Submitting(), Submitted(SlurmHandle("7", "c", "u"))]
+    return log.append(RunId(RUN), events, expect=New(ref))
+
+
+def metrics(log, *epochs):
+    head = log.head(RunId(RUN))
+    rows = [
+        Metric(epoch, {"epoch": epoch, "val_loss": 0.5, "note": "Tiếng Việt 🌊"}, head.metrics_offset + 64 * (index + 1))
+        for index, epoch in enumerate(epochs)
+    ]
+    return log.append(RunId(RUN), rows, expect=Expect())
+
+
+def requeue(log):
+    head = log.head(RunId(RUN))
+    ending = Exited(Outcome.REQUEUED, False, detail="Requeued by Slurm")
+    return log.append(
+        RunId(RUN), [ending, AttemptOpened("requeue", head.attempt)], expect=Expect()
     )
 
 
-class AcceptedController:
-    def accept_runtime_events(self, plan_id, events):
-        return SimpleNamespace(status=NegotiationStatus.ACCEPTED, reason="")
+def frames(log, cursor=(0, -1)):
+    """What a client must receive after ``cursor``: decoded SSE data."""
+    return [json.loads(encode(item)) for item in log.read_after(RunId(RUN), cursor, limit=1000)]
 
 
 @dataclass(frozen=True)
@@ -53,7 +90,7 @@ class StreamControl:
 
 
 async def read_events(url, token, run_id, *, cursor=(0, -1), last_event_id=None):
-    """Yield daemon SSE frames as envelopes or overflow/error controls."""
+    """Yield daemon SSE frames as decoded data or overflow/error controls."""
     headers = {"Authorization": f"Bearer {token}", "Accept": "text/event-stream"}
     params = None
     if last_event_id is None:
@@ -77,12 +114,13 @@ async def read_events(url, token, run_id, *, cursor=(0, -1), last_event_id=None)
                     frame.setdefault(name, []).append(value.removeprefix(" "))
                 continue
             if "data" in frame:
-                data = "\n".join(frame["data"])
+                data = json.loads("\n".join(frame["data"]))
                 kind = frame.get("event", ["message"])[0]
                 if kind == "message":
-                    yield decode(data)
+                    assert frame["id"] == [f"{data['attempt']}:{data['seq']}"]
+                    yield data
                 else:
-                    resume = json.loads(data)["resumePosition"]
+                    resume = data["resumePosition"]
                     yield StreamControl(kind, (resume["attempt"], resume["seq"]))
             frame = {}
 
@@ -210,177 +248,126 @@ def authenticated_app(store, broker):
     return SecurityBoundary(app, token=TOKEN.encode(), allowed_hosts=("127.0.0.1",))
 
 
-def test_restart_and_sparse_attempt_replay(tmp_path):
-    path = tmp_path / "registry.db"
-
+def test_restart_and_requeued_attempt_replay(tmp_path):
     async def scenario():
-        with Registry(path) as registry:
-            store, broker = EventLogStore(path), EventBroker()
-            try:
-                ingestor = Ingestor(registry, AcceptedController(), broker, None)
-                # Journal-origin ingestion legitimately contains sparse seqs.
-                ingestor.push(
-                    "test-owned-plan", RUN, 1, [event(0), event(80)], journal=True
+        with open_log(tmp_path) as log:
+            start(log)
+            metrics(log, 1, 2)
+            requeue(log)
+            metrics(log, 2)
+            requeue(log)
+            async with (
+                wire_phase(authenticated_app(log, EventBroker())) as (url, _),
+                httpx.AsyncClient() as client,
+            ):
+                refused = await client.get(
+                    f"{url}/api/runs/{RUN}/events",
+                    headers={"Authorization": "Bearer wrong-token"},
                 )
-                ingestor.push(
-                    "test-owned-plan", RUN, 2, [event(0, 2), event(90, 2)], journal=True
-                )
-                ingestor.push("test-owned-plan", RUN, 10, [event(0, 10)], journal=True)
-                async with (
-                    wire_phase(authenticated_app(store, broker)) as (url, _),
-                    httpx.AsyncClient() as client,
-                ):
-                    refused = await client.get(
-                        f"{url}/api/runs/{RUN}/events",
-                        headers={"Authorization": "Bearer wrong-token"},
-                    )
-                    assert refused.status_code == 401
-            finally:
-                store.close()
+                assert refused.status_code == 401
 
-        # Reopen both connections: neither replay nor cursors rely on memory.
-        with Registry(path) as registry:
-            store, broker = EventLogStore(path), EventBroker()
-            try:
-                assert registry.cursor(RUN, 1) == 80
-                assert registry.cursor(RUN, 2) == 90
-                assert registry.cursor(RUN, 10) == 0
+        # Reopen the database: neither replay nor cursors rely on memory.
+        with open_log(tmp_path) as log:
+            broker = EventBroker()
+            expected = frames(log, (1, 3))
+            assert [(item["attempt"], item["seq"]) for item in expected] == [
+                (1, 4), (1, 5), (2, 0), (2, 1), (2, 2), (3, 0),
+            ]
 
-                def finish(payload, disconnected):
-                    if b"id: 10:0" in payload:
-                        disconnected.set()
+            def finish(payload, disconnected):
+                if b"id: 3:0" in payload:
+                    disconnected.set()
 
-                app = authenticated_app(store, broker)
-                async with wire_phase(app, on_body=finish) as (url, requests):
-                    received = [
-                        item
-                        async for item in read_events(
-                            url, TOKEN, RUN, last_event_id="1:0"
-                        )
-                    ]
-                    assert received == [
-                        event(80),
-                        event(0, 2),
-                        event(90, 2),
-                        event(0, 10),
-                    ]
-                    assert requests[0][1][b"last-event-id"] == b"1:0"
-                    assert b"?" not in requests[0][0]
-                assert not broker._subscribers
-            finally:
-                store.close()
+            app = authenticated_app(log, broker)
+            async with wire_phase(app, on_body=finish) as (url, requests):
+                received = [
+                    item async for item in read_events(url, TOKEN, RUN, last_event_id="1:3")
+                ]
+                assert received == expected
+                assert {item["protocol"] for item in received} == {"wavedl-run"}
+                assert {item["version"] for item in received} == {2}
+                assert requests[0][1][b"last-event-id"] == b"1:3"
+                assert b"?" not in requests[0][0]
+            assert not broker._subscribers
 
     asyncio.run(scenario())
 
 
 def test_real_overflow_does_not_advance(tmp_path):
     async def scenario():
-        with Registry(tmp_path / "registry.db") as registry:
-            registry.apply_events(RUN, 1, [event(0)])
-            store, broker = EventLogStore(registry.path), EventBroker(queue_size=1)
-            try:
+        broker = EventBroker(queue_size=1)
+        with open_log(tmp_path) as log:
+            start(log)
 
-                def overflow_after_delivery(payload, disconnected):
-                    if b"id: 1:0" in payload:
-                        # Commit while the real stream is delivering its first
-                        # page, then overflow its bounded wakeup subscription.
-                        registry.apply_events(RUN, 1, [event(1)])
-                        broker.notify(RUN)
-                        broker.notify(RUN)
+            def overflow_after_delivery(payload, disconnected):
+                if b"id: 1:2" in payload:
+                    # Commit while the real stream is delivering its first
+                    # page, then overflow its bounded wakeup subscription.
+                    metrics(log, 1)
+                    broker.notify(RUN)
+                    broker.notify(RUN)
 
-                app = authenticated_app(store, broker)
-                delivered, committed_cursor = [], (0, -1)
-                async with wire_phase(app, on_body=overflow_after_delivery) as (url, _):
+            app = authenticated_app(log, broker)
+            delivered = []
+            async with wire_phase(app, on_body=overflow_after_delivery) as (url, _):
+                async for item in read_events(url, TOKEN, RUN):
+                    delivered.append(item)
+            committed = [item for item in delivered if isinstance(item, dict)]
+            assert committed == frames(log)[:3]
+            assert delivered[3:] == [StreamControl("overflow", (1, 2))]
+            assert not broker._subscribers
 
-                    async def consume():
-                        nonlocal committed_cursor
-                        async for item in read_events(url, TOKEN, RUN):
-                            delivered.append(item)
-                            if isinstance(item, Envelope):
-                                committed_cursor = item.attempt, item.seq
+            # Reconnect from the last delivered data event, not the control:
+            # the row hidden by overflow arrives once and nothing repeats.
+            def finish_reconnect(payload, disconnected):
+                if b"id: 1:3" in payload:
+                    disconnected.set()
 
-                    await consume()
-                    assert delivered == [event(0), StreamControl("overflow", (1, 0))]
-                assert committed_cursor == (1, 0)
-                assert registry.cursor(RUN, 1) == 1
-                assert store.read_after(RUN, committed_cursor) == [event(1)]
-                assert not broker._subscribers
-
-                # Reconnect over the real authenticated route using only the
-                # last delivered data event, not a forged control's cursor.
-                # The committed event hidden by overflow must arrive once;
-                # the already-delivered event must not be replayed.
-                def finish_reconnect(payload, disconnected):
-                    if b"id: 1:1" in payload:
-                        disconnected.set()
-
-                async with wire_phase(app, on_body=finish_reconnect) as (
-                    url,
-                    requests,
-                ):
-                    replayed = [
-                        item
-                        async for item in read_events(
-                            url,
-                            TOKEN,
-                            RUN,
-                            last_event_id=(
-                                f"{committed_cursor[0]}:{committed_cursor[1]}"
-                            ),
-                        )
-                    ]
-                    assert replayed == [event(1)]
-                    assert requests[0][1][b"last-event-id"] == b"1:0"
-                assert registry.cursor(RUN, 1) == 1
-                assert registry.get(RUN).event_count == 2
-                assert store.read_after(RUN) == [event(0), event(1)]
-                assert not broker._subscribers
-            finally:
-                store.close()
+            async with wire_phase(app, on_body=finish_reconnect) as (url, requests):
+                replayed = [
+                    item async for item in read_events(url, TOKEN, RUN, last_event_id="1:2")
+                ]
+                assert replayed == frames(log, (1, 2))
+                assert replayed[0]["type"] == "metric"
+                assert requests[0][1][b"last-event-id"] == b"1:2"
+            assert len(frames(log)) == 4
+            assert not broker._subscribers
 
     asyncio.run(scenario())
 
 
 def test_durable_setup_does_not_consume_wire_phase_deadline(tmp_path):
     async def scenario():
-        with Registry(tmp_path / "registry.db") as registry:
-            store, broker = EventLogStore(registry.path), EventBroker()
-            try:
-                # Stand in for slow synchronous Windows migrations/fsync. The
-                # original whole-scenario deadline expired at the next await.
-                time.sleep(5.1)
-                app = authenticated_app(store, broker)
-                async with wire_phase(app):
-                    pass
-                assert not broker._subscribers
-            finally:
-                store.close()
+        with open_log(tmp_path) as log:
+            broker = EventBroker()
+            # Stand in for slow synchronous Windows migrations/fsync. The
+            # original whole-scenario deadline expired at the next await.
+            time.sleep(5.1)
+            async with wire_phase(authenticated_app(log, broker)):
+                pass
+            assert not broker._subscribers
 
     asyncio.run(scenario())
 
 
 def test_stalled_wire_phase_times_out_and_reaps_real_stream(tmp_path):
     async def scenario():
-        with Registry(tmp_path / "registry.db") as registry:
-            registry.apply_events(RUN, 1, [event(0)])
-            store, broker = EventLogStore(registry.path), EventBroker()
+        with open_log(tmp_path) as log:
+            start(log)
+            broker = EventBroker()
             delivered = []
-            try:
-                app = authenticated_app(store, broker)
-                with pytest.raises(TimeoutError):
-                    async with wire_phase(app) as (url, _):
-                        async for item in read_events(url, TOKEN, RUN):
-                            delivered.append(item)
-                            # No finish callback: a real subscriber waits for
-                            # another event until the wire deadline cancels it.
-                assert delivered == [event(0)]
-                assert not broker._subscribers
-                assert not [
-                    task
-                    for task in asyncio.all_tasks()
-                    if task is not asyncio.current_task() and not task.done()
-                ]
-            finally:
-                store.close()
+            with pytest.raises(TimeoutError):
+                async with wire_phase(authenticated_app(log, broker)) as (url, _):
+                    async for item in read_events(url, TOKEN, RUN):
+                        delivered.append(item)
+                        # No finish callback: a real subscriber waits for
+                        # another event until the wire deadline cancels it.
+            assert delivered == frames(log)
+            assert not broker._subscribers
+            assert not [
+                task
+                for task in asyncio.all_tasks()
+                if task is not asyncio.current_task() and not task.done()
+            ]
 
     asyncio.run(scenario())

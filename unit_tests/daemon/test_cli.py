@@ -24,7 +24,7 @@ from wavedl_daemon.credentials import read_credential
 from wavedl_daemon.runs.runtime_service import HostedServices
 from wavedl_daemon.storage.ownership import acquire_dispatch_lock
 
-from .test_hosted_app import Backend
+from .test_hosted_app import StubSupervisor, stub_backends
 
 
 @pytest.fixture
@@ -294,11 +294,11 @@ def test_actual_serve_bootstrap_client_idempotency_and_shutdown(
             retained["server"] = self
 
     def factory(settings, **kwargs):
-        backend = Backend()
+        supervisor = StubSupervisor()
         services = HostedServices(
-            settings, backend_factory=lambda lock: {"local": backend}, **kwargs
+            settings, backend_factory=stub_backends(supervisor), **kwargs
         )
-        retained.update(backend=backend, services=services)
+        retained.update(supervisor=supervisor, services=services)
         return services
 
     async def exercise():
@@ -359,9 +359,9 @@ def test_actual_serve_bootstrap_client_idempotency_and_shutdown(
                 "POST", "/api/runs", {"plan_id": first["plan_id"]}
             )
             deadline = time.monotonic() + 3
-            while not retained["backend"].submissions and time.monotonic() < deadline:
+            while not retained["supervisor"].launches and time.monotonic() < deadline:
                 await asyncio.sleep(0.01)
-            assert retained["backend"].submissions == 1
+            assert len(retained["supervisor"].launches) == 1
             async with httpx.AsyncClient() as http:
                 response = await http.get(base + "/api/health")
                 assert response.status_code == 401

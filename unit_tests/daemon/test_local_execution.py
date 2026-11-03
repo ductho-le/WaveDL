@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import sys
 import time
 from dataclasses import replace
@@ -12,55 +13,74 @@ from uuid import uuid4
 
 import pytest
 
-from wavedl.core.layout import OperationKind, RunLayout, allocate_attempt
-from wavedl.core.manifest import RuntimeSelection, build_manifest, write_manifest
-from wavedl_daemon.backends.contracts import (
-    ObservationStatus,
-    OutcomeStatus,
-    UnsupportedPlan,
-)
+from wavedl_daemon.backends.contracts import Runtime, UnsupportedPlan
 from wavedl_daemon.backends.local import LocalBackend
-from wavedl_daemon.backends.local_execution import SupervisionLost
+from wavedl_daemon.backends.local_execution import (
+    CANCEL_GRACE_SECONDS,
+    SupervisionLost,
+    attempt_argv,
+    reserved_local_environment,
+)
 from wavedl_daemon.execution.budget import BudgetExhausted, WorkBudget
 from wavedl_daemon.execution.pool import BoundedThreadPool
+from wavedl_daemon.runs.model import LocalExit, NotOwned, Operation
+from wavedl_daemon.runs.service import build_spec
 from wavedl_daemon.storage.ownership import DispatchLock, DispatchRequired
 
 
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="executable stubs require POSIX; native Windows supervisor tests cover Jobs",
+)
+
+# The child records what it was started with next to the attempt file it was
+# given, because the supervisor keeps process output in memory only.
 STUB = """
 import json,os,signal,subprocess,sys,time
 if sys.argv[1] == '-c':
-    if os.environ.get('STUB_PROBE') == 'hang': time.sleep(60)
-    if os.environ.get('STUB_PROBE') == 'refuse': sys.exit(7)
-    if os.environ.get('STUB_PROBE') == 'duplicate':
-        print('{"interpreter":"/foreign","interpreter":"/actual","prefix":"/env","base_prefix":"/base"}')
+    probe = os.environ.get('STUB_PROBE')
+    if probe == 'hang': time.sleep(60)
+    if probe == 'refuse': sys.exit(7)
+    if probe == 'relative':
+        print(json.dumps({'interpreter':'python','prefix':sys.prefix,'devices':['cpu']}))
         sys.exit(0)
-    if os.environ.get('STUB_PROBE') == 'truncated':
-        print('WAVEDL_LOCAL_PROBE_OK'+' ' * 10000)
+    if probe == 'truncated':
+        print('x' * 40000)
         sys.exit(0)
-    if os.environ.get('STUB_PROBE') in ('no_cuda','no_devices','no_allocation','no_cpu'):
+    if probe in ('no_cuda','no_devices','no_allocation','no_cpu'):
         import types
         fake=types.ModuleType('torch')
-        fake.cuda=types.SimpleNamespace(is_available=lambda:os.environ['STUB_PROBE']!='no_cuda', device_count=lambda:0 if os.environ['STUB_PROBE']=='no_devices' else 1)
+        fake.cuda=types.SimpleNamespace(
+            is_available=lambda: probe!='no_cuda',
+            device_count=lambda: 0 if probe=='no_devices' else 1,
+            get_device_name=lambda index: 'stub')
         def empty(*args,**kwargs):
-            if os.environ['STUB_PROBE'] in ('no_cuda','no_devices'): return object()
+            if probe in ('no_cuda','no_devices'): return object()
             raise RuntimeError('allocation refused')
         fake.empty=empty
         sys.modules['torch']=fake
         exec(sys.argv[2])
         sys.exit(0)
-    print(json.dumps({'interpreter':sys.executable,'prefix':sys.prefix,'base_prefix':sys.base_prefix}))
+    print(json.dumps({'interpreter':sys.executable,'prefix':sys.prefix,'devices':['cpu']}))
     sys.exit(0)
-print(json.dumps({k:os.environ[k] for k in ('WAVEDL_RUN_ID','WAVEDL_REQUEST_ID','WAVEDL_ATTEMPT','WAVEDL_OWNER')}),flush=True)
+target = next(sys.argv[i + 1] for i, arg in enumerate(sys.argv)
+              if arg in ('--metrics_jsonl', '--metrics_json'))
+record = os.path.join(os.path.dirname(target), 'child.json')
+def write(**extra):
+    with open(record, 'w') as stream:
+        json.dump({'argv': sys.argv, 'cwd': os.getcwd(), 'env': dict(os.environ), **extra}, stream)
 mode=os.environ.get('STUB_MODE','exit')
-if mode=='output':
-    sys.stdout.write('x'*1000000)
-    sys.stderr.write('y'*1000000)
+if mode=='interrupt':
+    signal.signal(signal.SIGINT, lambda *_: sys.exit(42))
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(43))
 if mode=='tree':
+    signal.signal(signal.SIGINT,signal.SIG_IGN)
     signal.signal(signal.SIGTERM,signal.SIG_IGN)
-    child=subprocess.Popen([sys.executable,'-c','import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(60)'])
-    print('CHILD='+str(child.pid),flush=True)
-    time.sleep(60)
-if mode=='sleep': time.sleep(float(os.environ.get('STUB_SLEEP','60')))
+    child=subprocess.Popen([sys.executable,'-c','import signal,time; signal.signal(signal.SIGINT,signal.SIG_IGN); signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(60)'])
+    write(child=child.pid)
+else:
+    write()
+if mode in ('sleep','interrupt','tree'): time.sleep(float(os.environ.get('STUB_SLEEP','60')))
 sys.exit(int(os.environ.get('STUB_EXIT','0')))
 """
 
@@ -71,75 +91,117 @@ def dispatch(tmp_path):
         yield lock
 
 
-def prepared(tmp_path, **environment):
-    # Executable stubs exercise the selected-interpreter seam without torch.
-    # Native Windows process invocation uses its own supervisor CI tests.
+def stub(tmp_path):
     executable = tmp_path / ("runtime-" + uuid4().hex)
     executable.write_text(f"#!{sys.executable}\n" + STUB)
     executable.chmod(0o700)
-    layout = RunLayout.create(tmp_path / "runs", str(uuid4()))
-    manifest = build_manifest(
-        layout,
-        operation=OperationKind.TRAIN,
-        resolved_config={"epochs": 1},
-        runtime=RuntimeSelection(str(executable), "selected", "cpu", environment),
+    return executable
+
+
+def prepared(
+    tmp_path, operation=Operation.TRAIN, device="cpu", executable=None, **environment
+):
+    (tmp_path / "runs").mkdir(mode=0o700, exist_ok=True)
+    config = (
+        {"epochs": 1}
+        if operation is Operation.TRAIN
+        else {"checkpoint": "checkpoint", "data_path": "data.npz"}
+    )
+    spec = build_spec(
+        tmp_path / "runs" / str(uuid4()),
+        operation=operation,
+        resolved_config=config,
+        runtime=Runtime(
+            str(executable or stub(tmp_path)), "selected", device, environment
+        ),
         submission_cwd=tmp_path,
     )
-    write_manifest(layout, manifest)
-    attempt = allocate_attempt(layout)
-    return LocalBackend().plan(manifest), attempt
+    return LocalBackend().plan(spec)
 
 
-def terminal(backend, handle):
-    deadline = time.monotonic() + 5
+def exited(backend, handle, timeout=5):
+    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        observation = backend.observe(handle)
-        if observation.status == ObservationStatus.TERMINAL:
-            return observation
+        result = backend.poll(handle)
+        if result is not None:
+            return result
         time.sleep(0.01)
-    raise AssertionError("process did not become terminal")
+    raise AssertionError("process did not exit")
 
 
-def test_local_runs_not_capped_by_worker_budget(tmp_path, dispatch):
-    budget = WorkBudget(max_workers=1)
-    # The backend's own process cap is separate; lift it to isolate the worker budget.
-    backend = LocalBackend(dispatch_lock=dispatch, max_processes=3)
-    handles = []
+def child(plan, attempt=1):
+    return json.loads((plan.spec.paths.attempt(attempt) / "child.json").read_text())
+
+
+def test_spawn_claims_the_attempt_and_names_its_files(tmp_path, dispatch):
+    plan = prepared(tmp_path)
+    backend = LocalBackend(dispatch_lock=dispatch)
     try:
-        with BoundedThreadPool(budget) as pool:
-            for index in range(3):
-                plan, attempt = prepared(tmp_path, STUB_MODE="sleep", STUB_SLEEP="0.5")
-                handle = pool.control_lane.submit(
-                    lambda token,
-                    plan=plan,
-                    attempt=attempt,
-                    index=index: backend.submit(
-                        plan, request_id=f"request-{index}", attempt=attempt
-                    )
-                ).result(5)
-                handles.append(handle)
-            assert len(handles) == 3
-            assert all(
-                backend.observe(handle).status == ObservationStatus.RUNNING
-                for handle in handles
-            )
+        probed, handle = backend.spawn(plan, 1)
+        assert exited(backend, handle) == LocalExit(0, None)
+        paths = plan.spec.paths
+        assert paths.attempt(1).stat().st_mode & 0o777 == 0o700
+        assert paths.output.is_dir()
+        started = child(plan)
+        assert started["argv"][-4:] == [
+            "--output_dir",
+            str(paths.output),
+            "--metrics_jsonl",
+            str(paths.metrics(1)),
+        ]
+        assert Path(started["cwd"]).resolve() == paths.run_dir.resolve()
+        assert probed.python == plan.spec.runtime.python
+        assert probed.devices == ("cpu",)
+        assert Path(probed.interpreter).is_absolute()
+        assert backend.running == 0
     finally:
         backend.close()
 
 
-def test_ambient_launcher_identity_is_removed_from_probe_and_actual_child(
+def test_attempt_files_follow_the_operation(tmp_path):
+    train = prepared(tmp_path)
+    test = prepared(tmp_path, Operation.TEST, device="auto")
+    plot = prepared(tmp_path, Operation.PLOT, device="auto")
+    assert attempt_argv(train, 2)[-2:] == (
+        "--metrics_jsonl",
+        str(train.spec.paths.metrics(2)),
+    )
+    assert attempt_argv(test, 1)[-2:] == (
+        "--metrics_json",
+        str(test.spec.paths.evaluation(1)),
+    )
+    assert attempt_argv(plot, 1) == plot.argv
+
+
+def test_an_attempt_is_started_at_most_once(tmp_path, dispatch):
+    plan = prepared(tmp_path)
+    backend = LocalBackend(dispatch_lock=dispatch)
+    restarted = LocalBackend(dispatch_lock=dispatch)
+    try:
+        _, handle = backend.spawn(plan, 1)
+        exited(backend, handle)
+        record = child(plan)
+        backend.release(handle)
+        for owner in (backend, restarted):
+            with pytest.raises(SupervisionLost, match="already claimed"):
+                owner.spawn(plan, 1)
+        assert child(plan) == record
+        _, second = backend.spawn(plan, 2)
+        assert exited(backend, second) == LocalExit(0, None)
+    finally:
+        restarted.close()
+        backend.close()
+
+
+def test_ambient_launcher_identity_is_removed_from_probe_and_child(
     tmp_path, dispatch, monkeypatch
 ):
-    from wavedl_daemon.backends.local_execution import reserved_local_environment
-
     polluted = {
         "WAVEDL_SCHEDULER_BINDING": "1",
         "WAVEDL_DAEMON_TOKEN": "ambient-secret",
         "SLURM_JOB_ID": "foreign",
-        "SLURM_RESTART_COUNT": "99",
         "SBATCH_JOB_NAME": "foreign",
         "RANK": "4",
-        "LOCAL_RANK": "4",
         "WORLD_SIZE": "99",
         "MASTER_ADDR": "foreign",
         "MASTER_PORT": "9",
@@ -147,52 +209,7 @@ def test_ambient_launcher_identity_is_removed_from_probe_and_actual_child(
     for key, value in polluted.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("ORDINARY_PATH_SETTING", "preserved")
-    plan, attempt = prepared(tmp_path, CUDA_VISIBLE_DEVICES="declared-device")
-    executable = Path(plan.argv[0])
-    executable.write_text(
-        f"#!{sys.executable}\n" + "import os,sys,json\n"
-        "if sys.argv[1]=='-c':\n"
-        " assert all(key not in os.environ for key in " + repr(tuple(polluted)) + ")\n"
-        " print(json.dumps({'interpreter':sys.executable,'prefix':sys.prefix,'base_prefix':sys.base_prefix})); sys.exit(0)\n"
-        "print(json.dumps(dict(os.environ)))\n"
-    )
-    backend = LocalBackend(dispatch_lock=dispatch, owner="controller")
-    try:
-        handle = backend.submit(plan, request_id="request", attempt=attempt)
-        terminal(backend, handle)
-        environment = json.loads(backend.process_result(handle).stdout)
-        assert all(key not in environment for key in polluted)
-        assert environment["ORDINARY_PATH_SETTING"] == "preserved"
-        assert environment["CUDA_VISIBLE_DEVICES"] == "declared-device"
-        assert environment["WAVEDL_RUN_ID"] == plan.run_id
-        assert environment["WAVEDL_REQUEST_ID"] == "request"
-        assert environment["WAVEDL_SUPERVISED"] == "1"
-        assert reserved_local_environment("wavedl_scheduler_binding")
-    finally:
-        backend.close()
-
-
-@pytest.mark.parametrize(
-    "key",
-    [
-        "WAVEDL_SCHEDULER_BINDING",
-        "wavedl_daemon_token",
-        "SLURM_JOB_ID",
-        "RANK",
-        "MASTER_ADDR",
-    ],
-)
-def test_explicit_reserved_local_environment_is_refused_before_execution(tmp_path, key):
-    with pytest.raises(UnsupportedPlan):
-        prepared(tmp_path, **{key: "unapproved"})
-
-
-def test_local_child_environment_has_no_daemon_credentials(
-    tmp_path, dispatch, monkeypatch
-):
-    monkeypatch.setenv("WAVEDL_DAEMON_TOKEN", "ambient-private-token")
-    monkeypatch.setenv("WAVEDL_DAEMON_URL", "http://127.0.0.1:8420")
-    plan, attempt = prepared(tmp_path)
+    plan = prepared(tmp_path, CUDA_VISIBLE_DEVICES="declared-device")
     backend = LocalBackend(dispatch_lock=dispatch)
     specs = []
     original = backend._supervisor.start
@@ -204,155 +221,146 @@ def test_local_child_environment_has_no_daemon_credentials(
 
     backend._supervisor = RecordingSupervisor()
     try:
-        handle = backend.submit(plan, request_id="request", attempt=attempt)
-        terminal(backend, handle)
+        _, handle = backend.spawn(plan, 1)
+        exited(backend, handle)
+        environment = child(plan)["env"]
+        assert all(key not in environment for key in polluted)
+        assert environment["ORDINARY_PATH_SETTING"] == "preserved"
+        assert environment["CUDA_VISIBLE_DEVICES"] == "declared-device"
+        assert environment["WAVEDL_SUPERVISED"] == "1"
         assert len(specs) == 2
         for spec in specs:
-            assert "WAVEDL_DAEMON_TOKEN" not in spec.environment
-            assert "WAVEDL_DAEMON_URL" not in spec.environment
+            assert not set(polluted) & set(spec.environment)
+        assert reserved_local_environment("wavedl_scheduler_binding")
     finally:
         backend.close()
 
 
-pytestmark = pytest.mark.skipif(
-    os.name != "posix",
-    reason="executable stubs require POSIX; native Windows supervisor tests cover Jobs",
+@pytest.mark.parametrize(
+    "key",
+    ["WAVEDL_SCHEDULER_BINDING", "wavedl_daemon_token", "SLURM_JOB_ID", "RANK"],
 )
+def test_explicit_reserved_local_environment_is_refused_at_planning(tmp_path, key):
+    with pytest.raises(UnsupportedPlan):
+        prepared(tmp_path, **{key: "unapproved"})
 
 
-def test_fast_exit_identity_and_independent_runtime_outcome(tmp_path, dispatch):
-    plan, attempt = prepared(tmp_path)
-    backend = LocalBackend(dispatch_lock=dispatch, owner="controller")
+def test_admission_is_bounded_by_running_processes(tmp_path, dispatch):
+    plan = prepared(tmp_path, STUB_MODE="sleep")
+    other = prepared(tmp_path)
+    backend = LocalBackend(dispatch_lock=dispatch, max_processes=1, cancel_grace=0.05)
     try:
-        handle = backend.submit(plan, request_id="request", attempt=attempt)
-        evidence = terminal(backend, handle)
-        assert evidence.exit_code == 0
-        result = backend.process_result(handle)
-        assert json.loads(result.stdout) == {
-            "WAVEDL_RUN_ID": plan.run_id,
-            "WAVEDL_REQUEST_ID": "request",
-            "WAVEDL_ATTEMPT": "1",
-            "WAVEDL_OWNER": "controller",
-        }
-        assert backend.collect(handle).batch.status == OutcomeStatus.SUCCESS
-        assert backend.collect(handle).runtime.status == OutcomeStatus.UNKNOWN
-        assert backend.collect(handle).stage_out.status == OutcomeStatus.UNKNOWN
-        assert backend.observe(handle) == evidence
-        assert backend.submit(plan, request_id="request", attempt=attempt) == handle
-        with pytest.raises(ValueError, match="another request"):
-            backend.submit(plan, request_id="other-request", attempt=attempt)
-        with pytest.raises(ValueError, match="another plan"):
-            backend.submit(
-                replace(plan, warnings=("different snapshot",)),
-                request_id="request",
-                attempt=attempt,
-            )
+        assert backend.max_processes == 1
+        _, handle = backend.spawn(plan, 1)
+        assert backend.running == 1
+        assert backend.poll(handle) is None
+        with pytest.raises(BudgetExhausted):
+            backend.spawn(other, 1)
+        assert not other.spec.paths.attempt(1).exists()
+        backend.cancel(handle)
+        exited(backend, handle)
+        assert backend.running == 0
+        _, second = backend.spawn(other, 1)
+        exited(backend, second)
     finally:
         backend.close()
 
 
-def test_live_retry_does_not_spawn_and_admission_is_bounded(tmp_path, dispatch):
-    plan, attempt = prepared(tmp_path, STUB_MODE="sleep")
-    other, other_attempt = prepared(tmp_path)
-    backend = LocalBackend(dispatch_lock=dispatch, max_processes=1, max_handles=1)
+def test_local_runs_are_not_capped_by_the_worker_budget(tmp_path, dispatch):
+    backend = LocalBackend(dispatch_lock=dispatch, max_processes=3, cancel_grace=0.05)
     try:
-        handle = backend.submit(plan, request_id="request", attempt=attempt)
-        assert backend.submit(plan, request_id="request", attempt=attempt) == handle
-        with pytest.raises(BudgetExhausted):
-            backend.submit(other, request_id="other", attempt=other_attempt)
-        backend.request_cancel(handle)
-        assert terminal(backend, handle).batch.status == OutcomeStatus.CANCELLED
-        with pytest.raises(BudgetExhausted):
-            backend.submit(other, request_id="other", attempt=other_attempt)
+        with BoundedThreadPool(WorkBudget(max_workers=1)) as pool:
+            handles = [
+                pool.control_lane.submit(
+                    lambda token, plan=prepared(
+                        tmp_path, STUB_MODE="sleep"
+                    ): backend.spawn(plan, 1)[1]
+                ).result(10)
+                for _ in range(3)
+            ]
+        assert backend.running == 3
+        assert all(backend.poll(handle) is None for handle in handles)
     finally:
         backend.close()
 
 
-def test_restarted_backend_never_signals_saved_pid(tmp_path, dispatch):
-    plan, attempt = prepared(tmp_path, STUB_MODE="sleep")
-    original = LocalBackend(dispatch_lock=dispatch)
+def test_a_saved_or_altered_handle_is_never_signalled(tmp_path, dispatch):
+    plan = prepared(tmp_path, STUB_MODE="sleep")
+    original = LocalBackend(dispatch_lock=dispatch, cancel_grace=0.05)
     restarted = LocalBackend(dispatch_lock=dispatch)
     try:
-        handle = original.submit(plan, request_id="request", attempt=attempt)
-        assert restarted.observe(handle).status == ObservationStatus.SUPERVISION_LOST
-        with pytest.raises(SupervisionLost):
-            restarted.request_cancel(handle)
-        assert original.observe(handle).status == ObservationStatus.RUNNING
-        with pytest.raises(SupervisionLost):
-            restarted.collect(handle)
+        _, handle = original.spawn(plan, 1)
+        for foreign in (
+            handle,
+            replace(handle, pid=1),
+            replace(handle, supervisor_id="forged"),
+        ):
+            owner = restarted if foreign == handle else original
+            assert owner.poll(foreign) == NotOwned()
+            with pytest.raises(SupervisionLost):
+                owner.cancel(foreign)
+        assert original.poll(handle) is None
     finally:
         restarted.close()
         original.close()
 
 
-@pytest.mark.parametrize(
-    "field,value",
-    [
-        ("owner", "foreign"),
-        ("run_id", "11111111-1111-4111-8111-111111111111"),
-        ("run_dir", "/foreign"),
-        ("pid", 1),
-        ("supervisor_id", "forged"),
-    ],
-)
-def test_altered_handle_refused(tmp_path, dispatch, field, value):
-    plan, attempt = prepared(tmp_path, STUB_MODE="sleep")
+def test_cancel_interrupts_and_waits_the_launcher_grace(tmp_path, dispatch):
+    plan = prepared(tmp_path, STUB_MODE="interrupt")
     backend = LocalBackend(dispatch_lock=dispatch)
     try:
-        handle = backend.submit(plan, request_id="request", attempt=attempt)
-        foreign = replace(handle, **{field: value})
-        with pytest.raises(ValueError, match="foreign"):
-            backend.request_cancel(foreign)
-        with pytest.raises(ValueError, match="foreign"):
-            backend.observe(foreign)
+        _, handle = backend.spawn(plan, 1)
+        deadline = time.monotonic() + 5
+        while not (plan.spec.paths.attempt(1) / "child.json").exists():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        backend.cancel(handle)
+        assert exited(backend, handle) == LocalExit(42, None)
     finally:
         backend.close()
+    assert CANCEL_GRACE_SECONDS == 45
 
 
-def test_cancel_escalates_real_tree(tmp_path, dispatch):
-    plan, attempt = prepared(tmp_path, STUB_MODE="tree")
+def test_cancel_kills_a_tree_that_ignores_the_interrupt(tmp_path, dispatch):
+    plan = prepared(tmp_path, STUB_MODE="tree")
     backend = LocalBackend(dispatch_lock=dispatch, cancel_grace=0.05)
     try:
-        handle = backend.submit(plan, request_id="request", attempt=attempt)
-        # Give the disposable child time to install its TERM handler.
-        time.sleep(0.15)
-        backend.request_cancel(handle)
-        backend.request_cancel(handle)
-        observation = terminal(backend, handle)
-        assert observation.signal == 9
-        assert observation.batch.status == OutcomeStatus.CANCELLED
-        assert observation.native_state == "CANCELLED"
-        assert b"CHILD=" in backend.process_result(handle).stdout
+        _, handle = backend.spawn(plan, 1)
+        deadline = time.monotonic() + 5
+        while not (plan.spec.paths.attempt(1) / "child.json").exists():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        backend.cancel(handle)
+        backend.cancel(handle)
+        assert exited(backend, handle) == LocalExit(None, signal.SIGKILL)
     finally:
         backend.close()
 
 
-def test_output_drains_with_bounded_retention(tmp_path, dispatch):
-    plan, attempt = prepared(tmp_path, STUB_MODE="output")
-    backend = LocalBackend(dispatch_lock=dispatch, output_limit=512)
+def test_nonzero_exit_is_reported_as_the_return_code(tmp_path, dispatch):
+    plan = prepared(tmp_path, STUB_EXIT="3")
+    backend = LocalBackend(dispatch_lock=dispatch)
     try:
-        handle = backend.submit(plan, request_id="request", attempt=attempt)
-        assert terminal(backend, handle).exit_code == 0
-        result = backend.process_result(handle)
-        assert len(result.stdout) == len(result.stderr) == 512
-        assert result.stdout_truncated and result.stderr_truncated
+        _, handle = backend.spawn(plan, 1)
+        assert exited(backend, handle) == LocalExit(3, None)
     finally:
         backend.close()
 
 
 def test_mutations_require_live_dispatch(tmp_path, dispatch):
-    plan, attempt = prepared(tmp_path, STUB_MODE="sleep")
-    backend = LocalBackend(dispatch_lock=dispatch)
+    plan = prepared(tmp_path, STUB_MODE="sleep")
+    backend = LocalBackend(dispatch_lock=dispatch, cancel_grace=0.05)
     missing = LocalBackend()
     with pytest.raises(DispatchRequired):
-        missing.submit(plan, request_id="request", attempt=attempt)
-    handle = backend.submit(plan, request_id="request", attempt=attempt)
+        missing.spawn(plan, 1)
+    assert not plan.spec.paths.run_dir.exists()
+    _, handle = backend.spawn(plan, 1)
     dispatch.release()
     try:
         with pytest.raises(DispatchRequired):
-            backend.request_cancel(handle)
+            backend.cancel(handle)
         with pytest.raises(DispatchRequired):
-            backend.submit(plan, request_id="request", attempt=attempt)
+            backend.spawn(plan, 2)
     finally:
         dispatch.acquire()
         backend.close()
@@ -360,56 +368,17 @@ def test_mutations_require_live_dispatch(tmp_path, dispatch):
         missing.close()
 
 
-def test_snapshot_and_reservation_refusals(tmp_path, dispatch):
-    plan, attempt = prepared(tmp_path)
-    backend = LocalBackend(dispatch_lock=dispatch)
-    try:
-        with pytest.raises(UnsupportedPlan, match="snapshot"):
-            backend.submit(
-                replace(plan, argv=(sys.executable, "-c", "print('forged')")),
-                request_id="bad",
-                attempt=attempt,
-            )
-        with pytest.raises(ValueError, match="reserved"):
-            backend.submit(plan, request_id="bad", attempt=2)
-        manifest_path = Path(plan.run_dir) / "manifest.json"
-        payload = json.loads(manifest_path.read_text())
-        payload["resolved_config"]["epochs"] = 99
-        manifest_path.write_text(json.dumps(payload))
-        with pytest.raises(ValueError, match="immutable"):
-            backend.submit(plan, request_id="bad", attempt=attempt)
-    finally:
-        backend.close()
-
-
-@pytest.mark.parametrize("probe", ["refuse", "hang", "truncated", "duplicate"])
+@pytest.mark.parametrize("probe", ["refuse", "hang", "truncated", "relative"])
 def test_selected_runtime_probe_fails_closed(tmp_path, dispatch, probe):
-    plan, attempt = prepared(tmp_path, STUB_PROBE=probe)
-    backend = LocalBackend(dispatch_lock=dispatch, probe_timeout=0.05)
+    plan = prepared(tmp_path, STUB_PROBE=probe)
+    backend = LocalBackend(dispatch_lock=dispatch, probe_timeout=0.2)
     try:
         with pytest.raises(UnsupportedPlan, match="no fallback"):
-            backend.submit(plan, request_id="request", attempt=attempt)
-    finally:
-        backend.close()
-
-
-def test_cuda_probe_checks_allocation_in_selected_runtime(tmp_path, dispatch):
-    plan, attempt = prepared(tmp_path, STUB_PROBE="refuse")
-    manifest = replace(
-        plan.manifest,
-        runtime=replace(
-            plan.manifest.runtime,
-            device="cuda",
-            environment={"CUDA_VISIBLE_DEVICES": "0", "STUB_PROBE": "refuse"},
-        ),
-    )
-    plan = LocalBackend().plan(manifest)
-    # Replace test fixture manifest to match this new test request exactly.
-    (Path(plan.run_dir) / "manifest.json").write_text(plan.manifest_json)
-    backend = LocalBackend(dispatch_lock=dispatch)
-    try:
-        with pytest.raises(UnsupportedPlan, match="no fallback"):
-            backend.submit(plan, request_id="request", attempt=attempt)
+            backend.spawn(plan, 1)
+        assert not (plan.spec.paths.attempt(1) / "child.json").exists()
+        with pytest.raises(SupervisionLost):
+            backend.spawn(plan, 1)
+        assert backend.running == 0
     finally:
         backend.close()
 
@@ -424,40 +393,33 @@ def test_cuda_probe_checks_allocation_in_selected_runtime(tmp_path, dispatch):
     ],
 )
 def test_probe_executes_failclosed_device_code(tmp_path, dispatch, probe, device):
-    plan, attempt = prepared(tmp_path, STUB_PROBE=probe)
     environment = {"STUB_PROBE": probe, "PYTHONOPTIMIZE": "1"}
     if device == "cuda":
         environment["CUDA_VISIBLE_DEVICES"] = "0"
-    manifest = replace(
-        plan.manifest,
-        runtime=replace(plan.manifest.runtime, device=device, environment=environment),
-    )
-    plan = LocalBackend().plan(manifest)
-    (Path(plan.run_dir) / "manifest.json").write_text(plan.manifest_json)
+    plan = prepared(tmp_path, device=device, **environment)
     backend = LocalBackend(dispatch_lock=dispatch)
     try:
         with pytest.raises(UnsupportedPlan, match="no fallback"):
-            backend.submit(plan, request_id="request", attempt=attempt)
+            backend.spawn(plan, 1)
     finally:
         backend.close()
 
 
-def test_interpreter_missing_does_not_fallback(tmp_path, dispatch):
-    plan, attempt = prepared(tmp_path)
-    Path(plan.argv[0]).unlink()
+def test_a_missing_interpreter_fails_without_fallback(tmp_path, dispatch):
+    plan = prepared(tmp_path, executable=tmp_path / "missing-python")
     backend = LocalBackend(dispatch_lock=dispatch)
     try:
-        with pytest.raises(FileNotFoundError):
-            backend.submit(plan, request_id="request", attempt=attempt)
+        with pytest.raises(OSError):
+            backend.spawn(plan, 1)
+        with pytest.raises(SupervisionLost):
+            backend.spawn(plan, 1)
     finally:
         backend.close()
 
 
-def test_spawn_failure_retains_attempt_fence_and_never_retries(tmp_path, dispatch):
-    """A failed Local spawn remains an uncertain, non-retryable attempt."""
-    plan, attempt = prepared(tmp_path)
+def test_a_failed_start_keeps_the_attempt_claimed(tmp_path, dispatch):
+    plan = prepared(tmp_path)
     backend = LocalBackend(dispatch_lock=dispatch)
-
     original_start = backend._supervisor.start
     starts = 0
 
@@ -471,76 +433,55 @@ def test_spawn_failure_retains_attempt_fence_and_never_retries(tmp_path, dispatc
     backend._supervisor.start = fail_spawn
     try:
         with pytest.raises(OSError, match="runtime spawn failed"):
-            backend.submit(plan, request_id="request", attempt=attempt)
-        with pytest.raises(SupervisionLost, match="never resubmit"):
-            backend.submit(plan, request_id="request", attempt=attempt)
+            backend.spawn(plan, 1)
+        assert backend.running == 0
+        with pytest.raises(SupervisionLost, match="already claimed"):
+            backend.spawn(plan, 1)
+        assert starts == 2
     finally:
         backend.close()
 
 
-def test_plan_byte_bound_before_runtime_spawn(tmp_path, dispatch):
-    plan, attempt = prepared(tmp_path, STUB_PADDING="x" * 70000)
+def test_command_byte_bound_is_checked_before_the_claim(tmp_path, dispatch):
+    plan = prepared(tmp_path)
+    huge = replace(
+        plan, argv=(*plan.argv[:-2], "--run_name", "x" * 70000, *plan.argv[-2:])
+    )
     backend = LocalBackend(dispatch_lock=dispatch)
     try:
-        with pytest.raises(BudgetExhausted, match="command"):
-            backend.submit(plan, request_id="request", attempt=attempt)
+        with pytest.raises(UnsupportedPlan, match="byte budget"):
+            backend.spawn(huge, 1)
+        assert not plan.spec.paths.run_dir.exists()
     finally:
         backend.close()
 
 
-def test_release_terminal_reclaims_capacity_without_allowing_resubmit(
-    tmp_path, dispatch
-):
-    first, attempt = prepared(tmp_path)
-    second, second_attempt = prepared(tmp_path)
-    backend = LocalBackend(dispatch_lock=dispatch, max_handles=1)
-    restarted = LocalBackend(dispatch_lock=dispatch)
+def test_release_forgets_only_an_exited_process(tmp_path, dispatch):
+    plan = prepared(tmp_path, STUB_MODE="sleep")
+    backend = LocalBackend(dispatch_lock=dispatch, cancel_grace=0.05)
     try:
-        handle = backend.submit(first, request_id="first", attempt=attempt)
-        terminal(backend, handle)
-        marker = (
-            Path(first.run_dir) / "attempts" / str(attempt) / "local-submission.json"
-        )
-        reserved = marker.read_bytes()
+        _, handle = backend.spawn(plan, 1)
         backend.release(handle)
-        with pytest.raises(SupervisionLost, match="reservation"):
-            backend.submit(first, request_id="first", attempt=attempt)
-        with pytest.raises(SupervisionLost, match="reservation"):
-            restarted.submit(first, request_id="first", attempt=attempt)
-        with pytest.raises(SupervisionLost, match="reservation"):
-            restarted.submit(first, request_id="different-request", attempt=attempt)
-        assert marker.read_bytes() == reserved
-        other = backend.submit(second, request_id="second", attempt=second_attempt)
-        terminal(backend, other)
-        backend.release(other)
-        next_attempt = allocate_attempt(RunLayout(Path(first.run_dir), first.run_id))
-        retried = backend.submit(first, request_id="first", attempt=next_attempt)
-        assert retried.attempt == 2
-        terminal(backend, retried)
-        backend.release(retried)
+        backend.release(replace(handle, supervisor_id="forged"))
+        assert backend.poll(handle) is None
+        backend.cancel(handle)
+        exited(backend, handle)
+        backend.release(handle)
+        assert backend.poll(handle) == NotOwned()
+        backend.release(handle)
     finally:
-        restarted.close()
         backend.close()
 
 
-def test_release_refuses_live_foreign_and_missing_dispatch(tmp_path, dispatch):
-    plan, attempt = prepared(tmp_path, STUB_MODE="sleep")
-    backend = LocalBackend(dispatch_lock=dispatch)
-    try:
-        handle = backend.submit(plan, request_id="request", attempt=attempt)
-        with pytest.raises(RuntimeError, match="active"):
-            backend.release(handle)
-        with pytest.raises(ValueError, match="foreign"):
-            backend.release(replace(handle, owner="foreign"))
-        backend.dispatch_lock = None
-        with pytest.raises(DispatchRequired):
-            backend.release(handle)
-        backend.dispatch_lock = dispatch
-        backend.request_cancel(handle)
-        terminal(backend, handle)
-        backend.release(handle)
-        with pytest.raises(SupervisionLost):
-            backend.release(handle)
-    finally:
-        backend.dispatch_lock = dispatch
-        backend.close()
+def test_close_stops_live_processes_and_refuses_new_ones(tmp_path, dispatch):
+    plan = prepared(tmp_path, STUB_MODE="interrupt")
+    backend = LocalBackend(dispatch_lock=dispatch, cancel_grace=5)
+    _, handle = backend.spawn(plan, 1)
+    deadline = time.monotonic() + 5
+    while not (plan.spec.paths.attempt(1) / "child.json").exists():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    backend.close()
+    assert backend.poll(handle) == LocalExit(42, None)
+    with pytest.raises(RuntimeError, match="closed"):
+        backend.spawn(prepared(tmp_path), 1)

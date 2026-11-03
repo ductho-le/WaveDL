@@ -38,6 +38,23 @@ class UnsupportedDatabase(RuntimeError):
     """The file is not a schema 1 daemon database."""
 
 
+def _check(connection: sqlite3.Connection, path: Path) -> bool:
+    """True for an empty file, False for schema 1; anything else is refused."""
+    version = connection.execute("PRAGMA user_version").fetchone()[0]
+    tables = {
+        row[0]
+        for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    if version == 0 and not tables:
+        return True
+    if version != SCHEMA_VERSION or not _TABLES <= tables:
+        raise UnsupportedDatabase(
+            f"{path} is not a schema {SCHEMA_VERSION} daemon database; "
+            "move it aside to start fresh"
+        )
+    return False
+
+
 def open_database(path: Path, *, dispatch_lock: DispatchLock) -> sqlite3.Connection:
     path = Path(path).resolve()
     require_dispatch(dispatch_lock)
@@ -46,26 +63,18 @@ def open_database(path: Path, *, dispatch_lock: DispatchLock) -> sqlite3.Connect
     connection = sqlite3.connect(path, isolation_level=None)
     try:
         connection.row_factory = sqlite3.Row
+        # Refuse before any PRAGMA can change a file this daemon does not own.
+        fresh = _check(connection, path)
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA synchronous=FULL")
-        connection.execute("BEGIN IMMEDIATE")
-        version = connection.execute("PRAGMA user_version").fetchone()[0]
-        tables = {
-            row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            )
-        }
-        if version == 0 and not tables:
+        if fresh:
+            connection.execute("BEGIN IMMEDIATE")
+            if not _check(connection, path):
+                raise UnsupportedDatabase(f"{path} changed while it was created")
             for statement in (*_PLANS_SCHEMA, *RUN_LOG_SCHEMA):
                 connection.execute(statement)
             connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-        elif version != SCHEMA_VERSION or not _TABLES <= tables:
-            raise UnsupportedDatabase(
-                f"{path} is not a schema {SCHEMA_VERSION} daemon database; "
-                "move it aside to start fresh"
-            )
-        connection.execute("COMMIT")
+            connection.execute("COMMIT")
     except BaseException:
         if connection.in_transaction:
             connection.execute("ROLLBACK")

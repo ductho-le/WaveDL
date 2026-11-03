@@ -630,7 +630,7 @@ export class AutoPlotController {
         new Uint8Array(
           await crypto.subtle.digest(
             'SHA-256',
-            new TextEncoder().encode(`${canonical(sourcePlan.preview.spec)}\n`),
+            new TextEncoder().encode(`${JSON.stringify(sourcePlan.preview.spec)}\n`),
           ),
         ),
         (byte) => byte.toString(16).padStart(2, '0'),

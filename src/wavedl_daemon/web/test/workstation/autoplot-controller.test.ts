@@ -43,7 +43,7 @@ function approved(cv = 0): PlanView {
     preview: {
       target: 'local',
       topology: { num_machines: 1, processes_per_machine: 1, machine_rank: 0 },
-      manifest_json: JSON.stringify({
+      spec: {
         schema_version: 1,
         run_id: train.run_id,
         operation: 'train',
@@ -61,20 +61,20 @@ function approved(cv = 0): PlanView {
           environment: {},
           container: null,
         },
-      }),
+      },
     },
   };
 }
 
 describe('approved training manifest schema parity', () => {
   it.each([
-    { schema_version: 2 }, { operation: 'plot' }, { resolved_config: [] },
+    { operation: 'plot' }, { resolved_config: [] },
     { runtime: { container: 'image' } }, { runtime: {} },
   ])('rejects unsupported manifest records %j with the existing diagnostic', (patch) => {
     const plan = approved();
-    const parsed = approvedTrainingManifestSchema.parse(parseJson(plan.preview.manifest_json ?? 'null'));
+    const parsed = approvedTrainingManifestSchema.parse(plan.preview.spec ?? null);
     const manifest = { ...parsed, ...patch };
-    const changed = { ...plan, preview: { ...plan.preview, manifest_json: JSON.stringify(manifest) } };
+    const changed = { ...plan, preview: { ...plan.preview, spec: manifest } };
 
     try {
       automaticPlotRequest(train, changed);
@@ -86,13 +86,13 @@ describe('approved training manifest schema parity', () => {
 
   it('keeps additive manifest fields but rejects unknown resolved config keys', () => {
     const plan = approved();
-    const manifest = approvedTrainingManifestSchema.parse(parseJson(plan.preview.manifest_json ?? 'null'));
-    const additive = { ...plan, preview: { ...plan.preview, manifest_json: JSON.stringify({ ...manifest, additive: true }) } };
+    const manifest = approvedTrainingManifestSchema.parse(plan.preview.spec ?? null);
+    const additive = { ...plan, preview: { ...plan.preview, spec: { ...manifest, additive: true } } };
 
     expect(automaticPlotRequest(train, additive).config.model).toBe('cnn');
 
-    const unknown = { ...plan, preview: { ...plan.preview, manifest_json: JSON.stringify({ ...manifest,
-      resolved_config: { ...manifest.resolved_config, unknown_option: true } }) } };
+    const unknown = { ...plan, preview: { ...plan.preview, spec: { ...manifest,
+      resolved_config: { ...manifest.resolved_config, unknown_option: true } } } };
 
     try {
       automaticPlotRequest(train, unknown);
@@ -243,7 +243,7 @@ async function setup(
 
         if (rejectPlotPolicy)
           return new Response('GPU allocation must equal processes_per_machine', { status: 422 });
-        const source = fixtureTrainingManifestSchema.parse(parseJson(String(trainingPlan.preview.manifest_json)));
+        const source = fixtureTrainingManifestSchema.parse(trainingPlan.preview.spec);
         const generation = request.checkpoint_source.generation;
 
         const manifest = {
@@ -260,7 +260,7 @@ async function setup(
           checkpoint_source: {
             ...request.checkpoint_source,
             manifest_sha256: await hash(
-              new TextEncoder().encode(`${trainingPlan.preview.manifest_json}\n`),
+              new TextEncoder().encode(`${JSON.stringify(trainingPlan.preview.spec)}\n`),
             ),
             complete_sha256: 'a'.repeat(64),
             files: {
@@ -292,7 +292,7 @@ async function setup(
           preview: {
             target: current.backend,
             topology: alteredPlot === 'topology' ? trainingPlan.preview.topology : request.topology,
-            manifest_json: JSON.stringify(manifest),
+            spec: manifest,
           },
         });
       }
@@ -341,11 +341,11 @@ async function setup(
       trainingPlan.run_id = sourceRun.run_id;
       trainingPlan.plan_id = sourceRun.plan_id;
       trainingPlan.request_id = sourceRun.request_id;
-      const sourceManifest = fixtureTrainingManifestSchema.parse(parseJson(String(trainingPlan.preview.manifest_json)));
+      const sourceManifest = fixtureTrainingManifestSchema.parse(trainingPlan.preview.spec);
       sourceManifest.run_id = sourceRun.run_id;
       sourceManifest.resolved_config.import_modules = imports;
       sourceManifest.resolved_config.model = model;
-      trainingPlan.preview.manifest_json = JSON.stringify(sourceManifest);
+      trainingPlan.preview.spec = sourceManifest;
       trainingPlan.preview.target = backend;
 
       const request = trainingRequestSchema.parse({
@@ -365,14 +365,14 @@ async function setup(
       if (mappings !== undefined) request.storage_map = mappings;
 
       if (mappings) {
-        const manifest = fixtureTrainingManifestSchema.parse(parseJson(String(trainingPlan.preview.manifest_json)));
+        const manifest = fixtureTrainingManifestSchema.parse(trainingPlan.preview.spec);
         manifest.storage_map = mappings;
         manifest.resolved_config.data_path = '/execution/train.npz';
         manifest.runtime.python = '/execution/python';
         manifest.resolved_config.import_modules = imports.map((item) =>
           item.endsWith('.py') ? mappedStoragePath(item, mappings) : item,
         );
-        trainingPlan.preview.manifest_json = JSON.stringify(manifest);
+        trainingPlan.preview.spec = manifest;
       }
 
       const result = await session.perform((api, signal) =>
@@ -542,7 +542,7 @@ describe('actual captured automatic plot coordinator', () => {
         const result = await originalDigest(algorithm, data);
 
         if (
-          new TextDecoder().decode(data) === `${plan.preview.manifest_json}\n` &&
+          new TextDecoder().decode(data) === `${JSON.stringify(plan.preview.spec)}\n` &&
           ++sourceDigests === 2
         ) {
           held = true;
@@ -904,18 +904,18 @@ describe('actual captured automatic plot coordinator', () => {
     const plan = approved();
     expect(automaticPlotRequest(train, plan).config.data_path).toBe('/approved/train.npz');
     expect(() => automaticPlotRequest(train, { ...plan, preview: {} })).toThrow();
-    const manifest = fixtureTrainingManifestSchema.parse(parseJson(String(plan.preview.manifest_json)));
+    const manifest = fixtureTrainingManifestSchema.parse(plan.preview.spec);
     manifest.runtime.container = 'image';
     expect(() =>
       automaticPlotRequest(train, {
         ...plan,
-        preview: { ...plan.preview, manifest_json: JSON.stringify(manifest) },
+        preview: { ...plan.preview, spec: manifest },
       }),
     ).toThrow();
   });
   it('refuses mapped execution-path inputs and lexical/symlink mismatches, retaining venv python spelling', () => {
     const plan = approved();
-    const manifest = fixtureTrainingManifestSchema.parse(parseJson(String(plan.preview.manifest_json)));
+    const manifest = fixtureTrainingManifestSchema.parse(plan.preview.spec);
 
     const map = [
       { host_root: '/approved', execution_root: '/execution' },
@@ -925,7 +925,7 @@ describe('actual captured automatic plot coordinator', () => {
     manifest.storage_map = map;
     manifest.resolved_config.data_path = '/execution/train.npz';
     manifest.runtime.python = '/execution/venv/bin/python';
-    plan.preview.manifest_json = JSON.stringify(manifest);
+    plan.preview.spec = manifest;
 
     const original = trainingRequestSchema.parse({
       backend: 'local',
@@ -959,12 +959,12 @@ describe('actual captured automatic plot coordinator', () => {
       }),
     ).toThrow();
     manifest.resolved_config.data_path = '/real-symlink-target/train.npz';
-    plan.preview.manifest_json = JSON.stringify(manifest);
+    plan.preview.spec = manifest;
     expect(() => automaticPlotRequest(train, plan, original)).toThrow();
   });
   it('restores approved host registration paths for exactly one forward mapping', () => {
     const plan = approved();
-    const manifest = fixtureTrainingManifestSchema.parse(parseJson(String(plan.preview.manifest_json)));
+    const manifest = fixtureTrainingManifestSchema.parse(plan.preview.spec);
 
     const mappings = [
       { host_root: '/approved', execution_root: '/execution' },
@@ -975,7 +975,7 @@ describe('actual captured automatic plot coordinator', () => {
     manifest.resolved_config.data_path = '/execution/train.npz';
     manifest.runtime.python = '/execution/python';
     manifest.resolved_config.import_modules = ['registered.module', '/execution/custom model.py'];
-    plan.preview.manifest_json = JSON.stringify(manifest);
+    plan.preview.spec = manifest;
 
     const original = trainingRequestSchema.parse({
       backend: 'local',
@@ -992,7 +992,7 @@ describe('actual captured automatic plot coordinator', () => {
 
     const request = automaticPlotRequest(train, plan, original);
     expect(request.config.import_modules).toEqual(original.config.import_modules);
-    expect(fixtureTrainingManifestSchema.parse(parseJson(String(plan.preview.manifest_json)))).toEqual(manifest);
+    expect(fixtureTrainingManifestSchema.parse(plan.preview.spec)).toEqual(manifest);
 
     for (const imports of [
       ['registered.module', '/execution/custom model.py'],

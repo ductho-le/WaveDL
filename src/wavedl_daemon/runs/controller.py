@@ -75,7 +75,9 @@ def _spawn(backend: LocalBackend, plan: Plan, head: RunHead) -> Done:
         events: tuple[RunEvent, ...] = (probed, Submitted(handle), running)
     except (UnsupportedPlan, SupervisionLost, BudgetExhausted, OSError) as error:
         events = (Exited(Outcome.FAILED, True, detail=str(error)[:1000]),)
-    return Done(events, Expect(revision=head.revision))
+    # The process may exist now, so a cancel requested meanwhile must not make
+    # this result stale: only a different attempt could.
+    return Done(events, Expect(offset=(head.attempt, head.metrics_offset)))
 
 
 def _tail(head: RunHead) -> Done | None:

@@ -1,115 +1,87 @@
 """Executable durability, handover and bounded-delivery failure contracts."""
 
 import asyncio
+import json
 import sqlite3
-import sys
 import threading
-import time
-from dataclasses import asdict, replace
-from types import SimpleNamespace
 
 import httpx
 import pytest
 from starlette.requests import ClientDisconnect, Request
 
 from unit_tests.daemon.conftest import route_app
-from wavedl.core.events import HelloPayload
-from wavedl.core.protocol import Envelope, ProtocolError, encode
-from wavedl_daemon.events.broker import EventBroker
-from wavedl_daemon.events.ingestion import Ingestor
-from wavedl_daemon.events.journal_reader import JournalReader
-from wavedl_daemon.events.streaming import stream_events
-from wavedl_daemon.execution.budget import BudgetExhausted, StorageWorkError, WorkBudget
-from wavedl_daemon.execution.pool import BoundedThreadPool
-from wavedl_daemon.http.events import event_routes
-from wavedl_daemon.runs.negotiation import NegotiationStatus
-from wavedl_daemon.runs.runtime_service import HostedServices
-from wavedl_daemon.storage.event_log import (
-    EVENT_LOG_MIGRATION,
-    EventLogStore,
-    append_in_transaction,
-    record_bytes,
+from unit_tests.daemon.test_event_stream_live_boundaries import (
+    RUN,
+    metrics,
+    open_log,
+    requeue,
+    start,
 )
-from wavedl_daemon.storage.registry import Registry
-from wavedl_daemon.storage.settings import Settings
+from wavedl_daemon.events.broker import EventBroker
+from wavedl_daemon.events.streaming import stream_events
+from wavedl_daemon.execution.budget import BudgetExhausted, StorageWorkError
+from wavedl_daemon.http.events import event_routes
+from wavedl_daemon.runs.model import Metric, RunId, canonical_json
+from wavedl_daemon.storage.run_log import MAX_PAGE_BYTES, Expect, encode
 
-from .test_hosted_app import Backend
 
-
-RUN_ID = "00000000-0000-4000-8000-000000000001"
-
-
-def event(seq, attempt=1):
-    return Envelope(
-        RUN_ID,
-        attempt,
-        "log",
-        seq,
-        "2026-10-03T00:00:00Z",
-        {"message": "Tiếng Việt 🌊", "level": "info", "stream": "stdout"},
-    )
+RUN_ID = RUN
 
 
 @pytest.fixture
 def log(tmp_path):
-    path = tmp_path / "events.db"
-    connection = sqlite3.connect(path, isolation_level=None)
-    connection.execute("PRAGMA user_version=5")
-    connection.execute("BEGIN")
-    EVENT_LOG_MIGRATION.apply(connection)
-    connection.execute("PRAGMA user_version=6")
-    connection.execute("COMMIT")
-    store = EventLogStore(path)
-    yield connection, store
-    store.close()
-    connection.close()
+    with open_log(tmp_path) as log:
+        yield log
 
 
-def append(connection, *events):
-    connection.execute("BEGIN")
-    for item in events:
-        append_in_transaction(connection, item)
-    connection.execute("COMMIT")
+def positions(events):
+    return [(item.attempt, item.seq) for item in events]
 
 
-def test_event_append_requires_transaction_and_rolls_back(log):
-    connection, store = log
-    with pytest.raises(RuntimeError):
-        append_in_transaction(connection, event(0))
-    connection.execute("BEGIN")
-    append_in_transaction(connection, event(0))
-    connection.execute("ROLLBACK")
-    assert store.read_after(RUN_ID) == []
+def test_frame_is_id_and_versioned_envelope(log):
+    start(log)
+    metrics(log, 1)
+
+    async def scenario():
+        stream = stream_events(log, EventBroker(), RUN_ID, (1, 2))
+        frame = await anext(stream)
+        await stream.aclose()
+        return frame
+
+    frame = asyncio.run(scenario())
+    head, data = frame.split(b"\ndata: ")
+    assert head == b"id: 1:3"
+    assert data.endswith(b"}\n\n") and not data.endswith(b"\n\n\n")
+    envelope = json.loads(data)
+    assert envelope["protocol"] == "wavedl-run" and envelope["version"] == 2
+    assert (envelope["run_id"], envelope["attempt"], envelope["seq"]) == (RUN_ID, 1, 3)
+    assert envelope["type"] == "metric"
+    assert envelope["payload"]["name"] == "epoch" and envelope["payload"]["step"] == 1
+    assert "source_end" not in data.decode("utf-8")
+    assert "Tiếng Việt 🌊" in data.decode("utf-8")
 
 
-def test_numeric_attempt_cursor_and_sparse_sequence(log):
-    connection, store = log
-    append(connection, event(100), event(0, 2), event(80, 2), event(0, 10))
-    assert [(e.attempt, e.seq) for e in store.read_after(RUN_ID, (1, 100))] == [
-        (2, 0),
-        (2, 80),
-        (10, 0),
+def test_cursor_orders_by_attempt_then_seq_across_requeues(log):
+    start(log)
+    requeue(log)
+    metrics(log, 1)
+    requeue(log)
+    assert positions(log.read_after(RunId(RUN_ID), (1, 2))) == [
+        (1, 3), (2, 0), (2, 1), (2, 2), (3, 0),
     ]
-    assert store.read_after(RUN_ID, (2, -1), limit=1) == [event(0, 2)]
-
-
-def test_duplicate_rows_are_not_retained_in_memory_or_replayed(log):
-    connection, store = log
-    append(connection, event(0), event(0))
-    assert store.read_after(RUN_ID) == [event(0)]
+    assert positions(log.read_after(RunId(RUN_ID), (2, -1), limit=1)) == [(2, 0)]
+    assert log.read_after(RunId(RUN_ID), (3, 0)) == []
 
 
 def test_commit_without_notification_is_delivered(log):
-    connection, store = log
-
     async def scenario():
         broker = EventBroker()
-        stream = stream_events(store, broker, RUN_ID, poll_interval=0.01)
+        stream = stream_events(log, broker, RUN_ID, poll_interval=0.01)
         pending = asyncio.create_task(anext(stream))
         await asyncio.sleep(0)
-        append(connection, event(0))
+        start(log)
         assert await pending == b": heartbeat\n\n"
-        assert b"id: 1:0" in await anext(stream)
+        assert (await anext(stream)).startswith(b"id: 1:0\n")
         await stream.aclose()
         assert len(broker._subscribers) == 0
 
@@ -117,54 +89,108 @@ def test_commit_without_notification_is_delivered(log):
 
 
 def test_register_before_replay_closes_handover_race(log):
-    connection, store = log
     broker = EventBroker()
 
     class RacingStore:
         raced = False
 
         def read_after(self, *args, **kwargs):
-            page = store.read_after(*args, **kwargs)
+            page = log.read_after(*args, **kwargs)
             if not self.raced:
                 self.raced = True
                 assert len(broker._subscribers) == 1
-                append(connection, event(0))
+                start(log)
                 broker.notify(RUN_ID)
             return page
 
     async def scenario():
         stream = stream_events(RacingStore(), broker, RUN_ID, poll_interval=0.01)
         assert await anext(stream) == b": heartbeat\n\n"
-        assert b"id: 1:0" in await anext(stream)
+        frames = [await anext(stream) for _ in range(3)]
+        assert [frame.split(b"\n")[0] for frame in frames] == [
+            b"id: 1:0", b"id: 1:1", b"id: 1:2",
+        ]
         await stream.aclose()
 
     asyncio.run(scenario())
 
 
+def test_replay_then_live_handoff_has_no_gap_or_duplicate(log):
+    start(log)
+
+    async def scenario():
+        broker = EventBroker()
+        stream = stream_events(log, broker, RUN_ID, page_size=2, poll_interval=60)
+        received = [await anext(stream) for _ in range(3)]
+        for epoch in (1, 2, 3):
+            metrics(log, epoch)
+            broker.notify(RUN_ID)
+            received.append(await anext(stream))
+        await stream.aclose()
+        return [frame.split(b"\n")[0] for frame in received]
+
+    assert asyncio.run(scenario()) == [
+        f"id: 1:{seq}".encode() for seq in range(6)
+    ]
+
+
 def test_overflow_disconnects_with_last_delivered_position(log):
-    connection, store = log
-    append(connection, event(0))
+    start(log)
 
     async def scenario():
         broker = EventBroker(queue_size=1)
-        stream = stream_events(store, broker, RUN_ID, page_size=1)
+        stream = stream_events(log, broker, RUN_ID, (1, 1), page_size=1)
         first = await anext(stream)
-        assert "Tiếng Việt 🌊" in first.decode("utf-8")
-        append(connection, event(1), event(2))
+        assert first.startswith(b"id: 1:2\n")
+        metrics(log, 1, 2)
         broker.notify(RUN_ID)
         broker.notify(RUN_ID)
         overflow = await anext(stream)
-        assert b'"resumePosition":{"attempt":1,"seq":0}' in overflow
+        assert overflow.startswith(b"event: overflow\n")
+        assert b'"resumePosition":{"attempt":1,"seq":2}' in overflow
         with pytest.raises(StopAsyncIteration):
             await anext(stream)
         assert len(broker._subscribers) == 0
-        assert [e.seq for e in store.read_after(RUN_ID, (1, 0))] == [1, 2]
+        assert positions(log.read_after(RunId(RUN_ID), (1, 2))) == [(1, 3), (1, 4)]
+
+    asyncio.run(scenario())
+
+
+def test_replay_pages_are_byte_bounded_but_never_empty(log):
+    start(log)
+    wide = {f"metric_{index:05d}": 1.0 for index in range(5000)}
+    head = log.head(RunId(RUN_ID))
+    rows = [
+        Metric(epoch, {**wide, "epoch": epoch}, head.metrics_offset + epoch)
+        for epoch in range(1, 31)
+    ]
+    log.append(RunId(RUN_ID), rows, expect=Expect())
+    page = log.read_after(RunId(RUN_ID), (1, 2), limit=1024)
+    assert 0 < len(page) < len(rows)
+    assert sum(len(canonical_json(item.event.payload())) for item in page) <= MAX_PAGE_BYTES
+    single = log.read_after(RunId(RUN_ID), (1, 2), limit=1)
+    assert positions(single) == [(1, 3)]
+    assert len(encode(single[0])) > 0
+
+
+def test_async_owner_adapter_replay(log):
+    start(log)
+
+    class AsyncStore:
+        async def read_after(self, run_id, cursor, *, limit):
+            await asyncio.sleep(0)
+            return log.read_after(run_id, cursor, limit=limit)
+
+    async def scenario():
+        stream = stream_events(AsyncStore(), EventBroker(), RUN_ID)
+        assert (await anext(stream)).startswith(b"id: 1:0\n")
+        await stream.aclose()
 
     asyncio.run(scenario())
 
 
 def test_disconnected_stream_cancels_async_wait(log):
-    _, store = log
+    store = log
 
     async def scenario():
         broker = EventBroker()
@@ -178,197 +204,6 @@ def test_disconnected_stream_cancels_async_wait(log):
         assert not broker._subscribers
 
     asyncio.run(scenario())
-
-
-class AcceptedController:
-    calls = 0
-
-    def accept_runtime_events(self, plan_id, events):
-        self.calls += 1
-        return SimpleNamespace(status=NegotiationStatus.ACCEPTED, reason="")
-
-
-def test_registry_event_projection_and_cursor_rollback(tmp_path, monkeypatch):
-    path = tmp_path / "registry.db"
-    with Registry(path) as registry:
-        store = EventLogStore(path)
-
-        def fail(*args):
-            raise RuntimeError("cursor failure after durable event insertion")
-
-        monkeypatch.setattr(registry, "_write_cursor", fail)
-        with pytest.raises(RuntimeError):
-            registry.apply_events(RUN_ID, 1, [event(0)])
-        assert registry.get(RUN_ID) is None
-        assert registry.cursor(RUN_ID, 1) == -1
-        assert store.read_after(RUN_ID) == []
-        store.close()
-
-
-def test_live_push_and_journal_replay_deduplicate(tmp_path):
-    path = tmp_path / "registry.db"
-    journal = tmp_path / "events.jsonl"
-    journal.write_bytes(encode(event(0)) + b"\n" + encode(event(1)) + b"\n")
-    with Registry(path) as registry, BoundedThreadPool(WorkBudget()) as pool:
-        controller, broker = AcceptedController(), EventBroker()
-        ingestor = Ingestor(registry, controller, broker, pool)
-        ingestor.push("plan", RUN_ID, 1, [event(0)])
-        assert asyncio.run(ingestor.poll_once("plan", RUN_ID, 1, journal)) == 1
-        assert ingestor.push("plan", RUN_ID, 1, [event(0), event(1)]) == 1
-        store = EventLogStore(path)
-        assert [e.seq for e in store.read_after(RUN_ID)] == [0, 1]
-        assert registry.get(RUN_ID).event_count == 2
-        store.close()
-
-
-def test_bad_first_hello_never_fabricates_training_projection(tmp_path):
-    class RejectedController:
-        def accept_runtime_events(self, plan_id, events):
-            return SimpleNamespace(status=NegotiationStatus.FAILED, reason="bad hello")
-
-    with Registry(tmp_path / "registry.db") as registry:
-        ingestor = Ingestor(registry, RejectedController(), EventBroker(), None)
-        with pytest.raises(ProtocolError, match="bad hello"):
-            ingestor.push("plan", RUN_ID, 1, [event(0)])
-        assert registry.get(RUN_ID) is None
-        assert registry.cursor(RUN_ID, 1) == -1
-
-
-def test_push_gap_rejection_does_not_skip_journal_records(tmp_path):
-    with Registry(tmp_path / "registry.db") as registry:
-        ingestor = Ingestor(registry, AcceptedController(), EventBroker(), None)
-        ingestor.push("plan", RUN_ID, 1, [event(0)])
-        with pytest.raises(ProtocolError, match="gap"):
-            ingestor.push("plan", RUN_ID, 1, [event(2)])
-        assert registry.cursor(RUN_ID, 1) == 0
-        ingestor.push("plan", RUN_ID, 1, [event(1), event(2)], journal=True)
-        assert registry.cursor(RUN_ID, 1) == 2
-
-
-def test_push_gap_rejects_before_runtime_provenance_side_effect(tmp_path):
-    class RecordingController:
-        def __init__(self):
-            self.calls = 0
-
-        def accept_runtime_events(self, plan_id, events):
-            self.calls += 1
-            return SimpleNamespace(status=NegotiationStatus.ACCEPTED, reason="")
-
-    controller = RecordingController()
-    with Registry(tmp_path / "registry.db") as registry:
-        ingestor = Ingestor(registry, controller, EventBroker(), None)
-        ingestor.push("plan", RUN_ID, 1, [event(0)])
-        assert controller.calls == 1
-        with pytest.raises(ProtocolError, match="gap"):
-            ingestor.push("plan", RUN_ID, 1, [event(2)])
-        assert controller.calls == 1
-        assert registry.cursor(RUN_ID, 1) == 0
-
-
-@pytest.mark.parametrize("include_hello", [False, True])
-def test_first_push_gap_does_not_commit_hello_provenance(tmp_path, include_hello):
-    backend = Backend()
-    services = HostedServices(
-        Settings(tmp_path / "state", tmp_path / "runs"),
-        backend_factory=lambda lock: {"local": backend},
-    )
-
-    async def scenario():
-        await services.start()
-        try:
-            plan = await services.run_service.plan(
-                {
-                    "backend": "local",
-                    "operation": "train",
-                    "config": {"epochs": 1},
-                    "topology": {
-                        "num_machines": 1,
-                        "processes_per_machine": 1,
-                        "machine_rank": 0,
-                    },
-                    "runtime": {
-                        "python": sys.executable,
-                        "mode": "existing",
-                        "device": "cpu",
-                        "environment": {},
-                    },
-                },
-                "gap-preflight",
-            )
-            await services.run_service.submit(plan.plan_id)
-            deadline = time.monotonic() + 3
-            while backend.handle is None and time.monotonic() < deadline:
-                await asyncio.sleep(0.01)
-            assert backend.handle is not None
-            binding = backend.runtime_startup()
-            deadline = time.monotonic() + 3
-            while time.monotonic() < deadline:
-                view = await services.run_service.get(plan.run_id)
-                if view.attempt == binding.attempt:
-                    break
-                await asyncio.sleep(0.01)
-            assert view.attempt == binding.attempt
-            hello = Envelope(
-                plan.run_id,
-                binding.attempt,
-                "hello",
-                0,
-                "2026-10-03T00:00:00Z",
-                asdict(
-                    HelloPayload(
-                        1, 1, "actual", "3.11", "cpu", ["train"], sys.executable
-                    )
-                ),
-            )
-            later = replace(event(2), run_id=plan.run_id, attempt=binding.attempt)
-            with pytest.raises(ProtocolError, match="gap"):
-                await services.host.call(
-                    lambda session: session.ingestor.push(
-                        plan.plan_id,
-                        plan.run_id,
-                        binding.attempt,
-                        [hello, later] if include_hello else [later],
-                    )
-                )
-            snapshot = await services.host.call(
-                lambda session: (
-                    session.controller.provenance_store.get(plan.plan_id),
-                    session.registry.cursor(plan.run_id, binding.attempt),
-                )
-            )
-            assert snapshot == (None, -1)
-            assert await services.event_log.read_after(plan.run_id) == []
-            await services.host.call(
-                lambda session: session.ingestor.push(
-                    plan.plan_id, plan.run_id, binding.attempt, [hello]
-                )
-            )
-            assert await services.event_log.read_after(plan.run_id) == [hello]
-        finally:
-            await services.close()
-
-    asyncio.run(scenario())
-
-
-def test_conflicting_duplicate_push_is_rejected(tmp_path):
-    with Registry(tmp_path / "registry.db") as registry:
-        ingestor = Ingestor(registry, AcceptedController(), EventBroker(), None)
-        ingestor.push("plan", RUN_ID, 1, [event(0)])
-        conflicting = Envelope(
-            RUN_ID,
-            1,
-            "log",
-            0,
-            "2026-10-03T00:00:00Z",
-            {
-                "message": "different",
-                "stream": "stdout",
-                "level": "info",
-            },
-        )
-        with pytest.raises(ProtocolError, match="Conflicting"):
-            ingestor.push("plan", RUN_ID, 1, [conflicting])
-        assert registry.get(RUN_ID).event_count == 1
 
 
 @pytest.mark.parametrize(
@@ -422,158 +257,6 @@ def test_http_rejects_noncanonical_run_identity_without_resolving():
     assert not called
 
 
-def test_only_filesystem_read_runs_on_shared_worker(tmp_path, monkeypatch):
-    journal = tmp_path / "events.jsonl"
-    journal.write_bytes(encode(event(0)) + b"\n")
-    owner = threading.get_ident()
-    readers, writers = [], []
-    original_read = JournalReader.read
-
-    def track_read(self, **options):
-        readers.append(threading.get_ident())
-        return original_read(self, **options)
-
-    monkeypatch.setattr(JournalReader, "read", track_read)
-    with (
-        Registry(tmp_path / "registry.db") as registry,
-        BoundedThreadPool(WorkBudget()) as pool,
-    ):
-        original_apply = registry.apply_events
-
-        def track_apply(*args, **options):
-            writers.append(threading.get_ident())
-            return original_apply(*args, **options)
-
-        monkeypatch.setattr(registry, "apply_events", track_apply)
-        ingestor = Ingestor(registry, AcceptedController(), EventBroker(), pool)
-        asyncio.run(ingestor.poll_once("plan", RUN_ID, 1, journal))
-    assert readers and all(value != owner for value in readers)
-    assert writers == [owner]
-
-
-def test_schema5_journal_backfill_preserves_projection_and_cursor(tmp_path):
-    path = tmp_path / "registry.db"
-    with Registry(path) as registry:
-        registry.apply_events(RUN_ID, 1, [event(0), event(1)])
-        before = registry.get(RUN_ID)
-    connection = sqlite3.connect(path)
-    connection.execute("DROP TRIGGER writer_initial_activation")
-    connection.execute("DROP TABLE initial_bindings")
-    connection.execute("DROP TABLE submission_control")
-    connection.execute(
-        "DELETE FROM schema_migrations WHERE migration_id='0009_writer_submissions'"
-    )
-    connection.execute("DROP TABLE execution_collections")
-    connection.execute(
-        "DELETE FROM schema_migrations WHERE migration_id='0008_execution_collections'"
-    )
-    connection.execute("DROP TRIGGER execution_attempt_activation")
-    connection.execute("DROP TRIGGER execution_identity_immutable")
-    connection.execute("DROP TABLE requeue_bindings")
-    connection.execute("DROP TABLE execution_attempt_history")
-    connection.execute(
-        "CREATE TRIGGER execution_identity_immutable BEFORE UPDATE OF plan_id,attempt,owner ON execution_control BEGIN SELECT RAISE(ABORT,'immutable'); END"
-    )
-    connection.execute(
-        "DELETE FROM schema_migrations WHERE migration_id='0007_scheduler_requeues'"
-    )
-    connection.execute("DROP TABLE event_log")
-    connection.execute(
-        "DELETE FROM schema_migrations WHERE migration_id='0006_event_log'"
-    )
-    connection.execute("PRAGMA user_version=5")
-    connection.commit()
-    connection.close()
-    with Registry(path) as registry:
-        ingestor = Ingestor(registry, AcceptedController(), EventBroker(), None)
-        with pytest.raises(ProtocolError, match="Conflicting"):
-            ingestor.push("plan", RUN_ID, 1, [event(0)])
-        assert ingestor.push("plan", RUN_ID, 1, [event(0), event(1)], journal=True) == 1
-        assert registry.get(RUN_ID) == before
-        assert registry.cursor(RUN_ID, 1) == 1
-        store = EventLogStore(path)
-        assert store.read_after(RUN_ID) == [event(0), event(1)]
-        store.close()
-
-
-def test_record_and_replay_pages_are_byte_bounded(log):
-    connection, store = log
-    batch = [
-        Envelope(
-            RUN_ID,
-            1,
-            "log",
-            seq,
-            "2026-10-03T00:00:00Z",
-            {
-                "message": "波" * 20000,
-                "stream": "stdout",
-                "level": "info",
-            },
-        )
-        for seq in range(30)
-    ]
-    append(connection, *batch)
-    page = store.read_after(RUN_ID, limit=1024)
-    assert 0 < len(page) < len(batch)
-    assert sum(len(record_bytes(item)) for item in page) <= 1024 * 1024
-    large = Envelope(
-        RUN_ID,
-        1,
-        "log",
-        30,
-        "2026-10-03T00:00:00Z",
-        {
-            "message": "波" * 22000,
-            "stream": "stdout",
-            "level": "info",
-        },
-    )
-    connection.execute("BEGIN")
-    with pytest.raises(ProtocolError, match="byte bound"):
-        append_in_transaction(connection, large)
-    connection.execute("ROLLBACK")
-
-
-def test_unsupported_first_journal_protocol_records_rejection_on_owner(tmp_path):
-    class Controller:
-        def __init__(self):
-            self.rejected = []
-
-        def reject_runtime_events(self, plan_id, reason):
-            self.rejected.append((threading.get_ident(), plan_id, reason))
-
-    journal = tmp_path / "events.jsonl"
-    journal.write_bytes(encode(event(0)).replace(b'"version":1', b'"version":99'))
-    controller = Controller()
-    with (
-        Registry(tmp_path / "registry.db") as registry,
-        BoundedThreadPool(WorkBudget()) as pool,
-    ):
-        ingestor = Ingestor(registry, controller, EventBroker(), pool)
-        with pytest.raises(ProtocolError, match="Unsupported version"):
-            asyncio.run(ingestor.poll_once("plan", RUN_ID, 1, journal))
-        assert registry.get(RUN_ID) is None
-        assert registry.cursor(RUN_ID, 1) == -1
-    assert controller.rejected == [
-        (threading.get_ident(), "plan", "Unsupported version")
-    ]
-
-
-def test_async_owner_adapter_replay():
-    class AsyncStore:
-        async def read_after(self, run_id, cursor, *, limit):
-            await asyncio.sleep(0)
-            return [event(0)] if cursor == (0, -1) else []
-
-    async def scenario():
-        stream = stream_events(AsyncStore(), EventBroker(), RUN_ID)
-        assert b"id: 1:0" in await anext(stream)
-        await stream.aclose()
-
-    asyncio.run(scenario())
-
-
 def test_cross_thread_wakeups_coalesce_bounded_callbacks_and_preserve_overflow():
     async def scenario():
         broker = EventBroker(queue_size=2)
@@ -605,38 +288,6 @@ def test_cross_thread_wakeups_coalesce_bounded_callbacks_and_preserve_overflow()
             subscription.loop.call_soon_threadsafe = original_schedule
 
     asyncio.run(scenario())
-
-
-def test_unregistered_historical_record_never_rejects_active_runtime(tmp_path):
-    run_dir = tmp_path / "run"
-    old = run_dir / "attempts" / "1"
-    old.mkdir(parents=True)
-    path = old / "events.jsonl"
-    path.write_bytes(encode(event(1)))
-
-    class Controller:
-        execution_store = SimpleNamespace(
-            get=lambda plan: SimpleNamespace(
-                run_id=RUN_ID,
-                attempt=2,
-                run_dir=str(run_dir),
-            )
-        )
-
-        def reject_runtime_events(self, *args):
-            pytest.fail("Historical data must not poison the current runtime")
-
-        def accept_runtime_events(self, *args):
-            pytest.fail("Historical data must not negotiate current runtime")
-
-    with (
-        Registry(tmp_path / "registry.db") as registry,
-        BoundedThreadPool(WorkBudget()) as pool,
-    ):
-        ingestor = Ingestor(registry, Controller(), EventBroker(), pool)
-        with pytest.raises(ProtocolError, match="registered execution lineage"):
-            asyncio.run(ingestor.poll_once("plan", RUN_ID, 1, path, historical=True))
-        assert registry.cursor(RUN_ID, 1) == -1
 
 
 @pytest.mark.parametrize(

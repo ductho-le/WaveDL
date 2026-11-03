@@ -1,15 +1,17 @@
-"""Stable owned registry namespaces survive process restarts, never replacements."""
+"""Stable owned database namespaces survive process restarts, never replacements."""
 
 import asyncio
 import os
 import shutil
 
 import httpx
-import pytest
 
 from wavedl_daemon.http.app import create_app
-from wavedl_daemon.runs.runtime_service import HostedServices, ServiceSession
-from wavedl_daemon.storage.plans import PlanRecoveryRequired
+from wavedl_daemon.runs.runtime_service import (
+    DATABASE_FILE,
+    HostedServices,
+    ServiceSession,
+)
 from wavedl_daemon.storage.settings import Settings
 
 
@@ -31,22 +33,23 @@ def test_owned_identity_is_stable_across_sessions_but_not_other_roots(tmp_path):
     assert str(settings.state_root) not in first
 
 
-def test_registry_replacement_changes_namespace_and_missing_database_is_refused(
-    tmp_path,
-):
+def test_database_replacement_or_loss_starts_a_new_namespace(tmp_path):
     settings = settings_for(tmp_path)
+    path = settings.state_root / DATABASE_FILE
     with ServiceSession(settings) as session:
         first = session.daemon_id
-        path = session.registry.path
     replacement = path.with_name("replacement.db")
     shutil.copyfile(path, replacement)
     assert replacement.stat().st_ino != path.stat().st_ino
     os.replace(replacement, path)
     with ServiceSession(settings) as session:
-        assert session.daemon_id != first
-    path.rename(path.with_name("removed-registry.db"))
-    with pytest.raises(PlanRecoveryRequired), ServiceSession(settings):
-        pass
+        second = session.daemon_id
+    assert second != first
+    # A lost database is lost history, never recovered from run directories.
+    path.rename(path.with_name("removed.db"))
+    with ServiceSession(settings) as session:
+        assert session.daemon_id not in {first, second}
+        assert session.runs.list() == []
 
 
 def test_hosted_health_adopts_owner_identity_and_never_exposes_auth_or_paths(tmp_path):

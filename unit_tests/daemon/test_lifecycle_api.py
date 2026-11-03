@@ -1,41 +1,121 @@
-"""Real SQLite and ASGI exercise immutable previews and durable control intent."""
+"""Real SQLite and ASGI exercise immutable plans and the run log behind them."""
 
 import asyncio
-import hashlib
 import json
 import sqlite3
-import sys
 import threading
 import time
 from copy import deepcopy
-from dataclasses import asdict, replace
-from pathlib import Path
+from dataclasses import dataclass
 from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
-from wavedl_daemon.backends.contracts import (
-    ObservationStatus,
-    Plan,
-    SubmissionHandle,
-    SubmissionObservation,
-)
+from wavedl_daemon.backends.contracts import UnsupportedPlan
 from wavedl_daemon.backends.local import LocalBackend
-from wavedl_daemon.execution.budget import BudgetExhausted
+from wavedl_daemon.backends.slurm import SlurmBackend
+from wavedl_daemon.backends.slurm_plan import SlurmSite
+from wavedl_daemon.execution.budget import BudgetExhausted, WorkBudget
+from wavedl_daemon.execution.pool import BoundedThreadPool
 from wavedl_daemon.http.app import create_app
 from wavedl_daemon.http.runs import lifecycle_routes
-from wavedl_daemon.runs.controller import SubmissionController
+from wavedl_daemon.runs.controller import RunController
 from wavedl_daemon.runs.service import RunService
-from wavedl_daemon.storage.executions import ExecutionState, ExecutionStore
+from wavedl_daemon.storage.database import open_database
 from wavedl_daemon.storage.ownership import acquire_dispatch_lock
-from wavedl_daemon.storage.plans import PlanStore, _canonical_request
-from wavedl_daemon.storage.registry import Registry
+from wavedl_daemon.storage.plans import PlanStore, canonical_request
+from wavedl_daemon.storage.run_log import RunLog
 from wavedl_daemon.storage.settings import Settings
+
+from .test_hosted_app import StubSupervisor, train_payload
 
 
 AUTH = {"Authorization": "Bearer lifecycle-test-token"}
+
+
+@dataclass(frozen=True)
+class Environment:
+    app: FastAPI
+    service: RunService
+    controller: RunController
+    plans: PlanStore
+    log: RunLog
+    local: LocalBackend
+    supervisor: StubSupervisor
+
+
+@pytest.fixture
+def environment(tmp_path):
+    settings = Settings(tmp_path / "state", tmp_path / "runs")
+    settings.validate()
+    supervisor = StubSupervisor()
+    with acquire_dispatch_lock(settings.state_root / "dispatch.lock") as lock:
+        connection = open_database(settings.state_root / "registry.db", dispatch_lock=lock)
+        log, plans = RunLog(connection), PlanStore(connection)
+        local = LocalBackend(dispatch_lock=lock, supervisor=supervisor)
+        slurm = SlurmBackend(SlurmSite("debug"), None, owner="tester", dispatch_lock=lock)
+        service = RunService(settings, plans, log, {"local": local, "slurm": slurm})
+        pool = BoundedThreadPool(WorkBudget())
+        controller = RunController(log, plans, pool, local=local)
+        app = create_app(
+            settings, token="lifecycle-test-token", daemon_id="test", build_id="test"
+        )
+        app.router.routes.extend(lifecycle_routes(service))
+        try:
+            yield Environment(app, service, controller, plans, log, local, supervisor)
+        finally:
+            local.close()
+            pool.shutdown()
+            connection.close()
+
+
+def payload():
+    return train_payload(epochs=2)
+
+
+def all_plans(plans):
+    return plans.page(limit=1000, offset=0)
+
+
+def request(app, method, path, *, body=None, key=None, headers=None):
+    async def run():
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://localhost:8420"
+        ) as client:
+            selected = dict(AUTH if headers is None else headers)
+            if key is not None:
+                selected["Idempotency-Key"] = key
+            return await client.request(method, path, json=body, headers=selected)
+
+    return asyncio.run(run())
+
+
+def tick_until(environment, run_id, predicate):
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        environment.controller.tick()
+        view = environment.service.get(run_id)
+        if predicate(view):
+            return view
+        time.sleep(0.005)
+    pytest.fail("Controller did not make bounded progress")
+
+
+def kinds(environment, run_id):
+    return [event.event.kind for event in environment.log.read_after(run_id, (0, -1))]
+
+
+def planned_and_submitted(environment, key):
+    plan = request(environment.app, "POST", "/api/runs/plan", body=payload(), key=key)
+    assert plan.status_code == 200, plan.text
+    plan = plan.json()
+    submitted = request(environment.app, "POST", "/api/runs", body={"plan_id": plan["plan_id"]})
+    assert submitted.status_code == 202, submitted.text
+    return plan
 
 
 @pytest.mark.parametrize(
@@ -52,13 +132,9 @@ AUTH = {"Authorization": "Bearer lifecycle-test-token"}
         ("run_name", "private-run"),
     ],
 )
-@pytest.mark.parametrize("backend_name", ["local", "slurm"])
-def test_cv_unsupported_plan_refused_without_persistence(
-    environment, option, value, backend_name
-):
-    app, service, _, plans, _, backend = environment
+def test_cv_unsupported_plan_refused_without_persistence(environment, option, value):
+    app, service, plans = environment.app, environment.service, environment.plans
     body = payload()
-    body["backend"] = backend_name
     body["config"].update(cv=2, **{option: value})
     for _ in range(2):
         with pytest.raises(ValueError, match=f"--{option}") as error:
@@ -68,16 +144,13 @@ def test_cv_unsupported_plan_refused_without_persistence(
         assert response.status_code == 400
         assert response.json() == {"error": "Bad request"}
         assert "private" not in response.text
-        assert plans.list_plans() == []
+        assert all_plans(plans) == []
         assert plans.get_by_key("cv-refused") is None
-    assert backend.jobs == []
 
 
-@pytest.mark.parametrize("backend_name", ["local", "slurm"])
-def test_one_fold_cv_refused_before_plan_persistence(environment, backend_name):
-    app, service, _, plans, _, backend = environment
+def test_one_fold_cv_refused_before_plan_persistence(environment):
+    app, service, plans = environment.app, environment.service, environment.plans
     body = payload()
-    body["backend"] = backend_name
     body["config"]["cv"] = 1
     for _ in range(2):
         with pytest.raises(ValueError, match="at least two folds"):
@@ -87,9 +160,8 @@ def test_one_fold_cv_refused_before_plan_persistence(environment, backend_name):
         )
         assert response.status_code == 400
         assert response.json() == {"error": "Bad request"}
-        assert plans.list_plans() == []
+        assert all_plans(plans) == []
         assert plans.get_by_key("invalid-fold-count") is None
-    assert backend.jobs == []
 
 
 @pytest.mark.parametrize(
@@ -103,13 +175,9 @@ def test_one_fold_cv_refused_before_plan_persistence(environment, backend_name):
         ({"scheduler": "plateau", "scheduler_factor": 2}, "--scheduler_factor"),
     ],
 )
-@pytest.mark.parametrize("backend_name", ["local", "slurm"])
-def test_cv_invalid_dependent_options_refused_before_plan(
-    environment, options, flag, backend_name
-):
-    app, service, _, plans, _, backend = environment
+def test_cv_invalid_dependent_options_refused_before_plan(environment, options, flag):
+    app, service, plans = environment.app, environment.service, environment.plans
     body = payload()
-    body["backend"] = backend_name
     body["config"].update(cv=2, **options)
     for _ in range(2):
         with pytest.raises(ValueError, match=flag):
@@ -119,20 +187,15 @@ def test_cv_invalid_dependent_options_refused_before_plan(
         )
         assert response.status_code == 400
         assert response.json() == {"error": "Bad request"}
-        assert plans.list_plans() == []
+        assert all_plans(plans) == []
         assert plans.get_by_key("cv-invalid-dependent") is None
-        assert not service.settings.run_root.exists()
-    assert backend.jobs == []
+        assert not any(service.settings.run_root.iterdir())
 
 
 @pytest.mark.parametrize("factor", [0, 0.5])
-@pytest.mark.parametrize("backend_name", ["local", "slurm"])
-def test_cv_valid_dependent_options_preserved_in_http_plan(
-    environment, factor, backend_name
-):
-    app, _, _, plans, _, backend = environment
+def test_cv_valid_dependent_options_preserved_in_http_plan(environment, factor):
+    app, plans = environment.app, environment.plans
     body = payload()
-    body["backend"] = backend_name
     body["config"].update(
         cv=2,
         optimizer="sgd",
@@ -145,17 +208,16 @@ def test_cv_valid_dependent_options_preserved_in_http_plan(
         app, "POST", "/api/runs/plan", body=body, key="cv-valid-dependent"
     )
     assert response.status_code == 200
-    resolved = plans.get(response.json()["plan_id"]).plan.manifest.resolved_config
+    resolved = plans.get(response.json()["plan_id"]).plan.spec.resolved_config
     assert all(resolved[name] == value for name, value in body["config"].items())
-    assert len(plans.list_plans()) == 1
-    assert backend.jobs == []
+    assert len(all_plans(plans)) == 1
 
 
 @pytest.mark.parametrize("cache_validate", ["sha256", "fast", "size"])
 def test_cv_plan_preserves_supported_options_and_inapplicable_cache(
     environment, cache_validate
 ):
-    _, service, _, plans, _, _ = environment
+    service, plans = environment.service, environment.plans
     body = payload()
     body["config"].update(
         cv=2,
@@ -175,307 +237,160 @@ def test_cv_plan_preserves_supported_options_and_inapplicable_cache(
         cache_validate=cache_validate,
     )
     response = service.plan(body, "cv-supported")
-    resolved = response.preview.manifest.resolved_config
+    resolved = response.preview.spec.resolved_config
     assert all(resolved[name] == value for name, value in body["config"].items())
     assert resolved["save_every"] == 50
-    assert len(plans.list_plans()) == 1
+    assert len(all_plans(plans)) == 1
 
 
-class FakeBackend:
-    owner = "test-user"
-
-    def __init__(self, database):
-        self.database = database
-        self.jobs = []
-        self.lost_ack = True
-        self.cancel_count = 0
-
-    def plan(self, manifest, *, topology, allocation_mode="reserved"):
-        return Plan(
-            "slurm",
-            json.dumps(asdict(manifest)),
-            script="#!/bin/sh\nexit 0\n",
-            topology=topology,
-            environment=tuple(sorted(manifest.runtime.environment.items())),
-            allocation_mode=allocation_mode,
-        )
-
-    def submit(self, plan, *, request_id, attempt):
-        assert plan.allocation_mode == "writer" and attempt is None
-        # A second connection proves intent/claim was committed before work.
-        with sqlite3.connect(self.database) as connection:
-            row = connection.execute(
-                "SELECT c.submission_requested,s.state FROM plans p JOIN plan_control c USING(plan_id) JOIN submission_control s USING(plan_id) WHERE p.request_id=?",
-                (request_id,),
-            ).fetchone()
-            assert row == (1, "submitting")
-        handle = SubmissionHandle(
-            "slurm",
-            plan.run_id,
-            request_id,
-            self.owner,
-            plan.run_dir,
-            job_id="123;alpha",
-            raw_json=json.dumps(
-                {
-                    "cluster": "alpha",
-                    "comment": request_id,
-                    "job_name": f"wavedl-{request_id}",
-                    "restart_count": 0,
-                    "operation": plan.operation.value,
-                    "allocation_mode": "writer",
-                    "plan_sha256": hashlib.sha256(plan.to_json().encode()).hexdigest(),
-                }
-            ),
-        )
-        self.jobs.append(handle)
-        if self.lost_ack:
-            self.lost_ack = False
-            raise TimeoutError("Accepted, response lost")
-        return handle
-
-    def find_by_request_id(self, plan, *, request_id, attempt):
-        return self.jobs[0] if self.jobs else None
-
-    def request_cancel(self, handle):
-        self.cancel_count += 1
-
-    def observe(self, handle):
-        return SubmissionObservation(ObservationStatus.RUNNING)
-
-    def discover_initial(self, handle):
-        return None
-
-    def collect_submission(self, handle):
-        return None
+def test_slurm_plans_are_refused_while_slurm_is_rebuilt(environment):
+    body = payload() | {"backend": "slurm"}
+    with pytest.raises(UnsupportedPlan, match="Slurm is being rebuilt"):
+        environment.service.plan(body, "slurm")
+    response = request(environment.app, "POST", "/api/runs/plan", body=body, key="slurm")
+    assert response.status_code == 400
+    assert all_plans(environment.plans) == []
 
 
-@pytest.fixture
-def environment(tmp_path):
-    database = tmp_path / "registry.db"
-    settings = Settings(tmp_path / "state", tmp_path / "runs")
-    backend = FakeBackend(database)
-    with (
-        acquire_dispatch_lock(tmp_path / "dispatch.lock") as lock,
-        Registry(database, dispatch_lock=lock),
-        PlanStore(database, dispatch_lock=lock) as plans,
-        ExecutionStore(database, dispatch_lock=lock) as executions,
-    ):
-        backends = {"slurm": backend, "local": LocalBackend()}
-        controller = SubmissionController(plans, executions, backends, lock)
-        service = RunService(settings, plans, executions, controller, backends)
-        app = create_app(
-            settings, token="lifecycle-test-token", daemon_id="test", build_id="test"
-        )
-        app.router.routes.extend(lifecycle_routes(service))
-        yield app, service, controller, plans, executions, backend
-        controller.close()
-
-
-def payload():
-    return {
-        "backend": "slurm",
-        "operation": "train",
-        "config": {"epochs": 2},
-        "runtime": {
-            "python": sys.executable,
-            "mode": "existing",
-            "device": "cpu",
-            "environment": {},
-        },
-        "topology": {"num_machines": 1, "processes_per_machine": 1, "machine_rank": 0},
+def test_checkpoint_sources_are_refused_while_rebuilt(environment, tmp_path):
+    body = payload() | {
+        "operation": "test",
+        "config": {"data_path": str(tmp_path / "data.npz")},
+        "checkpoint_source": {"run_id": str(uuid4()), "generation": "gen-000001"},
     }
-
-
-def test_registered_checkpoint_source_plan_and_idempotent_replay(environment, tmp_path):
-    from wavedl.core.checkpoint_source import capture_checkpoint_source
-    from wavedl.core.generations import publish_generation
-    from wavedl.core.layout import RunLayout, allocate_attempt
-    from wavedl.core.manifest import write_manifest
-
-    _, service, _, _, _, _ = environment
-    request_payload = payload()
-    request_payload["config"]["model"] = "cnn"
-    training = service.plan(request_payload, "source")
-    layout = RunLayout.create(service.settings.run_root, training.run_id)
-    write_manifest(layout, training.preview.manifest)
-    staging = tmp_path / "source-stage"
-    staging.mkdir()
-    for name in ("model_weights.pth", "training_meta.pkl", "scaler.pkl"):
-        (staging / name).write_bytes(b"published-state")
-    (staging / "checkpoint_selection.json").write_text(
-        json.dumps({"schema_version": 1, "kind": "best"})
-    )
-    generation = publish_generation(
-        layout, staging, attempt=allocate_attempt(layout), step=1
-    )
-    request_payload["operation"] = "test"
-    request_payload["config"] = {"data_path": str(tmp_path / "data.npz")}
-    request_payload["checkpoint_source"] = {
-        "run_id": training.run_id,
-        "generation": generation.generation,
-    }
-    captured, name, digest = service.checkpoint_selection(request_payload, "inference")
-    pin = capture_checkpoint_source(captured, name, manifest_sha256=digest)
-    inference = service.plan(request_payload, "inference", checkpoint_selection=pin)
-    assert inference.preview.manifest.checkpoint_source == pin
-    assert inference.preview.manifest.resolved_config["checkpoint"] == str(
-        generation.path
-    )
-    (generation.path / "model_weights.pth").write_bytes(b"changed-after-plan")
-    assert service.plan(request_payload, "inference") == inference
-    altered = deepcopy(request_payload)
-    altered["checkpoint_source"]["generation"] = "gen-999999"
-    with pytest.raises(ValueError, match="Key is bound"):
-        service.plan(altered, "inference")
-    for invalid in (
-        request_payload | {"operation": "train"},
-        request_payload | {"config": request_payload["config"] | {"checkpoint": None}},
-        request_payload | {"config": request_payload["config"] | {"model": "wrong"}},
-        request_payload
-        | {
-            "checkpoint_source": {
-                "run_id": str(uuid4()),
-                "generation": generation.generation,
-            }
-        },
-    ):
-        with pytest.raises((ValueError, KeyError)):
-            service.checkpoint_selection(invalid, "invalid-source")
-
-
-def request(app, method, path, *, body=None, key=None, headers=None):
-    async def run():
-        transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
-        async with httpx.AsyncClient(
-            transport=transport, base_url="http://localhost:8420"
-        ) as client:
-            selected = dict(AUTH if headers is None else headers)
-            if key is not None:
-                selected["Idempotency-Key"] = key
-            return await client.request(method, path, json=body, headers=selected)
-
-    return asyncio.run(run())
-
-
-def tick_until(controller, predicate):
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        controller.reconcile_once()
-        if predicate():
-            return
-        time.sleep(0.005)
-    pytest.fail("Controller did not make bounded progress")
+    with pytest.raises(UnsupportedPlan, match="checkpoint is being rebuilt"):
+        environment.service.plan(body, "source")
+    response = request(environment.app, "POST", "/api/runs/plan", body=body, key="source")
+    assert response.status_code == 400
+    assert all_plans(environment.plans) == []
 
 
 def test_foreign_origin_cancel_does_not_mutate_then_authorized_cancel_succeeds(
     environment,
 ):
-    app, _, _, plans, _, _ = environment
-    preview = request(
-        app, "POST", "/api/runs/plan", body=payload(), key="origin-cancel"
-    ).json()
-    path = f"/api/runs/{preview['run_id']}/cancel"
-    foreign = request(app, "POST", path, headers={"Origin": "http://localhost:8421"})
+    plan = planned_and_submitted(environment, "origin-cancel")
+    path = f"/api/runs/{plan['run_id']}/cancel"
+    foreign = request(
+        environment.app, "POST", path, headers={"Origin": "http://localhost:8421"}
+    )
     assert foreign.status_code == 403
-    assert not plans.get(preview["plan_id"]).cancellation_requested
-    authorized = request(app, "POST", path)
+    assert not environment.log.head(plan["run_id"]).cancel_requested
+    authorized = request(environment.app, "POST", path)
     assert authorized.status_code == 202
+    assert authorized.json()["cancellation_requested"] is True
 
 
 def test_preview_uuid_owned_pure_and_idempotent(environment, monkeypatch):
-    app, service, _, plans, _, backend = environment
+    app, service, plans = environment.app, environment.service, environment.plans
     monkeypatch.setenv("SECRET_RUNTIME_TOKEN", "do-not-inherit")
     body = payload()
     response = request(app, "POST", "/api/runs/plan", body=body, key="first")
     assert response.status_code == 200
     value = response.json()
     UUID(value["run_id"])
-    manifest = plans.get(value["plan_id"]).plan.manifest
-    assert manifest.run_directory == str(service.settings.run_root / value["run_id"])
-    assert manifest.resolved_config["output_dir"] == manifest.working_directory
-    assert manifest.resolved_config["precision"] == "bf16"
-    assert "list_models" not in manifest.resolved_config
-    assert manifest.runtime.environment == {}
-    assert not service.settings.run_root.exists()
+    plan = plans.get(value["plan_id"]).plan
+    run_dir = service.settings.run_root / value["run_id"]
+    assert plan.spec.run_directory == str(run_dir)
+    assert plan.argv[-2:] == ("--output_dir", str(run_dir / "output"))
+    assert "output_dir" not in plan.spec.resolved_config
+    assert plan.spec.resolved_config["precision"] == "bf16"
+    assert "list_models" not in plan.spec.resolved_config
+    assert plan.spec.runtime.environment == {}
+    assert value["preview"] == plan.to_dict()
+    assert not run_dir.exists()
     monkeypatch.setattr(
-        backend, "plan", lambda *args, **kwargs: pytest.fail("Retry replanned")
+        environment.local, "plan", lambda *args, **kwargs: pytest.fail("Retry replanned")
     )
-    assert (
-        request(app, "POST", "/api/runs/plan", body=body, key="first").json() == value
-    )
+    assert request(app, "POST", "/api/runs/plan", body=body, key="first").json() == value
     body["config"]["epochs"] = 3
-    assert (
-        request(app, "POST", "/api/runs/plan", body=body, key="first").status_code
-        == 409
-    )
+    assert request(app, "POST", "/api/runs/plan", body=body, key="first").status_code == 409
 
 
-def test_lost_ack_submit_retry_get_list_and_cancel_keep_uncertainty(environment):
-    app, _, controller, _, executions, backend = environment
-    preview = request(app, "POST", "/api/runs/plan", body=payload(), key="lost").json()
-    response = request(app, "POST", "/api/runs", body={"plan_id": preview["plan_id"]})
-    assert response.status_code == 202
-    assert response.json()["attempt"] is None
-    tick_until(
-        controller,
-        lambda: executions.get(preview["plan_id"]).submission_handle is not None,
-    )
+def test_repeated_submit_starts_one_attempt_and_one_process(environment):
+    plan = planned_and_submitted(environment, "repeat")
+    run_id = plan["run_id"]
     for _ in range(3):
-        assert (
-            request(
-                app, "POST", "/api/runs", body={"plan_id": preview["plan_id"]}
-            ).status_code
-            == 202
-        )
-    assert len(backend.jobs) == 1
-    assert executions.get(preview["plan_id"]).attempt is None
-    page = request(app, "GET", f"/api/runs/{preview['run_id']}/attempts").json()
-    assert page["total"] == 1
-    assert page["attempts"][0]["attempt"] is None
-    assert page["attempts"][0]["handle"] is None
-    assert page["attempts"][0]["submission_handle"] == backend.jobs[0].to_dict()
-    cancel = request(app, "POST", f"/api/runs/{preview['run_id']}/cancel")
-    assert cancel.status_code == 202
-    assert cancel.json()["cancellation_requested"] is True
-    assert cancel.json()["state"] != "cancelled"
-    get = request(app, "GET", f"/api/runs/{preview['run_id']}").json()
-    assert get["run_id"] == preview["run_id"]
-    assert get["uncertainty"] is True
-    assert request(app, "GET", "/api/runs").json()["runs"] == [get]
+        again = request(environment.app, "POST", "/api/runs", body={"plan_id": plan["plan_id"]})
+        assert again.status_code == 202
+        assert again.json()["state"] == "pending"
+    assert kinds(environment, run_id) == ["attempt"]
+    view = tick_until(environment, run_id, lambda view: view.state == "running")
+    for _ in range(5):
+        environment.controller.tick()
+    assert view.attempt == 1 and view.uncertainty is False
+    assert len(environment.supervisor.launches) == 1
+    run_dir = environment.service.settings.run_root / run_id
+    assert environment.supervisor.launches[0].spec.argv[-2:] == (
+        "--metrics_jsonl",
+        str(run_dir / "attempts" / "1" / "metrics.jsonl"),
+    )
+    environment.supervisor.launches[0].finish(0)
+    view = tick_until(environment, run_id, lambda view: view.state == "completed")
+    assert view.uncertainty is False
+    assert view.evidence["outcome"] == "completed"
+    assert kinds(environment, run_id) == [
+        "attempt",
+        "submitting",
+        "probed",
+        "submitted",
+        "observed",
+        "exited",
+    ]
 
 
-def test_cancel_before_handle_persists_without_submitting(environment):
-    app, _, controller, plans, executions, backend = environment
-    preview = request(
-        app, "POST", "/api/runs/plan", body=payload(), key="cancel"
+def test_cancel_of_a_planned_run_changes_nothing(environment):
+    plan = request(
+        environment.app, "POST", "/api/runs/plan", body=payload(), key="planned"
     ).json()
-    response = request(app, "POST", f"/api/runs/{preview['run_id']}/cancel")
+    response = request(environment.app, "POST", f"/api/runs/{plan['run_id']}/cancel")
     assert response.status_code == 202
-    assert plans.get(preview["plan_id"]).cancellation_requested
-    assert response.json()["state"] == "cancelled"
-    assert response.json()["uncertainty"] is False
-    source = executions.get(preview["plan_id"])
-    assert source.state == ExecutionState.PENDING and source.handle is None
-    assert source.attempt is None
-    page = request(app, "GET", f"/api/runs/{preview['run_id']}/attempts").json()
-    assert page["total"] == 1
-    assert page["attempts"][0]["attempt"] is None
-    assert page["attempts"][0]["handle"] is None
-    assert page["attempts"][0]["submission_handle"] is None
-    run_dir = Path(plans.get(preview["plan_id"]).plan.run_dir)
-    assert list((run_dir / "attempts").iterdir()) == []
-    # A queued submit arriving after durable cancellation cannot claim a job.
-    late = request(app, "POST", "/api/runs", body={"plan_id": preview["plan_id"]})
-    assert late.status_code == 202
-    assert late.json()["state"] == "cancelled"
+    assert response.json()["state"] == "planned"
+    assert response.json()["cancellation_requested"] is False
+    assert environment.log.head(plan["run_id"]) is None
+
+
+def test_cancel_before_spawn_ends_without_a_process(environment):
+    plan = planned_and_submitted(environment, "cancel")
+    run_id = plan["run_id"]
+    response = request(environment.app, "POST", f"/api/runs/{run_id}/cancel")
+    assert response.status_code == 202
+    assert response.json()["cancellation_requested"] is True
+    assert response.json()["state"] == "pending"
+    view = tick_until(environment, run_id, lambda view: view.state == "cancelled")
+    assert view.uncertainty is False
+    assert kinds(environment, run_id) == ["attempt", "cancel_requested", "exited"]
+    # A submit arriving after the cancel cannot start anything.
+    late = request(environment.app, "POST", "/api/runs", body={"plan_id": plan["plan_id"]})
+    assert late.status_code == 202 and late.json()["state"] == "cancelled"
     for _ in range(3):
-        controller.reconcile_once()
-    assert backend.jobs == []
-    assert backend.cancel_count == 0
-    assert executions.get(preview["plan_id"]).handle is None
-    current = request(app, "GET", f"/api/runs/{preview['run_id']}").json()
-    assert current["state"] == "cancelled" and current["uncertainty"] is False
+        environment.controller.tick()
+    assert environment.supervisor.launches == []
+    assert not (environment.service.settings.run_root / run_id).exists()
+
+
+def test_cancel_of_a_running_process_interrupts_and_ends_cancelled(environment):
+    run_id = planned_and_submitted(environment, "running-cancel")["run_id"]
+    tick_until(environment, run_id, lambda view: view.state == "running")
+    response = request(environment.app, "POST", f"/api/runs/{run_id}/cancel")
+    assert response.json()["state"] == "stopping"
+    view = tick_until(environment, run_id, lambda view: view.state == "cancelled")
+    assert environment.supervisor.launches[0].cancels == [(45.0, True)]
+    assert view.uncertainty is False
+    assert view.evidence["exit_code"] == 130
+    assert kinds(environment, run_id)[-3:] == [
+        "cancel_requested",
+        "cancel_delivered",
+        "exited",
+    ]
+
+
+def test_a_refused_interpreter_probe_fails_the_run_without_launching(environment):
+    environment.supervisor.probe_returncode = 1
+    run_id = planned_and_submitted(environment, "probe")["run_id"]
+    view = tick_until(environment, run_id, lambda view: view.state == "failed")
+    assert view.uncertainty is False
+    assert "probe refused execution" in view.evidence["reason"]
+    assert environment.supervisor.launches == []
 
 
 @pytest.mark.parametrize(
@@ -497,18 +412,17 @@ def test_cancel_before_handle_persists_without_submitting(environment):
     ],
 )
 def test_strict_bounded_payload_rejection(environment, mutate):
-    app, service, _, plans, _, _ = environment
     body = deepcopy(payload())
     mutate(body)
-    response = request(app, "POST", "/api/runs/plan", body=body, key="bad")
+    response = request(environment.app, "POST", "/api/runs/plan", body=body, key="bad")
     assert response.status_code == 400
     assert "secret" not in response.text
-    assert plans.get_by_key("bad") is None
-    assert not service.settings.run_root.exists()
+    assert environment.plans.get_by_key("bad") is None
+    assert not any(environment.service.settings.run_root.iterdir())
 
 
 def test_http_requires_key_auth_and_distinguishes_unknown_run(environment):
-    app, *_ = environment
+    app = environment.app
     assert request(app, "POST", "/api/runs/plan", body=payload()).status_code == 400
     assert (
         request(
@@ -528,7 +442,7 @@ def test_http_requires_key_auth_and_distinguishes_unknown_run(environment):
 
 
 def test_service_rejects_sql_thread_handoff(environment):
-    _, service, *_ = environment
+    service = environment.service
     errors = []
 
     def other_thread():
@@ -544,48 +458,16 @@ def test_service_rejects_sql_thread_handoff(environment):
 
 
 def test_local_plan_uses_effective_shared_defaults(environment):
-    app, *_ = environment
-    body = payload()
-    body["backend"] = "local"
-    response = request(app, "POST", "/api/runs/plan", body=body, key="local")
+    response = request(environment.app, "POST", "/api/runs/plan", body=payload(), key="local")
     assert response.status_code == 200
     assert "--list_models" not in response.json()["preview"]["argv"]
-    assert response.json()["preview"]["allocation_mode"] == "writer"
-
-
-def test_existing_reserved_key_replays_immutable_legacy_preview(
-    environment, monkeypatch
-):
-    app, service, _, plans, _, backend = environment
-    body = payload()
-    fresh = service.plan(body, "writer-source")
-    reserved = replace(fresh.preview, allocation_mode="reserved")
-    old = plans.put(reserved, idempotency_key="legacy", request_payload=body)
-    before = old.plan_json
-    monkeypatch.setattr(
-        backend, "plan", lambda *args, **kwargs: pytest.fail("Legacy retry replanned")
-    )
-    response = request(app, "POST", "/api/runs/plan", body=body, key="legacy")
-    assert response.status_code == 200
-    assert response.json()["plan_id"] == old.plan_id
-    assert response.json()["preview"] == reserved.to_dict()
     assert "allocation_mode" not in response.json()["preview"]
-    assert plans.get(old.plan_id).plan_json == before
-    assert plans.get(old.plan_id).plan.allocation_mode == "reserved"
 
 
-def test_http_rejects_backend_that_ignores_writer_allocation(environment, monkeypatch):
-    app, _, _, plans, _, backend = environment
-    original_plan = backend.plan
-
-    def ignore_writer(manifest, *, topology, allocation_mode):
-        del allocation_mode
-        return original_plan(manifest, topology=topology)
-
-    monkeypatch.setattr(backend, "plan", ignore_writer)
-    response = request(app, "POST", "/api/runs/plan", body=payload(), key="ignored")
-    assert response.status_code == 400
-    assert plans.get_by_key("ignored") is None
+def test_the_attempts_route_is_gone(environment):
+    plan = request(environment.app, "POST", "/api/runs/plan", body=payload(), key="gone")
+    response = request(environment.app, "GET", f"/api/runs/{plan.json()['run_id']}/attempts")
+    assert response.status_code == 404
 
 
 @pytest.mark.parametrize(
@@ -600,7 +482,7 @@ def test_http_rejects_backend_that_ignores_writer_allocation(environment, monkey
 def test_storage_capacity_failures_are_visible_redacted_503(
     environment, monkeypatch, error
 ):
-    app, service, *_ = environment
+    app, service = environment.app, environment.service
 
     def fail(*args, **kwargs):
         raise error
@@ -613,7 +495,7 @@ def test_storage_capacity_failures_are_visible_redacted_503(
 
 
 def test_unknown_programming_failure_is_500_not_bad_request(environment, monkeypatch):
-    app, service, *_ = environment
+    app, service = environment.app, environment.service
 
     def fail(*args, **kwargs):
         raise AttributeError("private implementation failure")
@@ -624,38 +506,25 @@ def test_unknown_programming_failure_is_500_not_bad_request(environment, monkeyp
     assert "private" not in response.text
 
 
-def test_foreign_registry_run_is_not_found(environment, tmp_path):
-    app, service, *_ = environment
-    foreign_id = str(uuid4())
-    with Registry(tmp_path / "foreign" / "registry.db") as registry:
-        with sqlite3.connect(registry.path) as connection:
-            connection.execute(
-                "INSERT INTO runs(run_id, operation) VALUES (?, 'train')", (foreign_id,)
-            )
-        service.registry = registry
-        response = request(app, "POST", f"/api/runs/{foreign_id}/cancel")
-        assert response.status_code == 404
-        assert request(app, "GET", f"/api/runs/{uuid4()}").status_code == 404
-
-
-def test_list_includes_plans_and_filters_before_offset(environment):
-    app, *_ = environment
+def test_list_pages_plans_and_filters_before_offset(environment):
+    app = environment.app
     first = request(app, "POST", "/api/runs/plan", body=payload(), key="first").json()
     second = request(app, "POST", "/api/runs/plan", body=payload(), key="second").json()
     third = request(app, "POST", "/api/runs/plan", body=payload(), key="third").json()
-    request(app, "POST", f"/api/runs/{second['run_id']}/cancel")
+    request(app, "POST", "/api/runs", body={"plan_id": second["plan_id"]})
     response = request(app, "GET", "/api/runs?state=planned&limit=1&offset=1")
     assert response.status_code == 200
-    remaining = response.json()["runs"]
-    # Persisted previews are stable oldest-first; offset counts matching states.
-    assert remaining[0]["run_id"] == third["run_id"]
-    assert remaining[0]["run_id"] != first["run_id"]
-    assert remaining[0]["run_id"] != second["run_id"]
-    assert remaining[0]["state"] == "planned"
+    # Plans list oldest first; the offset counts matching runs only.
+    assert [run["run_id"] for run in response.json()["runs"]] == [third["run_id"]]
+    pending = request(app, "GET", "/api/runs?state=pending").json()["runs"]
+    assert [run["run_id"] for run in pending] == [second["run_id"]]
+    paged = request(app, "GET", "/api/runs?limit=2&offset=1").json()["runs"]
+    assert [run["run_id"] for run in paged] == [second["run_id"], third["run_id"]]
+    assert first["run_id"] not in [run["run_id"] for run in paged]
 
 
 def test_duplicate_key_header_is_refused(environment):
-    app, *_ = environment
+    app = environment.app
 
     async def run():
         async with httpx.AsyncClient(
@@ -675,7 +544,7 @@ def test_duplicate_key_header_is_refused(environment):
 
 
 def test_runs_carry_creation_time_and_approved_inputs(environment):
-    app, *_ = environment
+    app = environment.app
     planned = request(app, "POST", "/api/runs/plan", body=payload(), key="named").json()
     run = request(app, "GET", f"/api/runs/{planned['run_id']}").json()
     listed = request(app, "GET", "/api/runs").json()["runs"]
@@ -694,7 +563,7 @@ def test_runs_carry_creation_time_and_approved_inputs(environment):
 
 
 def test_plan_replay_survives_model_round_trip(environment):
-    app, _, _, plans, _, _ = environment
+    app, plans = environment.app, environment.plans
     body = payload()
     body["config"] = {
         "epochs": 2,
@@ -709,9 +578,7 @@ def test_plan_replay_survives_model_round_trip(environment):
 
     assert first.status_code == replay.status_code == 200
     assert replay.json()["plan_id"] == first.json()["plan_id"]
-    assert plans.get_by_key("model-round-trip").request_payload_json == (
-        _canonical_request(body)
-    )
+    assert plans.get_by_key("model-round-trip").request_json == canonical_request(body)
 
 
 @pytest.mark.parametrize(
@@ -719,7 +586,7 @@ def test_plan_replay_survives_model_round_trip(environment):
     ["storage_map", "submission_cwd", "checkpoint_source"],
 )
 def test_plan_optional_fields_reject_explicit_null(environment, field):
-    app, _, _, plans, _, _ = environment
+    app, plans = environment.app, environment.plans
     body = payload()
     body[field] = None
 
@@ -731,7 +598,7 @@ def test_plan_optional_fields_reject_explicit_null(environment, field):
 
 
 def test_plan_rejects_lax_json(environment):
-    app, *_ = environment
+    app = environment.app
 
     async def post_raw(content):
         async with httpx.AsyncClient(
@@ -746,7 +613,7 @@ def test_plan_rejects_lax_json(environment):
 
     body = json.dumps(payload(), separators=(",", ":"))
     duplicate_backend = body.replace(
-        '{"backend":"slurm",', '{"backend":"slurm","backend":"slurm",', 1
+        '{"backend":"local",', '{"backend":"local","backend":"local",', 1
     )
     non_finite = body.replace('"epochs":2', '"epochs":NaN', 1)
     oversized_body = payload()
@@ -771,14 +638,14 @@ async def _gather_raw(*requests_to_run):
 
 
 def test_runs_queries_reject_unknown_and_repeated_keys(environment):
-    app, *_ = environment
+    app = environment.app
     planned = request(app, "POST", "/api/runs/plan", body=payload(), key="queries")
     run_id = planned.json()["run_id"]
 
     responses = [
         request(app, "GET", "/api/runs?limit=1&limit=2"),
         request(app, "GET", "/api/runs?page=1"),
-        request(app, "GET", f"/api/runs/{run_id}/attempts?offset=0&offset=1"),
+        request(app, "GET", "/api/runs?offset=0&offset=1"),
         request(app, "GET", "/api/runs?state=bogus"),
     ]
 
@@ -787,7 +654,7 @@ def test_runs_queries_reject_unknown_and_repeated_keys(environment):
 
 
 def test_runs_responses_are_no_store(environment):
-    app, *_ = environment
+    app = environment.app
     planned = request(app, "POST", "/api/runs/plan", body=payload(), key="no-store")
     assert planned.status_code == 200
     assert planned.headers["cache-control"] == "no-store"
@@ -797,24 +664,22 @@ def test_runs_responses_are_no_store(environment):
     got = request(app, "GET", f"/api/runs/{plan['run_id']}")
     listed = request(app, "GET", "/api/runs")
     cancelled = request(app, "POST", f"/api/runs/{plan['run_id']}/cancel")
-    attempts = request(app, "GET", f"/api/runs/{plan['run_id']}/attempts")
 
     assert submitted.status_code == 202
     assert cancelled.status_code == 202
     assert [
         response.headers.get("cache-control")
-        for response in (submitted, got, listed, cancelled, attempts)
-    ] == ["no-store"] * 5
+        for response in (submitted, got, listed, cancelled)
+    ] == ["no-store"] * 4
 
 
 def test_lifecycle_routes_are_api_routes(environment):
-    _, service, *_ = environment
-
-    assert all(isinstance(route, APIRoute) for route in lifecycle_routes(service))
+    routes = lifecycle_routes(environment.service)
+    assert all(isinstance(route, APIRoute) for route in routes)
 
 
 def test_lifecycle_get_routes_support_head(environment):
-    app, *_ = environment
+    app = environment.app
     planned = request(app, "POST", "/api/runs/plan", body=payload(), key="head")
     run_id = planned.json()["run_id"]
 
@@ -869,7 +734,7 @@ def test_plan_request_round_trip_preserves_json_values_and_omissions():
     model = PlanRequest.model_validate(reversed_body)
     dumped = model.model_dump(mode="json", exclude_unset=True)
 
-    assert _canonical_request(dumped) == _canonical_request(reversed_body)
+    assert canonical_request(dumped) == canonical_request(reversed_body)
     assert dumped["topology"] == {}
     assert "storage_map" in dumped
     assert "submission_cwd" in dumped
@@ -891,7 +756,7 @@ def test_plan_request_round_trip_preserves_json_values_and_omissions():
 
 
 def test_uppercase_run_uuid_is_bad_request(environment):
-    app, *_ = environment
+    app = environment.app
     planned = request(app, "POST", "/api/runs/plan", body=payload(), key="uppercase")
     run_id = planned.json()["run_id"].upper()
 
@@ -902,7 +767,7 @@ def test_uppercase_run_uuid_is_bad_request(environment):
 
 
 def test_lifecycle_response_models_preserve_service_bodies(environment):
-    app, service, _, _, _, _ = environment
+    app, service = environment.app, environment.service
     body = payload()
 
     planned = request(app, "POST", "/api/runs/plan", body=body, key="body-equality")
@@ -910,16 +775,13 @@ def test_lifecycle_response_models_preserve_service_bodies(environment):
     plan_service_body = service.plan(body, "body-equality").to_dict()
     run_service_body = service.get(run_id).to_dict()
     list_service_body = {"runs": [item.to_dict() for item in service.list()]}
-    attempts_service_body = service.attempts(run_id)
 
     got = request(app, "GET", f"/api/runs/{run_id}")
     listed = request(app, "GET", "/api/runs")
-    attempts = request(app, "GET", f"/api/runs/{run_id}/attempts")
 
     assert planned.json() == plan_service_body
     assert got.json() == run_service_body
     assert listed.json() == list_service_body
-    assert attempts.json() == attempts_service_body
 
 
 def test_run_wire_contract_has_no_placeholder_defaults():
@@ -940,22 +802,19 @@ def test_run_wire_contract_has_no_placeholder_defaults():
 
 
 def test_response_models_preserve_populated_evidence_bodies(environment):
-    app, service, controller, _, executions, _ = environment
-    preview = request(
-        app, "POST", "/api/runs/plan", body=payload(), key="evidence-bodies"
-    ).json()
-    submitted = request(app, "POST", "/api/runs", body={"plan_id": preview["plan_id"]})
-    assert submitted.status_code == 202
-    tick_until(
-        controller,
-        lambda: executions.get(preview["plan_id"]).submission_handle is not None,
-    )
-    run_id = preview["run_id"]
-    got = request(app, "GET", f"/api/runs/{run_id}")
-    attempts = request(app, "GET", f"/api/runs/{run_id}/attempts")
-    # The Starlette routes serialized service dicts with JSONResponse (json.dumps).
-    expected_run = json.loads(json.dumps(service.get(run_id).to_dict()))
-    assert expected_run["evidence"] is not None
-    assert got.json() == expected_run
-    assert attempts.json() == json.loads(json.dumps(service.attempts(run_id)))
-    assert attempts.json()["attempts"]
+    run_id = planned_and_submitted(environment, "evidence-bodies")["run_id"]
+    tick_until(environment, run_id, lambda view: view.state == "running")
+    got = request(environment.app, "GET", f"/api/runs/{run_id}")
+    expected = json.loads(json.dumps(environment.service.get(run_id).to_dict()))
+    assert got.json() == expected
+    assert set(expected["evidence"]) == {
+        "reason",
+        "phase",
+        "native_state",
+        "outcome",
+        "exit_code",
+        "signal",
+        "attempt_exit",
+        "restart_count",
+    }
+    assert expected["evidence"]["phase"] == "running"

@@ -13,7 +13,6 @@ from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import Response
 
-from wavedl_daemon.backends.contracts import UnsupportedPlan
 from wavedl_daemon.execution.budget import BudgetExhausted, StorageWorkError
 from wavedl_daemon.execution.pool import WorkCancelled
 from wavedl_daemon.http.app import strict_json_route
@@ -52,8 +51,6 @@ async def _call(callback: Callable, *args, **kwargs):
         raise HTTPException(409, "Idempotency conflict") from None
     except KeyError:
         raise HTTPException(404, "Not found") from None
-    except UnsupportedPlan as error:
-        raise HTTPException(400, str(error)) from None
     except (
         BudgetExhausted,
         StorageWorkError,

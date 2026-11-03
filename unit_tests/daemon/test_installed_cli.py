@@ -377,7 +377,6 @@ def build_installed(tmp_path_factory, *, wheelhouse=None):
         "wavedl_daemon/client.py",
         "wavedl/distributed_launch.py",
         "wavedl/launcher.py",
-        "wavedl/runtime.py",
         "wavedl/train.py",
         "wavedl_daemon/runs/catalog.py",
         "wavedl_daemon/runs/model_metadata.json",
@@ -905,10 +904,6 @@ def test_installed_standalone_training_requires_no_daemon(installed):
         cwd=outside,
         environment=environment | {"OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"},
     )
-    rows = [
-        json.loads(line)
-        for line in (output / "attempts/1/events.jsonl").read_text().splitlines()
-    ]
-    assert rows[0]["type"] == "hello" and rows[-1]["type"] == "exit"
-    assert rows[-1]["payload"]["code"] == 0
-    assert list((output / "checkpoints").glob("gen-*/COMPLETE.json"))
+    assert (output / "training_complete.flag").is_file()
+    assert (output / "best_checkpoint").is_dir()
+    assert not (output / "attempts").exists()
