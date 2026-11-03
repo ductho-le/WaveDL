@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `wavedl-train --cpu` trains on CPU; `--cpu --num_gpus N` runs N real Gloo processes on one machine
 - `wavedl-train --metrics_jsonl PATH` appends each epoch's metrics as one JSON line, so tools can follow training live
+- `wavedl-test --metrics_json PATH` writes the evaluation metrics as one JSON object
 
 ## [1.9.0] - 2026-10-11
 

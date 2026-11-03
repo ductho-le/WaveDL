@@ -755,6 +755,30 @@ class TestCLIEndToEnd:
         assert [epoch["epoch"] for epoch in epochs] == [1, 2]
         assert {"train_loss", "val_loss", "lr"} <= epochs[0].keys()
 
+        evaluation_path = os.path.join(temp_training_data["temp_dir"], "eval.json")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "wavedl.test",
+                "--checkpoint",
+                os.path.join(output_dir, "best_checkpoint"),
+                "--data_path",
+                npz_path,
+                "--output_dir",
+                os.path.join(temp_training_data["temp_dir"], "test_output"),
+                "--metrics_json",
+                evaluation_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert result.returncode == 0, f"Inference failed with: {result.stderr}"
+        with open(evaluation_path, encoding="utf-8") as file:
+            evaluation = json.load(file)
+        assert {"r2_score", "rmse", "mae_avg"} <= evaluation.keys()
+
     def test_wavedl_train_list_models(self):
         """E2E: wavedl-train --list_models works via subprocess."""
         import subprocess

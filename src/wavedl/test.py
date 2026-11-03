@@ -41,6 +41,7 @@ setup_hpc_cache_dirs()
 
 import argparse  # noqa: E402
 import inspect  # noqa: E402
+import json  # noqa: E402
 import logging  # noqa: E402
 import pickle  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -195,6 +196,12 @@ def parse_args() -> argparse.Namespace:
         "--save_predictions",
         action="store_true",
         help="Save vector predictions to CSV or dense fields to compressed NPZ",
+    )
+    parser.add_argument(
+        "--metrics_json",
+        type=str,
+        default=None,
+        help="Write the evaluation metrics to this file as one JSON object",
     )
     parser.add_argument("--plot", action="store_true", help="Generate diagnostic plots")
     parser.add_argument(
@@ -1629,6 +1636,9 @@ def main():
 
         # Print results
         print_results(y_true, y_pred, metrics, args.param_names, args.verbose)
+        if args.metrics_json:
+            with open(args.metrics_json, "w", encoding="utf-8") as file:
+                json.dump(metrics, file, default=float)
 
         # Save predictions (with targets)
         if args.save_predictions:
