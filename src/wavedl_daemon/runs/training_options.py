@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from wavedl_daemon.runs.model import Operation
@@ -166,9 +167,12 @@ def _item(option: Option, value: object) -> object:
         value = float(value)
     if type(value) is not option.type:
         raise ValueError("Option has the wrong type")
-    # A leading dash would make upstream's argparse read the value as a flag.
-    # The browser allows empty text such as run_name, but an empty path names nothing.
-    if option.type is str and (value.startswith("-") or (option.path and not value)):
+    # Upstream's argparse would read a leading-dash list item as a flag; a single
+    # value is safe as --flag=value. The browser allows empty text such as
+    # run_name, but an empty path names nothing.
+    if option.type is str and (
+        (option.multiple and value.startswith("-")) or (option.path and not value)
+    ):
         raise ValueError("Option value must not be a flag or an empty path")
     if option.choices and value not in option.choices:
         raise ValueError("Invalid option choice")
@@ -238,8 +242,14 @@ def check_cv(config: Mapping[str, object]) -> None:
         )
 
 
+def _list_item(item: str | int | float) -> str:
+    # argparse reads "-1e-07" as a flag but "-0.0000001" as a negative number.
+    return format(Decimal(repr(item)), "f") if type(item) is float else str(item)
+
+
 def cli_args(operation: Operation, config: Mapping[str, object]) -> list[str]:
-    """``config`` as upstream arguments: a set flag, or the flag and its values."""
+    """``config`` as upstream arguments: a set flag, ``--flag=value``, or a list
+    flag and its values."""
     table = OPTIONS[operation]
     argv = []
     for name, value in sorted(config.items()):
@@ -257,9 +267,13 @@ def cli_args(operation: Operation, config: Mapping[str, object]) -> list[str]:
             raise ValueError(f"Option does not accept a list: {name}")
         items = value if isinstance(value, list) else [value]
         if not all(type(item) in {str, int, float} for item in items) or any(
-            isinstance(item, str) and ("\0" in item or item.startswith("-"))
+            isinstance(item, str)
+            and ("\0" in item or (option.multiple and item.startswith("-")))
             for item in items
         ):
             raise ValueError(f"Unsafe option value: {name}")
-        argv += [flag(name), *map(str, items)]
+        if option.multiple:
+            argv += [flag(name), *map(_list_item, items)]
+        else:
+            argv.append(f"{flag(name)}={value}")
     return argv

@@ -59,7 +59,7 @@ def test_selected_venv_is_preserved_and_plan_has_no_side_effects(tmp_path):
     plan = LocalBackend().plan(request)
     assert plan.argv[0] == str(tmp_path / "venv" / "bin" / "python")
     assert plan.argv[-2:] == ("--output_dir", f"{request.working_directory}/output")
-    assert str(tmp_path / "train data.npz") in plan.argv
+    assert f"--data_path={tmp_path / 'train data.npz'}" in plan.argv
     assert not (tmp_path / "owned").exists()
     assert "--cpu" in plan.argv
 
@@ -140,8 +140,9 @@ def test_scalar_cli_option_rejects_list_instead_of_rendering_invalid_command(tmp
 def test_precision_is_given_once_for_launcher_and_training(tmp_path):
     # The launcher reads --precision and forwards it to training itself.
     plan = LocalBackend().plan(spec(tmp_path, precision="no"))
-    assert plan.argv.count("--precision") == 1
-    assert plan.argv[plan.argv.index("--precision") + 1] == "no"
+    assert [item for item in plan.argv if item.startswith("--precision")] == [
+        "--precision=no"
+    ]
     assert "--mixed_precision" not in plan.argv
 
 

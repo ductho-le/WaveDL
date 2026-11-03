@@ -165,7 +165,7 @@ def test_mapped_execution_paths_remain_separate_from_host_paths(tmp_path):
     )
     plan = planner().plan(request)
     run = f"/compute/shared/owned/{request.run_id}"
-    assert "--data_path /compute/shared/data.npz" in plan.script
+    assert "--data_path=/compute/shared/data.npz" in plan.script
     assert f"#SBATCH --output={run}/logs/slurm-%j.out" in plan.script
     assert f"export A={run}/attempts/" in plan.script
     assert f"--output_dir {run}/output" in plan.script

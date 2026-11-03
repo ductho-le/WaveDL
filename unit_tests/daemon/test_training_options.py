@@ -15,7 +15,14 @@ from wavedl_daemon.backends.local import launch_argv
 from wavedl_daemon.runs.layout import RESULT_OPTIONS
 from wavedl_daemon.runs.model import Operation
 from wavedl_daemon.runs.service import build_spec
-from wavedl_daemon.runs.training_options import OPTIONS, TEST, TRAIN, flag, resolve
+from wavedl_daemon.runs.training_options import (
+    OPTIONS,
+    TEST,
+    TRAIN,
+    cli_args,
+    flag,
+    resolve,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -81,7 +88,11 @@ def test_every_flag_the_daemon_renders_is_upstream(upstream, tmp_path, operation
     accepted = upstream[operation] | (
         upstream["launcher"] if operation is Operation.TRAIN else {}
     )
-    rendered = [item for item in launch_argv(spec, Topology()) if item[:2] == "--"]
+    rendered = [
+        item.partition("=")[0]
+        for item in launch_argv(spec, Topology())
+        if item[:2] == "--"
+    ]
     for name in [*rendered, RESULT_OPTIONS[operation][0]]:
         assert name in accepted, name
     if operation is Operation.TRAIN:
@@ -110,19 +121,104 @@ def test_resolution_fills_defaults_and_accepts_null_or_empty_only_as_defaults():
     assert resolved["plot_format"] == ["png"]
     assert resolve(Operation.TRAIN, {"constraint": [], "run_name": None})["lr"] == 1e-3
     assert resolve(Operation.TRAIN, {"project_name": "", "run_name": ""})["run_name"] == ""
+    assert resolve(Operation.TRAIN, {"model": "--fresh"})["model"] == "--fresh"
     for config in (
         {"lr": None},
         {"constraint_weight": []},
         {"output_dir": "elsewhere"},
         {"allow_pickle": True},
-        {"model": "--fresh"},
         {"epochs": True},
         {"loss": "unknown"},
         {"lr": 0},
-        {"run_name": "-x"},
+        {"constraint": ["-y0"]},
+        {"import_modules": ["-m"]},
         {"resume": ""},
     ):
         with pytest.raises(ValueError):
             resolve(Operation.TRAIN, config)
     with pytest.raises(ValueError, match="required"):
         resolve(Operation.TEST, {"data_path": "d.npz"})
+    with pytest.raises(ValueError):
+        resolve(
+            Operation.TEST,
+            {"checkpoint": "best", "data_path": "d.npz", "param_names": ["-a"]},
+        )
+
+
+PARSE = """
+import json, sys
+from wavedl import launcher, test, train
+operation, argv = json.loads(sys.argv[1])
+sys.argv = ["wavedl", *argv]
+if operation == "train":
+    options, remaining = launcher.parse_args()
+    sys.argv = ["wavedl.train", *remaining, "--precision", options.mixed_precision]
+    parsed = train.parse_args()[0]
+else:
+    parsed = test.parse_args()
+print(json.dumps(vars(parsed)))
+"""
+
+
+def upstream_parse(spec):
+    argv = launch_argv(spec, Topology())
+    result = subprocess.run(
+        [sys.executable, "-c", PARSE, json.dumps([spec.operation.value, argv[4:]])],
+        env=os.environ | {"PYTHONPATH": str(ROOT / "src")},
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+@pytest.mark.parametrize(
+    "operation,config",
+    [
+        (
+            Operation.TRAIN,
+            {
+                "grad_clip": -1e-07,
+                "min_lr": -2.5e-300,
+                "seed": -7,
+                "constraint_weight": [-1e-07, -2.0, 3e-30, -1e16, -0.0],
+                "constraint": ["y0 - y1", "y0"],
+                "run_name": "-x --fresh",
+                "project_name": "",
+            },
+        ),
+        (
+            Operation.TEST,
+            {
+                "checkpoint": "best",
+                "data_path": "data.npz",
+                "input_key": "-X",
+                "param_names": ["a b", "c"],
+                "import_modules": ["models"],
+            },
+        ),
+    ],
+)
+def test_upstream_parses_every_rendered_value_back(upstream, tmp_path, operation, config):
+    """Negative numbers and leading-dash text reach upstream as values, not flags."""
+    spec = build_spec(
+        tmp_path / "run",
+        operation=operation,
+        resolved_config=resolve(operation, config),
+        runtime=Runtime("python", "selected", "cpu", {}),
+        submission_cwd=tmp_path,
+    )
+    parsed = upstream_parse(spec)
+    for name in config:
+        assert parsed[name] == spec.resolved_config[name], name
+
+
+def test_list_items_that_argparse_would_read_as_flags_are_refused():
+    with pytest.raises(ValueError, match="Unsafe"):
+        cli_args(Operation.TRAIN, {"constraint": ["-y0"]})
+    assert cli_args(Operation.TRAIN, {"run_name": "-x", "constraint_weight": [-1e-07]}) == [
+        "--constraint_weight",
+        "-0.0000001",
+        "--run_name=-x",
+    ]
