@@ -5,13 +5,13 @@ import {
   RUN_STATES,
   healthSchema,
   planSchema,
-  runEvidenceSchema,
   runListSchema,
   runViewSchema,
   planPreviewSchema,
   sessionGrantSchema,
   isUuid,
 } from './daemon-api-schemas';
+import { runEvidenceSchema } from '../../shared/schemas/run-evidence';
 import { clientError, type ClientErrorKey, type ClientErrorParams } from '../i18n/client-messages';
 
 import type { Json, JsonObject } from '../../shared/schemas/json';
