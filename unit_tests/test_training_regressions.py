@@ -152,13 +152,16 @@ def test_inprocess_hpo_uses_same_pretrained_default_as_cli(tmp_path, monkeypatch
     assert np.isfinite(result["best_val_loss"])
 
 
+# Constraints and gradient accumulation are honoured by CV (see
+# test_cv_option_parity.py); only options CV cannot implement are refused.
 @pytest.mark.parametrize(
     "unsupported_args",
     [
-        ["--constraint", "y0 > 0"],
-        ["--constraint_file", "constraint.py"],
-        ["--grad_accum_steps", "2"],
         ["--selection_metric", "mse"],
+        ["--resume", "checkpoint"],
+        ["--save_every", "10"],
+        ["--compile"],
+        ["--wandb"],
     ],
 )
 def test_cv_rejects_unsupported_training_settings(

@@ -1124,17 +1124,31 @@ def main():
             parser.error(
                 "Cross-validation requires a single process; launch with --num_gpus 1."
             )
-        if args.constraint or args.constraint_file:
-            parser.error(
-                "Cross-validation does not support physical constraints. "
-                "Use standard training for constrained regression."
+        # Folds are trained and saved in one pass: there is no per-epoch
+        # checkpoint to resume from or save periodically, and no tracker/compile
+        # integration. Refuse these rather than silently ignoring them.
+        cv_unsupported = [
+            flag
+            for flag, requested in (
+                ("--resume", args.resume is not None),
+                ("--save_every", args.save_every != parser.get_default("save_every")),
+                ("--compile", args.compile),
+                ("--wandb", args.wandb),
             )
-        if args.grad_accum_steps != 1:
+            if requested
+        ]
+        if cv_unsupported:
             parser.error(
-                "Cross-validation does not support gradient accumulation. "
-                "Use --grad_accum_steps 1 or standard training."
+                f"Cross-validation does not support {', '.join(cv_unsupported)}. "
+                "Use standard training for these options."
             )
         print(f"🔄 Cross-Validation Mode: {args.cv} folds")
+        # Negotiate device and precision exactly as standard training does
+        # (e.g. accelerate runs CPU fp16 requests in full precision).
+        cv_accelerator = Accelerator(mixed_precision=args.precision)
+        cv_precision = (
+            cv_accelerator.mixed_precision if cv_accelerator.native_amp else "no"
+        )
         from wavedl.utils.cross_validation import run_cross_validation
 
         # Load data for CV using memory-efficient loader
@@ -1230,8 +1244,17 @@ def main():
                     else None
                 ),
                 warmup_epochs=args.warmup_epochs,
+                device=cv_accelerator.device,
+                grad_accum_steps=args.grad_accum_steps,
+                precision=cv_precision,
+                constraint=args.constraint,
+                constraint_file=args.constraint_file,
+                constraint_weight=args.constraint_weight,
+                constraint_reduction=args.constraint_reduction,
+                deterministic=args.deterministic,
             )
         finally:
+            cv_accelerator.free_memory()
             # Clean up file handle if HDF5/MAT
             if _cv_handle is not None and hasattr(_cv_handle, "close"):
                 try:

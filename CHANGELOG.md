@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Cross-validation**: `--cv` now honours `--precision`, `--grad_accum_steps`, `--deterministic`, and physical constraints like standard training instead of ignoring or refusing them; it refuses `--resume`, `--save_every`, `--compile`, and `--wandb`, and fold `training_meta.pkl` records the restored best epoch
+
 ### Fixed
 
 - Preserve positional compatibility in `train_single_trial()` while adding keyword-only gradient clipping; record the best validation loss before returning a pruned trial

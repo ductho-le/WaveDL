@@ -16,9 +16,14 @@ Version: 1.0.0
 import gc
 import json
 import logging
+import math
 import os
 import pickle
+import random
+from contextlib import contextmanager, nullcontext
 from datetime import datetime
+from functools import wraps
+from inspect import signature
 from typing import Any
 
 import numpy as np
@@ -127,6 +132,36 @@ def _take_samples(values: Any, indices: np.ndarray) -> np.ndarray:
 # ==============================================================================
 # SINGLE FOLD TRAINING
 # ==============================================================================
+def _validate_training_options(
+    device: torch.device, grad_accum_steps: int, precision: str
+) -> None:
+    """Reject unsupported execution modes before allocating fold models."""
+    if (
+        isinstance(grad_accum_steps, bool)
+        or not isinstance(grad_accum_steps, int)
+        or grad_accum_steps < 1
+    ):
+        raise ValueError("grad_accum_steps must be an integer >= 1")
+    if precision not in {"no", "bf16", "fp16"}:
+        raise ValueError(f"Unknown CV precision: {precision!r}")
+    if precision == "no":
+        return
+    # Accelerate disables fp16 autocast on CPU; make that explicit for direct
+    # callers instead of silently training in full precision.
+    if device.type not in {"cpu", "cuda", "mps"} or (
+        device.type == "cpu" and precision == "fp16"
+    ):
+        raise ValueError(f"CV precision={precision!r} is unsupported on {device.type}")
+    if not torch.amp.autocast_mode.is_autocast_available(device.type):
+        raise ValueError(f"Autocast is unavailable on {device.type}")
+    if device.type == "cuda":
+        if not torch.cuda.is_available():
+            raise ValueError("CUDA mixed precision requested but CUDA is unavailable")
+        with torch.cuda.device(device):
+            if precision == "bf16" and not torch.cuda.is_bf16_supported():
+                raise ValueError("CV bf16 precision is unsupported on this CUDA device")
+
+
 def train_fold(
     fold: int,
     model: nn.Module,
@@ -141,9 +176,19 @@ def train_fold(
     grad_clip: float,
     scaler: Any,
     logger: logging.Logger,
+    *,
+    grad_accum_steps: int = 1,
+    precision: str = "no",
 ) -> dict[str, Any]:
     """
     Train and evaluate a single CV fold.
+
+    Optimizer updates follow standard training: each update uses the
+    sample-mean gradient of its accumulation window (including a partial final
+    window), gradients are clipped only at update boundaries, and OneCycleLR
+    advances only on updates not skipped by fp16 overflow. A
+    ``PhysicsConstrainedLoss`` is used for training while its ``base_loss``
+    alone drives validation and best-epoch selection.
 
     Args:
         fold: Fold index (0-based)
@@ -158,13 +203,37 @@ def train_fold(
         patience: Early stopping patience
         scaler: Target scaler (for physical units)
         logger: Logger instance
+        grad_accum_steps: Micro-batches per optimizer update
+        precision: ``"no"``, ``"bf16"`` (CPU/CUDA/MPS) or ``"fp16"`` (CUDA/MPS)
 
     Returns:
         Dictionary with fold results and metrics
     """
+    device = torch.device(device)
+    _validate_training_options(device, grad_accum_steps, precision)
+    amp_dtype = torch.bfloat16 if precision == "bf16" else torch.float16
+    grad_scaler = torch.amp.GradScaler(device.type) if precision == "fp16" else None
+
+    from wavedl.utils.constraints import PhysicsConstrainedLoss
+
+    constrained = isinstance(criterion, PhysicsConstrainedLoss)
+    validation_criterion = criterion.base_loss if constrained else criterion
+
+    def autocast_context():
+        if precision == "no":
+            return nullcontext()
+        return torch.autocast(device_type=device.type, dtype=amp_dtype)
+
+    # Same weighting as standard training: micro-batch losses are weighted by
+    # batch / nominal size, and windows with fewer samples than nominal are
+    # rescaled to the true sample mean at the update boundary.
+    nominal_batch_size = train_loader.batch_size or 1
+    window_capacity = grad_accum_steps * nominal_batch_size
+
     best_val_loss = float("inf")
     patience_ctr = 0
     best_state = None
+    best_epoch = 0
     history = []
 
     # Determine if scheduler steps per batch (OneCycleLR) or per epoch
@@ -178,30 +247,58 @@ def train_fold(
         model.train()
         train_loss = 0.0
         train_samples = 0
+        window_samples = 0
+        optimizer.zero_grad(set_to_none=True)
 
-        for x, y in train_loader:
+        for batch_index, (x, y) in enumerate(train_loader):
             x, y = x.to(device), y.to(device)
 
-            optimizer.zero_grad()
-            pred = model(x)
-            if pred.shape != y.shape:
-                raise ValueError(
-                    f"Model output shape {tuple(pred.shape)} does not match "
-                    f"target shape {tuple(y.shape)}."
-                )
-            loss = criterion(pred, y)
+            with autocast_context():
+                pred = model(x)
+                if pred.shape != y.shape:
+                    raise ValueError(
+                        f"Model output shape {tuple(pred.shape)} does not match "
+                        f"target shape {tuple(y.shape)}."
+                    )
+                # Input-dependent constraints (x_mean, x[...]) need the inputs
+                loss = criterion(pred, y, x) if constrained else criterion(pred, y)
             if not torch.isfinite(loss):
                 raise FloatingPointError(
                     "Cross-validation training loss is non-finite."
                 )
-            loss.backward()
-            if grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-            optimizer.step()
+            backward_loss = loss * (x.size(0) / nominal_batch_size) / grad_accum_steps
+            if grad_scaler is None:
+                backward_loss.backward()
+            else:
+                grad_scaler.scale(backward_loss).backward()
+            window_samples += x.size(0)
 
-            # Per-batch LR scheduling (OneCycleLR)
-            if step_per_batch:
-                scheduler.step()
+            # A partial final window still produces an update (as in Accelerate)
+            last_batch = batch_index + 1 == len(train_loader)
+            if (batch_index + 1) % grad_accum_steps == 0 or last_batch:
+                if window_samples != window_capacity:
+                    factor = window_capacity / window_samples
+                    for parameter in model.parameters():
+                        if parameter.grad is not None:
+                            parameter.grad.mul_(factor)
+                window_samples = 0
+                if grad_scaler is not None:
+                    grad_scaler.unscale_(optimizer)
+                if grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                optimizer_updated = True
+                if grad_scaler is None:
+                    optimizer.step()
+                else:
+                    old_scale = grad_scaler.get_scale()
+                    grad_scaler.step(optimizer)
+                    grad_scaler.update()
+                    optimizer_updated = grad_scaler.get_scale() >= old_scale
+                optimizer.zero_grad(set_to_none=True)
+
+                # Per-update LR scheduling (OneCycleLR), skipping fp16 overflows
+                if step_per_batch and optimizer_updated:
+                    scheduler.step()
 
             train_loss += loss.item() * x.size(0)
             train_samples += x.size(0)
@@ -218,13 +315,14 @@ def train_fold(
         with torch.inference_mode():
             for x, y in val_loader:
                 x, y = x.to(device), y.to(device)
-                pred = model(x)
-                if pred.shape != y.shape:
-                    raise ValueError(
-                        f"Model output shape {tuple(pred.shape)} does not match "
-                        f"target shape {tuple(y.shape)}."
-                    )
-                loss = criterion(pred, y)
+                with autocast_context():
+                    pred = model(x)
+                    if pred.shape != y.shape:
+                        raise ValueError(
+                            f"Model output shape {tuple(pred.shape)} does not match "
+                            f"target shape {tuple(y.shape)}."
+                        )
+                    loss = validation_criterion(pred, y)
                 if not torch.isfinite(loss):
                     raise FloatingPointError(
                         "Cross-validation validation loss is non-finite."
@@ -233,7 +331,7 @@ def train_fold(
                 val_loss += loss.item() * x.size(0)
                 val_samples += x.size(0)
 
-                all_preds.append(pred.detach().cpu())
+                all_preds.append(pred.detach().float().cpu())
                 all_targets.append(y.detach().cpu())
 
         avg_val_loss = val_loss / val_samples
@@ -270,6 +368,7 @@ def train_fold(
         # Early stopping
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
+            best_epoch = epoch + 1
             patience_ctr = 0
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
         else:
@@ -290,13 +389,14 @@ def train_fold(
     with torch.inference_mode():
         for x, y in val_loader:
             x, y = x.to(device), y.to(device)
-            pred = model(x)
+            with autocast_context():
+                pred = model(x)
             if pred.shape != y.shape:
                 raise ValueError(
                     f"Model output shape {tuple(pred.shape)} does not match "
                     f"target shape {tuple(y.shape)}."
                 )
-            all_preds.append(pred.detach().cpu())
+            all_preds.append(pred.detach().float().cpu())
             all_targets.append(y.detach().cpu())
 
     y_pred = torch.cat(all_preds).numpy()
@@ -313,6 +413,7 @@ def train_fold(
     results = {
         "fold": fold + 1,
         "best_val_loss": best_val_loss,
+        "best_epoch": best_epoch,
         "r2": (
             r2_score(metric_true, metric_pred)
             if len(metric_true) >= 2
@@ -340,6 +441,106 @@ def train_fold(
 # ==============================================================================
 # MAIN CV ORCHESTRATION
 # ==============================================================================
+@contextmanager
+def _deterministic_cv(seed: int):
+    """Apply standard training's deterministic policy, then restore caller state."""
+    python_state, numpy_state = random.getstate(), np.random.get_state()
+    cpu_state = torch.get_rng_state()
+    cuda_states = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+    mps_state = torch.mps.get_rng_state() if torch.backends.mps.is_available() else None
+    flags = (
+        torch.are_deterministic_algorithms_enabled(),
+        torch.is_deterministic_algorithms_warn_only_enabled(),
+        torch.backends.cudnn.benchmark,
+        torch.backends.cudnn.deterministic,
+        torch.backends.cuda.matmul.allow_tf32,
+        torch.backends.cudnn.allow_tf32,
+    )
+    try:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if cuda_states is not None:
+            torch.cuda.manual_seed_all(seed)
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        yield
+    finally:
+        torch.use_deterministic_algorithms(flags[0], warn_only=flags[1])
+        torch.backends.cudnn.benchmark = flags[2]
+        torch.backends.cudnn.deterministic = flags[3]
+        torch.backends.cuda.matmul.allow_tf32 = flags[4]
+        torch.backends.cudnn.allow_tf32 = flags[5]
+        random.setstate(python_state)
+        np.random.set_state(numpy_state)
+        torch.set_rng_state(cpu_state)
+        if cuda_states is not None:
+            torch.cuda.set_rng_state_all(cuda_states)
+        if mps_state is not None:
+            torch.mps.set_rng_state(mps_state)
+
+
+def _with_cv_determinism(function):
+    """Run ``function`` inside ``_deterministic_cv`` when ``deterministic=True``."""
+    parameters = signature(function)
+
+    @wraps(function)
+    def scoped(*args, **kwargs):
+        bound = parameters.bind_partial(*args, **kwargs).arguments
+        context = (
+            _deterministic_cv(bound.get("seed", parameters.parameters["seed"].default))
+            if bound.get("deterministic", False)
+            else nullcontext()
+        )
+        with context:
+            return function(*args, **kwargs)
+
+    return scoped
+
+
+def _seed_cv_worker(_worker_id: int) -> None:
+    """Seed Python/NumPy in DataLoader workers from their per-worker Torch seed."""
+    seed = torch.initial_seed() % (2**32)
+    random.seed(seed)
+    np.random.seed(seed)
+
+
+def _build_fold_criterion(
+    loss_name: str,
+    loss_weights: list[float] | None,
+    huber_delta: float,
+    training_scaler: Any,
+    constraint: list[str] | None,
+    constraint_file: str | None,
+    constraint_weight: list[float] | None,
+    constraint_reduction: str,
+) -> nn.Module:
+    """Build the fold loss; constraints use only this fold's training scaler."""
+    from wavedl.utils import get_loss
+    from wavedl.utils.constraints import PhysicsConstrainedLoss, build_constraints
+
+    criterion = get_loss(loss_name, weights=loss_weights, delta=huber_delta)
+    constraints = build_constraints(
+        expressions=constraint,
+        file_path=constraint_file,
+        reduction=constraint_reduction,
+    )
+    if constraints:
+        # Evaluate penalties in physical space, as standard training does
+        criterion = PhysicsConstrainedLoss(
+            criterion,
+            constraints,
+            weights=constraint_weight,
+            output_mean=getattr(training_scaler, "mean_", None),
+            output_std=getattr(training_scaler, "scale_", None),
+        )
+    return criterion
+
+
+@_with_cv_determinism
 def run_cross_validation(
     # Data
     X: np.ndarray,
@@ -383,6 +584,14 @@ def run_cross_validation(
     step_size: int = 30,
     milestones: list[int] | None = None,
     warmup_epochs: int = 5,
+    device: torch.device | str | None = None,
+    grad_accum_steps: int = 1,
+    precision: str = "no",
+    constraint: list[str] | None = None,
+    constraint_file: str | None = None,
+    constraint_weight: list[float] | None = None,
+    constraint_reduction: str = "mse",
+    deterministic: bool = False,
 ) -> dict[str, Any]:
     """
     Run K-fold cross-validation.
@@ -412,6 +621,15 @@ def run_cross_validation(
         workers: DataLoader workers
         seed: Random seed
         logger: Logger instance
+        device: Torch device; auto-selects CUDA, MPS, then CPU when None
+        grad_accum_steps: Micro-batches per optimizer update
+        precision: ``"no"``, ``"bf16"`` (CPU/CUDA/MPS) or ``"fp16"`` (CUDA/MPS)
+        constraint: Soft constraint expressions (see ``--constraint``)
+        constraint_file: Python file defining ``constraint(pred, inputs)``
+        constraint_weight: Weight(s) for the soft constraints
+        constraint_reduction: Constraint penalty reduction (``"mse"``/``"mae"``)
+        deterministic: Apply standard training's deterministic mode; caller RNG
+            and backend settings are restored afterwards
 
     Returns:
         Summary dictionary with aggregated results
@@ -459,12 +677,15 @@ def run_cross_validation(
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-    if torch.cuda.is_available():
+    if device is not None:
+        device = torch.device(device)
+    elif torch.cuda.is_available():
         device = torch.device("cuda")
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         device = torch.device("mps")
     else:
         device = torch.device("cpu")
+    _validate_training_options(device, grad_accum_steps, precision)
 
     # Auto-detect optimal DataLoader workers if not specified (matches train.py behavior)
     if workers < 0:
@@ -477,7 +698,9 @@ def run_cross_validation(
         )
 
     logger.info(f"🚀 K-Fold Cross-Validation ({folds} folds)")
-    logger.info(f"   Model: {model_name} | Device: {device}")
+    logger.info(f"   Model: {model_name} | Device: {device} | Precision: {precision}")
+    if grad_accum_steps > 1:
+        logger.info(f"   Gradient Accumulation: {grad_accum_steps} steps")
     logger.info(
         f"   Loss: {loss_name} | Optimizer: {optimizer_name} | Scheduler: {scheduler_name}"
     )
@@ -516,7 +739,7 @@ def run_cross_validation(
 
     # Import factories
     from wavedl.models import build_model, get_model
-    from wavedl.utils import get_loss, get_optimizer, get_scheduler
+    from wavedl.utils import get_optimizer, get_scheduler
 
     # Run folds
     fold_results = []
@@ -555,6 +778,10 @@ def run_cross_validation(
             shuffle=True,
             num_workers=workers,
             pin_memory=device.type == "cuda",
+            generator=(
+                torch.Generator().manual_seed(seed + fold) if deterministic else None
+            ),
+            worker_init_fn=_seed_cv_worker if deterministic else None,
         )
         val_loader = DataLoader(
             val_ds,
@@ -562,6 +789,7 @@ def run_cross_validation(
             shuffle=False,
             num_workers=workers,
             pin_memory=device.type == "cuda",
+            worker_init_fn=_seed_cv_worker if deterministic else None,
         )
 
         # Build model
@@ -590,9 +818,16 @@ def run_cross_validation(
         model = model.to(device)
 
         # Setup training components
-        criterion = get_loss(loss_name, weights=loss_weights, delta=huber_delta).to(
-            device
-        )
+        criterion = _build_fold_criterion(
+            loss_name,
+            loss_weights,
+            huber_delta,
+            scaler,
+            constraint,
+            constraint_file,
+            constraint_weight,
+            constraint_reduction,
+        ).to(device)
         optimizer = get_optimizer(
             optimizer_name,
             model.get_optimizer_groups(lr, weight_decay),
@@ -606,7 +841,12 @@ def run_cross_validation(
             scheduler_name,
             optimizer,
             epochs=epochs,
-            steps_per_epoch=len(train_loader) if scheduler_name == "onecycle" else None,
+            # OneCycleLR counts optimizer updates, not micro-batches
+            steps_per_epoch=(
+                math.ceil(len(train_loader) / grad_accum_steps)
+                if scheduler_name == "onecycle"
+                else None
+            ),
             patience=scheduler_patience,
             factor=scheduler_factor,
             min_lr=min_lr,
@@ -631,6 +871,8 @@ def run_cross_validation(
             grad_clip=grad_clip,
             scaler=scaler,
             logger=logger,
+            grad_accum_steps=grad_accum_steps,
+            precision=precision,
         )
 
         fold_results.append(results)
@@ -648,12 +890,14 @@ def run_cross_validation(
         with open(os.path.join(fold_dir, "training_meta.pkl"), "wb") as f:
             pickle.dump(
                 {
-                    "epoch": results["epochs_trained"],
-                    "best_val_loss": results["best_val_loss"],
+                    # The saved weights are the best epoch's, not the last one's
+                    "epoch": int(results["best_epoch"]),
+                    "epochs_trained": int(results["epochs_trained"]),
+                    "best_val_loss": float(results["best_val_loss"]),
                     "model_name": model_name,
-                    "in_shape": in_shape,
-                    "out_dim": out_size,
-                    "target_shape": out_shape,
+                    "in_shape": tuple(int(v) for v in in_shape),
+                    "out_dim": int(out_size),
+                    "target_shape": tuple(int(v) for v in out_shape),
                     "cv_fold": fold + 1,
                 },
                 f,
@@ -696,6 +940,11 @@ def run_cross_validation(
             "pretrained": pretrained,
             "optimizer": optimizer_name,
             "scheduler": scheduler_name,
+            "grad_accum_steps": grad_accum_steps,
+            "precision": precision,
+            "constraints": list(constraint or []),
+            "constraint_file": constraint_file,
+            "deterministic": deterministic,
         },
         "timestamp": datetime.now().isoformat(),
         "folds": folds,

@@ -706,10 +706,16 @@ wavedl-train --model cnn --cv 5 --cv_stratify \
 Dense field CV can require substantial host memory because folds are currently
 materialized in memory. Do not combine it with `--cv_stratify`; use smaller
 datasets/batches or run separate held-out experiments for very large field maps.
-CV preserves custom loss weights, Huber delta, and pretrained initialization.
-Physical constraints and gradient accumulation require standard training; CV
-rejects these options instead of silently ignoring them. CV runs in one process
-and currently selects folds using the configured loss (`--selection_metric loss`).
+CV honours the same optimisation options as standard training: loss weights,
+Huber delta, pretrained initialization, `--precision` (negotiated by Accelerate
+exactly as in standard training), `--grad_accum_steps`, `--deterministic`, and
+physical constraints (evaluated in physical units with each fold's
+training-only target scaler; validation and fold selection use the base loss).
+CV runs in one process and selects folds using the configured loss
+(`--selection_metric loss`). It rejects `--resume`, `--save_every`, `--compile`
+and `--wandb` instead of silently ignoring them. Each `fold_*/` directory holds
+`model.pth`, `scaler.pkl` and `training_meta.pkl`, so it can be evaluated with
+`wavedl-test --checkpoint <output_dir>/fold_1`.
 
 </details>
 
