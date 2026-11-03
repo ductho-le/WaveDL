@@ -137,10 +137,12 @@ def test_scalar_cli_option_rejects_list_instead_of_rendering_invalid_command(tmp
     assert "--constraint" not in plan.argv
 
 
-def test_precision_is_the_same_for_launcher_and_training(tmp_path):
+def test_precision_is_given_once_for_launcher_and_training(tmp_path):
+    # The launcher reads --precision and forwards it to training itself.
     plan = LocalBackend().plan(spec(tmp_path, precision="no"))
-    assert plan.argv[plan.argv.index("--mixed_precision") + 1] == "no"
+    assert plan.argv.count("--precision") == 1
     assert plan.argv[plan.argv.index("--precision") + 1] == "no"
+    assert "--mixed_precision" not in plan.argv
 
 
 @pytest.mark.parametrize(

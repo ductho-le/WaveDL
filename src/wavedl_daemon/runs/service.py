@@ -8,7 +8,6 @@ always ``status`` of its head, never stored separately.
 
 from __future__ import annotations
 
-import argparse
 import os
 import re
 import threading
@@ -17,12 +16,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from wavedl.core.inference_cli import inference_defaults, validate_import_modules
-from wavedl.core.training_cli import (
-    build_training_parser,
-    training_defaults,
-    validate_cv_options,
-)
 from wavedl_daemon.backends.contracts import (
     CheckpointSource,
     Plan,
@@ -32,8 +25,8 @@ from wavedl_daemon.backends.contracts import (
     Topology,
     UnsupportedPlan,
 )
-from wavedl_daemon.backends.local import _TEST_FLAGS, _TEST_VALUES
 from wavedl_daemon.execution.budget import BudgetExhausted
+from wavedl_daemon.runs import training_options
 from wavedl_daemon.runs.artifacts import CHECKPOINT_NAME
 from wavedl_daemon.runs.lifecycle import Ended, Live, RunRef, RunState, status
 from wavedl_daemon.runs.model import (
@@ -58,17 +51,6 @@ if TYPE_CHECKING:
     from wavedl_daemon.storage.plans import PlanRecord, PlanStore
     from wavedl_daemon.storage.run_log import RunLog
     from wavedl_daemon.storage.settings import Settings
-
-
-# Paths a request may give relative to its submission directory.
-PATH_FIELDS = (
-    "data_path",
-    "config",
-    "resume",
-    "checkpoint",
-    "constraint_file",
-    "export_path",
-)
 
 
 def _uuid(value: str) -> None:
@@ -204,17 +186,13 @@ def build_spec(
         return mapped((base / Path(value).expanduser()).resolve())
 
     config = dict(resolved_config)
-    if "import_modules" in config:
-        config["import_modules"] = validate_import_modules(
-            [
-                resolve(item) if item.endswith(".py") else item
-                for item in validate_import_modules(config["import_modules"])
-            ]
-        )
-    for name in PATH_FIELDS:
-        if config.get(name) is not None:
-            if not isinstance(config[name], str) or not config[name]:
-                raise ValueError(f"Invalid path: {name}")
+    if config.get("import_modules"):
+        config["import_modules"] = [
+            resolve(item) if item.endswith(".py") else item
+            for item in config["import_modules"]
+        ]
+    for name, option in training_options.OPTIONS[operation].items():
+        if option.path and config.get(name) is not None:
             config[name] = resolve(config[name])
     python = Path(runtime.python).expanduser()
     return RunSpec(
@@ -260,131 +238,6 @@ def _bounded(value: object, depth: int = 0) -> None:
                 _bounded(child, depth + 1)
     elif type(value) in {int, float} and abs(value) > 10**12:
         raise ValueError("Number exceeds bound")
-
-
-def _training_config(config: dict) -> dict:
-    parser = build_training_parser()
-    actions = {
-        action.dest: action
-        for action in parser._actions
-        if action.dest
-        not in {
-            "help",
-            "list_models",
-            "config",
-            "output_dir",
-            "allow_pickle",
-            "selection_metric",
-        }
-    }
-    if set(config) - set(actions):
-        raise ValueError("Unknown or daemon-owned config option")
-    result = training_defaults()
-    # Pickle loading executes dataset code; selection_metric is HPO-only.
-    for name in (
-        "list_models",
-        "config",
-        "output_dir",
-        "allow_pickle",
-        "selection_metric",
-    ):
-        result.pop(name, None)
-    for name, value in config.items():
-        action = actions[name]
-        if isinstance(action, argparse._StoreTrueAction):
-            if type(value) is not bool:
-                raise ValueError("Flag must be boolean")
-            result[name] = value
-            continue
-        if value is None:
-            if action.default is not None:
-                raise ValueError("Option cannot be null")
-            result[name] = None
-            continue
-        multiple = action.nargs == "+"
-        if multiple:
-            if type(value) is not list or not value:
-                # Empty constraints/imports mean no flags, as in CLI defaults.
-                if value == [] and name in {"constraint", "import_modules"}:
-                    result[name] = []
-                    continue
-                raise ValueError("Option requires a nonempty list")
-            values = value
-        else:
-            values = [value]
-        normalized = []
-        for item in values:
-            if action.type is int and type(item) is not int:
-                raise ValueError("Option requires an integer")
-            if action.type is float and type(item) not in {int, float}:
-                raise ValueError("Option requires a number")
-            if action.type is str and type(item) is not str:
-                raise ValueError("Option requires a string")
-            item = action.type(item) if action.type else item
-            if action.choices is not None and item not in action.choices:
-                raise ValueError("Invalid option choice")
-            normalized.append(item)
-        result[name] = normalized if multiple else normalized[0]
-    positive = {"batch_size", "epochs", "grad_accum_steps", "cv_bins", "step_size"}
-    nonnegative = {
-        "patience",
-        "save_every",
-        "cv",
-        "warmup_epochs",
-        "scheduler_patience",
-    }
-    if any(result[name] < 1 for name in positive) or any(
-        result[name] < 0 for name in nonnegative
-    ):
-        raise ValueError("Invalid config range")
-    if result["workers"] < -1 or result["lr"] <= 0 or result["weight_decay"] < 0:
-        raise ValueError("Invalid config range")
-    validate_cv_options(result)
-    return result
-
-
-def _test_config(config: dict) -> dict:
-    if set(config) - (_TEST_VALUES | _TEST_FLAGS) or {
-        "export_path",
-        "device",
-        "operation",
-    } & set(config):
-        raise ValueError("Unknown or caller-owned output option")
-    integers = {"input_channels", "batch_size", "workers", "export_opset", "out_size"}
-    lists = {"param_names", "plot_format"}
-    choices = {"format": {"auto", "npz", "mat", "hdf5"}, "export": {"onnx"}}
-    for name, value in config.items():
-        if name == "import_modules":
-            validate_import_modules(value)
-        elif name in _TEST_FLAGS:
-            if type(value) is not bool:
-                raise ValueError("Flag must be boolean")
-        elif value is None and name not in {"checkpoint", "data_path"}:
-            continue
-        elif name in integers:
-            if type(value) is not int or value < (0 if name == "workers" else 1):
-                raise ValueError("Invalid integer option")
-        elif name in lists:
-            if (
-                type(value) is not list
-                or not value
-                or any(type(item) is not str for item in value)
-            ):
-                raise ValueError("Invalid list option")
-        elif type(value) is not str or not value:
-            raise ValueError("Invalid string option")
-        if name in choices and value is not None and value not in choices[name]:
-            raise ValueError("Invalid option choice")
-    result = inference_defaults()
-    # Pickle loading executes code from the dataset; only direct CLI use may opt in.
-    for name in ("operation", "device", "output_dir", "export_path", "allow_pickle"):
-        result.pop(name, None)
-    result.update(config)
-    if not result["checkpoint"] or not result["data_path"]:
-        raise ValueError("Checkpoint and dataset are required")
-    if set(result["plot_format"]) - {"png", "pdf", "svg", "eps", "tiff"}:
-        raise ValueError("Unsupported plot format")
-    return result
 
 
 class RunService:
@@ -475,11 +328,7 @@ class RunService:
                 raise ValueError("Only a test or plot names a checkpoint source")
             source = self._checkpoint_source(body["checkpoint_source"])
             config = config | {"checkpoint": source.path}
-        config = (
-            _training_config(config)
-            if operation is Operation.TRAIN
-            else _test_config(config)
-        )
+        config = training_options.resolve(operation, config)
         if operation is Operation.PLOT:
             config["plot"] = True
         cwd = body.get("submission_cwd", str(self.settings.run_root))

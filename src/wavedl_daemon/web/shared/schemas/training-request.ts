@@ -84,7 +84,7 @@ export const trainingConfigBaseSchema = z.strictObject({
 const configDefaults = trainingConfigBaseSchema.parse(
   Object.fromEntries(options.map((option) => [option.name, option.default])),
 );
-// Keep this list aligned with wavedl.core.training_cli.CV_UNSUPPORTED_OPTIONS.
+// Keep this list aligned with wavedl_daemon.runs.training_options.CV_UNSUPPORTED.
 const cvUnsupportedOptions: (keyof z.infer<typeof trainingConfigBaseSchema>)[] = [
   'resume',
   'save_every',

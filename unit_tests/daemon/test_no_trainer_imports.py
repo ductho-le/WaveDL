@@ -12,10 +12,6 @@ from pathlib import Path
 DAEMON = Path(__file__).resolve().parents[2] / "src" / "wavedl_daemon"
 
 ALLOWED: dict[str, set[str]] = {
-    "backends/local.py": {
-        "wavedl.core.inference_cli",
-        "wavedl.core.training_cli",
-    },
     "cli.py": {
         "wavedl",
         "wavedl.core.protocol",
@@ -35,10 +31,6 @@ ALLOWED: dict[str, set[str]] = {
     },
     "runs/preview_authority.py": {"wavedl.core.safe_files"},
     "runs/runtime_service.py": {"wavedl.core.safe_files"},
-    "runs/service.py": {
-        "wavedl.core.inference_cli",
-        "wavedl.core.training_cli",
-    },
     "serve_state.py": {
         "wavedl.core.protocol",
         "wavedl.core.safe_files",
