@@ -1,2 +1,2 @@
 # Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""The WaveDL daemon. Imports wavedl.core; never imported by it."""
+"""The WaveDL daemon. It launches the trainer package ``wavedl``, never imports it."""

@@ -51,7 +51,7 @@ export function parseDatasetInspection(
       return fail();
   }
 
-  // Priority is shared with wavedl.core.data_keys and the Qt metadata consumer.
+  // Priority is shared with wavedl_daemon.runs.dataset_preview and the Qt metadata consumer.
   const inputs = ['input_train', 'input_test', 'X', 'data', 'inputs', 'features', 'x']
     .map((key) => variables.get(key))
     .find(Boolean);

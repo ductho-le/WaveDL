@@ -30,14 +30,13 @@ from wavedl_daemon.storage.settings import Settings
 def test_resolve_selected_member_returns_path_without_reading_payload(
     tmp_path, monkeypatch
 ):
-    from wavedl.core.safe_files import SafeFile
-
     folder = tmp_path / "folder"
     folder.mkdir()
     target = folder / "large-data.npz"
     target.write_bytes(b"never load this payload")
     monkeypatch.setattr(
-        SafeFile, "read", lambda *args: pytest.fail("Resolve must not load payload")
+        "wavedl_daemon.paths.open_regular",
+        lambda *args: pytest.fail("Resolve must not open the payload"),
     )
     catalog = CatalogService({"data": tmp_path})
     assert catalog.resolve("data", "folder/large-data.npz") == {
@@ -68,81 +67,36 @@ def test_resolve_refuses_nonordinary_relative_paths(tmp_path, path):
         CatalogService({"data": tmp_path}).resolve("data", path)
 
 
-def test_resolve_missing_symlink_special_and_unreadable_are_visible(
-    tmp_path, monkeypatch
-):
-    from wavedl.core.safe_files import SafeDirectory
-
-    catalog = CatalogService({"data": tmp_path})
+def test_resolve_missing_escaping_link_and_special_files_are_refused(tmp_path):
+    root = tmp_path / "root"
+    (root / "inner").mkdir(parents=True)
+    catalog = CatalogService({"data": root})
     with pytest.raises(BrowseMissing):
         catalog.resolve("data", "missing")
-    (tmp_path / "link").symlink_to(tmp_path)
+    (root / "outside").symlink_to(tmp_path)
     with pytest.raises(BrowseForbidden):
-        catalog.resolve("data", "link")
+        catalog.resolve("data", "outside")
+    (root / "inner-link").symlink_to(root / "inner")
+    assert catalog.resolve("data", "inner-link")["kind"] == "directory"
     if hasattr(os, "mkfifo"):
-        os.mkfifo(tmp_path / "pipe")
+        os.mkfifo(root / "pipe")
         with pytest.raises(BrowseForbidden):
             catalog.resolve("data", "pipe")
-    (tmp_path / "private").write_bytes(b"private")
-    monkeypatch.setattr(
-        SafeDirectory,
-        "open_file",
-        lambda *args: (_ for _ in ()).throw(PermissionError("hidden-path")),
-    )
-    with pytest.raises(BrowseForbidden, match="unreadable"):
-        catalog.resolve("data", "private")
 
 
-def test_resolve_ancestry_swap_never_returns_replacement_path(tmp_path, monkeypatch):
-    from wavedl.core.safe_files import SafeDirectory
-
-    folder = tmp_path / "folder"
-    folder.mkdir()
-    (folder / "data").write_bytes(b"data")
-    original = SafeDirectory.open_file
-    opened, closed, blocked = [], [], []
-
-    def open_and_swap(directory, name, **kwargs):
-        file = original(directory, name, **kwargs)
-        opened.append(file)
-        close = file.close
-
-        def tracked_close():
-            close()
-            closed.append(file)
-
-        file.close = tracked_close
-        try:
-            if os.name == "nt":
-                with pytest.raises(PermissionError) as denied:
-                    folder.rename(tmp_path / "moved")
-                assert denied.value.winerror == 32
-                blocked.append(True)
-                assert not (tmp_path / "moved").exists()
-                assert (folder / "data").read_bytes() == b"data"
-                raise denied.value
-            folder.rename(tmp_path / "moved")
-            folder.mkdir()
-            return file
-        except BaseException:
-            # Until this hook returns, ExitStack has not received the resource.
-            file.close()
-            raise
-
-    monkeypatch.setattr(SafeDirectory, "open_file", open_and_swap)
-    with pytest.raises(BrowseForbidden):
-        CatalogService({"data": tmp_path}).resolve("data", "folder/data")
-    assert len(opened) == 1
-    assert closed == opened
-    assert all(file.handle is None for file in opened)
-    if os.name == "nt":
-        assert blocked == [True]
-        assert (folder / "data").read_bytes() == b"data"
-        (folder / "data").unlink()  # No pinned handle survives resolver refusal.
-        assert not (folder / "data").exists()
-    else:
-        assert (tmp_path / "moved" / "data").read_bytes() == b"data"
-        assert not list(folder.iterdir())
+@pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() == 0, reason="Requires POSIX non-root permissions"
+)
+def test_resolve_inside_an_unreadable_directory_is_forbidden(tmp_path):
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "private").write_bytes(b"private")
+    locked.chmod(0)
+    try:
+        with pytest.raises(BrowseForbidden, match="unreadable"):
+            CatalogService({"data": tmp_path}).resolve("data", "locked/private")
+    finally:
+        locked.chmod(0o700)
 
 
 def test_resolve_route_is_authenticated_strict_bounded_and_redacted(tmp_path):
@@ -305,10 +259,12 @@ def test_browse_refuses_lexical_escape(tmp_path, path):
         CatalogService({"data": tmp_path}).browse("data", path)
 
 
-def test_browse_refuses_symlink_directory(tmp_path):
-    (tmp_path / "linked").symlink_to(tmp_path, target_is_directory=True)
+def test_browse_refuses_a_symlink_out_of_its_root(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "linked").symlink_to(tmp_path, target_is_directory=True)
     with pytest.raises(BrowseForbidden):
-        CatalogService({"data": tmp_path}).browse("data", "linked")
+        CatalogService({"data": root}).browse("data", "linked")
 
 
 def test_large_directory_is_not_silently_truncated(tmp_path):
@@ -316,39 +272,6 @@ def test_large_directory_is_not_silently_truncated(tmp_path):
         (tmp_path / name).touch()
     with pytest.raises(BudgetExhausted):
         CatalogService({"data": tmp_path}, max_entries=2).browse("data", limit=1)
-
-
-def test_replaced_nested_directory_is_rejected_before_return(tmp_path, monkeypatch):
-    from wavedl.core.safe_files import SafeDirectory
-
-    folder = tmp_path / "folder"
-    folder.mkdir()
-    (folder / "secret.txt").touch()
-    original = SafeDirectory.entries
-    attempted = []
-
-    def entries(anchor):
-        yield from original(anchor)
-        if anchor.path.samefile(folder):
-            attempted.append(True)
-            if os.name == "nt":
-                with pytest.raises(PermissionError) as denied:
-                    folder.rename(tmp_path / "moved")
-                assert denied.value.winerror == 32
-                assert not (tmp_path / "moved").exists()
-                assert (folder / "secret.txt").read_bytes() == b""
-                return
-            folder.rename(tmp_path / "moved")
-            folder.mkdir()
-
-    monkeypatch.setattr(SafeDirectory, "entries", entries)
-    if os.name == "nt":
-        result = CatalogService({"data": tmp_path}).browse("data", "folder")
-        assert [entry["name"] for entry in result["entries"]] == ["secret.txt"]
-    else:
-        with pytest.raises(BrowseForbidden, match="ancestry changed"):
-            CatalogService({"data": tmp_path}).browse("data", "folder")
-    assert attempted == [True]
 
 
 def test_http_auth_query_bounds_unreadable_and_redacted_errors(tmp_path, monkeypatch):

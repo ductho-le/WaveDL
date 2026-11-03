@@ -592,8 +592,8 @@ def test_installed_entrypoints_and_lightweight_modules(installed):
             "-S",
             "-c",
             "import sys; sys.path.insert(0, sys.argv[1]); "
-            "import wavedl_daemon.client,wavedl.operations,wavedl.distributed_launch,wavedl_daemon.cli,wavedl.core.scheduler_attempt; "
-            "assert not any(n in sys.modules for n in ('torch','numpy','PySide6','qfluentwidgets','starlette','uvicorn'))",
+            "import wavedl_daemon.client,wavedl_daemon.cli; "
+            "assert not any(n in sys.modules for n in ('wavedl','torch','numpy','PySide6','qfluentwidgets','starlette','uvicorn'))",
             site,
         ],
         cwd=outside,

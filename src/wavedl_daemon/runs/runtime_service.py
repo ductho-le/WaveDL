@@ -13,7 +13,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from wavedl.core.safe_files import open_directory
+from wavedl_daemon import paths
 from wavedl_daemon.backends.local import LocalBackend
 from wavedl_daemon.events.broker import EventBroker
 from wavedl_daemon.execution.budget import BudgetExhausted, WorkBudget
@@ -70,9 +70,9 @@ class ServiceSession:
 
     def __enter__(self):
         self.settings.validate()
-        with open_directory(self.settings.state_root) as state:
-            state.verify_private_owner(confidential=True)
-            state.guard()
+        # Another user who can write the registry could plan commands as us.
+        if not paths.is_private(self.settings.state_root.stat()):
+            raise PermissionError("State root is accessible to other users")
         stack = ExitStack()
         self._stack = stack
         try:

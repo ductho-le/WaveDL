@@ -7,7 +7,6 @@ import base64
 import hashlib
 import mimetypes
 import re
-from contextlib import ExitStack
 from pathlib import Path
 
 import anyio
@@ -15,7 +14,7 @@ from starlette.exceptions import HTTPException
 from starlette.responses import Response
 from starlette.routing import Match, Route
 
-from wavedl.core.safe_files import open_directory
+from wavedl_daemon import paths
 
 
 MAX_ASSET_BYTES = 32 * 1024 * 1024
@@ -70,20 +69,14 @@ class _ClientRoute(Route):
 
 
 class StaticClient:
-    """Read an optional packaged build through retained no-follow ancestry."""
+    """Read an optional packaged build, never a file outside it."""
 
     def __init__(self, root: Path):
         self.root = Path(root)
         self.limiter = anyio.CapacityLimiter(4)
 
-    def _read(self, parts: tuple[str, ...], *, limit: int | None = None) -> bytes:
-        with ExitStack() as stack:
-            directory = stack.enter_context(open_directory(self.root))
-            for part in parts[:-1]:
-                directory = stack.enter_context(directory.open_directory(part))
-            return directory.read_file(
-                parts[-1], limit=MAX_ASSET_BYTES if limit is None else limit
-            )
+    def _read(self, parts: tuple[str, ...]) -> bytes:
+        return paths.read_regular(paths.inside(self.root, parts), MAX_ASSET_BYTES)
 
     def _load(self, parts: tuple[str, ...], navigation: bool):
         try:
@@ -119,13 +112,7 @@ class StaticClient:
         if path.endswith("/"):
             path = path[:-1]
         parts = tuple(path.split("/")) if path else ("index.html",)
-        if any(
-            not part
-            or part in (".", "..")
-            or any(char in part for char in "\\:\0")
-            or any(ord(char) < 32 or ord(char) == 127 for char in part)
-            for part in parts
-        ):
+        if not all(map(paths.is_segment, parts)):
             raise HTTPException(404, "Not found")
         if parts == ("sw.js",):
             response = Response(

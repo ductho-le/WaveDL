@@ -2,21 +2,20 @@
 """Dependency-light bundled model descriptions and explicitly scoped browsing.
 
 Bundled descriptions are not runtime capability evidence. Browsing never reads
-file payloads, follows child symlinks, or expands an unbounded directory into memory.
+file payloads, leaves its root, or expands an unbounded directory into memory.
 """
 
 from __future__ import annotations
 
 import asyncio
-import errno
-import io
 import json
+import os
 import re
-from contextlib import ExitStack
+import stat
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from wavedl.core.safe_files import open_directory, read_regular_file
+from wavedl_daemon import paths
 from wavedl_daemon.execution.budget import BudgetExhausted
 
 
@@ -69,8 +68,7 @@ class CatalogService:
     def models(self) -> dict:
         """Load static JSON metadata without importing GUI or the ML stack."""
         if self._models_json is None:
-            raw = read_regular_file(self._metadata_path, limit=256 * 1024)
-            metadata = json.load(io.BytesIO(raw))
+            metadata = json.loads(paths.read_regular(self._metadata_path, 256 * 1024))
             categories = metadata.get("categories") if type(metadata) is dict else None
             models = metadata.get("models") if type(metadata) is dict else None
             if (
@@ -122,37 +120,24 @@ class CatalogService:
             return {"roots": [{"id": name} for name in sorted(self.roots)]}
         if type(root) is not str or root not in self.roots:
             raise BrowseForbidden("Unknown browse root")
-        parts = path.split("/") if path else []
-        if any(
-            not part or part in {".", ".."} or any(char in part for char in "\\:")
-            for part in parts
-        ):
-            raise BrowseForbidden("Browse path must remain within its configured root")
-        with ExitStack() as stack:
-            anchor = stack.enter_context(open_directory(self.roots[root]))
-            self._guard(anchor)
-            current = anchor
-            for part in parts:
-                try:
-                    current = stack.enter_context(current.open_directory(part))
-                except ValueError:
-                    raise BrowseForbidden(
-                        "Browse directory is not an ordinary contained directory"
-                    ) from None
-            self._guard(current)
-            entries = []
-            for index, entry in enumerate(current.entries()):
-                if index >= self.max_entries:
-                    raise BudgetExhausted("Directory enumeration capacity exhausted")
-                if entry.is_directory or entry.is_regular:
-                    entries.append(
-                        {
-                            "name": entry.name,
-                            "kind": "directory" if entry.is_directory else "file",
-                        }
-                    )
-            self._guard(anchor)
-            self._guard(current)
+        try:
+            directory = paths.inside(self.roots[root], path.split("/") if path else ())
+        except paths.UnsafePath:
+            raise BrowseForbidden(
+                "Browse path must remain within its configured root"
+            ) from None
+        entries = []
+        try:
+            with os.scandir(directory) as listing:
+                for index, entry in enumerate(listing):
+                    if index >= self.max_entries:
+                        raise BudgetExhausted("Directory listing capacity exhausted")
+                    if entry.is_dir(follow_symlinks=False):
+                        entries.append({"name": entry.name, "kind": "directory"})
+                    elif entry.is_file(follow_symlinks=False):
+                        entries.append({"name": entry.name, "kind": "file"})
+        except NotADirectoryError:
+            raise BrowseForbidden("Browse location is not a directory") from None
         entries.sort(key=lambda item: (item["kind"] != "directory", item["name"]))
         return {
             "root": root,
@@ -163,72 +148,37 @@ class CatalogService:
             "offset": offset,
         }
 
-    @staticmethod
-    def _guard(anchor):
-        try:
-            anchor.guard()
-        except ValueError:
-            raise BrowseForbidden("Browse directory ancestry changed") from None
-
     def resolve(self, root: str, path: str = "") -> dict:
-        """Return an explicit selected host path only after no-follow metadata proof."""
+        """The selected host path, a file or directory inside its root."""
         if type(root) is not str or root not in self.roots:
             raise BrowseForbidden("Unknown browse root")
         if type(path) is not str or len(path.encode("utf-8")) > 4096 or "\0" in path:
             raise ValueError("Invalid selected browse path")
         parts = path.split("/") if path else []
-        if len(parts) > 128 or any(
-            not part or part in {".", ".."} or any(char in part for char in "\\:")
-            for part in parts
-        ):
+        if len(parts) > 128:
+            raise BrowseForbidden("Selected path is too deep")
+        try:
+            info = paths.inside(self.roots[root], parts).stat()
+        except paths.UnsafePath:
             raise BrowseForbidden(
                 "Selected path must remain within its configured root"
-            )
-        try:
-            with ExitStack() as stack:
-                anchor = stack.enter_context(open_directory(self.roots[root]))
-                retained = [anchor]
-                self._guard(anchor)
-                current = anchor
-                for part in parts[:-1]:
-                    current = stack.enter_context(current.open_directory(part))
-                    retained.append(current)
-                    self._guard(current)
-                selected, kind = current, "directory"
-                if parts:
-                    try:
-                        selected = stack.enter_context(
-                            current.open_directory(parts[-1])
-                        )
-                        retained.append(selected)
-                    except ValueError:
-                        selected = stack.enter_context(current.open_file(parts[-1]))
-                        kind = "file"
-                    self._guard(selected)
-                for directory in retained:
-                    self._guard(directory)
-                self._guard(selected)
-                resolved = self.roots[root].joinpath(*parts)
-                return {
-                    "path": str(resolved),
-                    "kind": kind,
-                    "root": root,
-                    "relative_path": path,
-                }
+            ) from None
         except PermissionError:
             raise BrowseForbidden("Selected browse location is unreadable") from None
         except FileNotFoundError:
             raise BrowseMissing("Selected browse location does not exist") from None
-        except ValueError:
-            raise BrowseForbidden(
-                "Selected location is not an ordinary contained member"
-            ) from None
-        except OSError as error:
-            if error.errno in {errno.ENXIO, errno.ENODEV}:
-                raise BrowseForbidden(
-                    "Selected location is not an ordinary contained member"
-                ) from None
-            raise
+        if stat.S_ISDIR(info.st_mode):
+            kind = "directory"
+        elif stat.S_ISREG(info.st_mode):
+            kind = "file"
+        else:
+            raise BrowseForbidden("Selected location is not a file or directory")
+        return {
+            "path": str(self.roots[root].joinpath(*parts)),
+            "kind": kind,
+            "root": root,
+            "relative_path": path,
+        }
 
 
 class AsyncCatalogService:
@@ -260,7 +210,7 @@ class AsyncCatalogService:
             try:
                 return await handle.wait()
             except asyncio.CancelledError:
-                # Admission/ancestry handles stay owned until the real worker
+                # The admission slot stays owned until the real worker
                 # finishes, including a blocked filesystem that ignores expiry.
                 handle.cancel()
                 try:

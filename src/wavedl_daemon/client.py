@@ -13,8 +13,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from wavedl.core.protocol import strict_loads
-from wavedl.core.safe_files import read_regular_file
+from wavedl_daemon import paths
 from wavedl_daemon.credentials import credential_bytes, read_credential
 
 
@@ -141,10 +140,7 @@ class DaemonClient:
             raw = await asyncio.wait_for(
                 self._exchange(method, path, data, headers), self._timeout
             )
-            result = strict_loads(raw)
-            # Check duplicate identity keys without relaxing the finite-number
-            # validation already performed by the shared protocol decoder.
-            json.loads(raw, object_pairs_hook=_unique_pairs)
+            result = json.loads(raw, object_pairs_hook=_unique_pairs)
             if not isinstance(result, dict):
                 raise ClientError("Invalid daemon response")
             return result
@@ -259,10 +255,11 @@ def main(argv=None):
             else os.environ.get("WAVEDL_DAEMON_TOKEN")
         )
         credential_bytes(token)
-        raw = read_regular_file(options.request, limit=65536)
-        payload = strict_loads(raw)
         # Refuse duplicate request keys before re-encoding changes their meaning.
-        json.loads(raw, object_pairs_hook=_unique_pairs)
+        payload = json.loads(
+            paths.read_regular(options.request, 65536),
+            object_pairs_hook=_unique_pairs,
+        )
         if not isinstance(payload, dict):
             raise ClientError("Request must be a JSON object")
         result = DaemonClient(options.daemon, token, timeout=options.timeout).run(

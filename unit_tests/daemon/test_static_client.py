@@ -163,17 +163,6 @@ def test_symlink_leaf_and_parent_fail_closed(tmp_path, assets):
         assert request(app, path, headers={"Accept": "text/html"}).status_code == 404
 
 
-def test_root_swap_to_symlink_fails_closed(tmp_path, assets):
-    app = make_app(tmp_path, assets)
-    moved = tmp_path / "moved"
-    assets.rename(moved)
-    try:
-        assets.symlink_to(moved, target_is_directory=True)
-    except OSError:
-        pytest.skip("Symlinks unavailable")
-    assert request(app).status_code == 404
-
-
 def test_fallback_never_follows_replaced_index(tmp_path, assets):
     outside = tmp_path / "outside.html"
     outside.write_text("not the build")

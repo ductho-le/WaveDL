@@ -20,6 +20,8 @@ import zlib
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from wavedl_daemon import paths
+
 
 class InspectionRefused(ValueError):
     """The dataset cannot safely be inspected under the metadata policy."""
@@ -514,33 +516,6 @@ def _mat4_metadata_snapshot(stream, end, limits):
     ), complex_flags
 
 
-def _held_identity(stream, metadata):
-    """Match authority fingerprints using this already-open file, not its path.
-
-    Python 3.12+ Windows fstat may expose FileIdInfo's wider volume/file IDs.
-    Dataset authority uses BY_HANDLE_FILE_INFORMATION, so compare that same
-    representation without truncating IDs or weakening the identity fence.
-    """
-    if os.name == "nt":
-        import msvcrt
-
-        from wavedl.core.safe_files import _windows_api
-
-        # Borrow the CRT-owned HANDLE; stream remains its sole close owner.
-        native = _windows_api().info(msvcrt.get_osfhandle(stream.fileno()))
-        ticks = native.write.dwHighDateTime << 32 | native.write.dwLowDateTime
-        return {
-            "st_dev": int(native.volume),
-            "st_ino": int(native.index_high << 32 | native.index_low),
-            "st_size": int(native.size_high << 32 | native.size_low),
-            "st_mtime_ns": (ticks - 116444736000000000) * 100,
-        }
-    return {
-        name: int(getattr(metadata, name))
-        for name in ("st_dev", "st_ino", "st_size", "st_mtime_ns")
-    }
-
-
 def _open_dataset(path, limits, expected_identity=None):
     path = Path(path)
     if not path.is_absolute():
@@ -548,19 +523,10 @@ def _open_dataset(path, limits, expected_identity=None):
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
     stream = os.fdopen(descriptor, "rb")
     metadata = os.fstat(stream.fileno())
-    if expected_identity is not None:
-        try:
-            actual_identity = _held_identity(stream, metadata)
-        except BaseException:
-            stream.close()
-            raise
-        if (
-            type(expected_identity) is not dict
-            or set(expected_identity) != set(actual_identity)
-            or expected_identity != actual_identity
-        ):
-            stream.close()
-            raise InspectionRefused("Dataset identity changed")
+    identity = paths.file_identity(metadata)
+    if expected_identity is not None and expected_identity != identity:
+        stream.close()
+        raise InspectionRefused("Dataset identity changed")
     if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > limits.max_file_bytes:
         stream.close()
         raise InspectionRefused("Dataset must be a bounded regular file")

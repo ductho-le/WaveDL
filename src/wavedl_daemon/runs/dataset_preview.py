@@ -1,13 +1,12 @@
 """Bounded numeric dataset summaries for isolated daemon preview workers.
 
 This module never imports the training loader or GUI. All decoding is performed
-under explicit byte/element limits against one pinned ordinary file.
+under explicit byte/element limits against one open, fingerprinted regular file.
 """
 
 from __future__ import annotations
 
 import argparse
-import io
 import json
 import math
 import os
@@ -15,13 +14,16 @@ import struct
 import sys
 import zipfile
 import zlib
-from contextlib import ExitStack
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from wavedl.core.data_keys import INPUT_KEYS, OUTPUT_KEYS
-from wavedl.core.safe_files import open_directory
+from wavedl_daemon import paths
 from wavedl_daemon.runs import dataset_headers as headers
+
+
+# The key priority of upstream's loader, ``wavedl/utils/data.py``.
+INPUT_KEYS = ["input_train", "input_test", "X", "data", "inputs", "features", "x"]
+OUTPUT_KEYS = ["output_train", "output_test", "Y", "labels", "outputs", "targets", "y"]
 
 
 class PreviewRefused(ValueError):
@@ -54,23 +56,6 @@ def _inspection_limits(limits):
         max_variables=limits.max_variables,
         max_declared_bytes=limits.max_decompressed_bytes,
     )
-
-
-def _identity(stream, held=None):
-    if held is not None and held.api:
-        metadata = held.api.info(held.handle)
-        ticks = metadata.write.dwHighDateTime << 32 | metadata.write.dwLowDateTime
-        return {
-            "st_dev": metadata.volume,
-            "st_ino": metadata.index_high << 32 | metadata.index_low,
-            "st_size": metadata.size_high << 32 | metadata.size_low,
-            "st_mtime_ns": (ticks - 116444736000000000) * 100,
-        }
-    metadata = os.fstat(stream.fileno())
-    return {
-        name: getattr(metadata, name)
-        for name in ("st_dev", "st_ino", "st_size", "st_mtime_ns")
-    }
 
 
 def _validate_metadata(variables, limits):
@@ -365,7 +350,6 @@ def preview_dataset(path, *, expected_identity, limits=PreviewLimits()):
             "root_id",
             "relative_path",
             "root_path",
-            "root_identity",
             "ancestry",
         }:
             raise PreviewRefused("Unsupported dataset selection fields")
@@ -383,81 +367,51 @@ def preview_dataset(path, *, expected_identity, limits=PreviewLimits()):
     ):
         raise PreviewRefused("Expected dataset identity is required")
     expected = expected_identity
-    with ExitStack() as stack:
-        ancestry = []
-        for entry in envelope.get("ancestry", ()):
-            anchor = stack.enter_context(open_directory(Path(entry["path"])))
-            if anchor.api:
-                native = anchor.api.info(anchor.handle)
-                actual = (native.volume, native.index_high << 32 | native.index_low)
+    for entry in envelope.get("ancestry", ()):
+        info = os.stat(entry["path"])
+        if (info.st_dev, info.st_ino) != (entry["st_dev"], entry["st_ino"]):
+            raise PreviewRefused("Dataset ancestry changed")
+    with paths.open_regular(path) as stream:
+        before = paths.file_identity(os.fstat(stream.fileno()))
+        if before != expected:
+            raise PreviewRefused("Dataset identity changed")
+        if before["st_size"] > limits.max_file_bytes:
+            raise PreviewRefused("Dataset file exceeds limit")
+        suffix = path.suffix.lower()
+        sampled = False
+        if suffix == ".npz":
+            variables, keys, arrays = _npz(stream, limits)
+        elif suffix in {".h5", ".hdf5", ".mat"}:
+            hdf = suffix != ".mat" or headers._is_hdf(stream)
+            stream.seek(0)
+            if hdf:
+                variables, keys, arrays, indices = _hdf(
+                    stream, limits, matlab=suffix == ".mat"
+                )
+                sampled = True
             else:
-                native = os.fstat(anchor.handle)
-                actual = (native.st_dev, native.st_ino)
-            if actual != (entry["st_dev"], entry["st_ino"]):
-                raise PreviewRefused("Dataset ancestry changed")
-            ancestry.append(anchor)
-        directory = stack.enter_context(open_directory(path.parent))
-        held = stack.enter_context(directory.open_file(path.name))
-        if held.api:
-            metadata = _identity(None, held)
-            if metadata != expected or metadata["st_size"] > limits.max_file_bytes:
-                raise PreviewRefused("Dataset identity changed or file exceeds limit")
-            # Windows keeps immutable no-write/no-delete-sharing native handles.
-            # A bounded snapshot supplies a portable seekable file object without
-            # reopening a pathname or transferring ownership of the native handle.
-            raw = bytearray()
-            while chunk := held.read(min(65536, limits.max_file_bytes + 1 - len(raw))):
-                raw.extend(chunk)
-                if len(raw) > limits.max_file_bytes:
-                    raise PreviewRefused("Dataset file exceeds limit")
-            stream_context = io.BytesIO(raw)
+                variables, keys, arrays = _mat(stream, limits)
         else:
-            stream_context = os.fdopen(os.dup(held.handle), "rb")
-        with stream_context as stream:
-            before = _identity(stream, held)
-            if before != expected:
-                raise PreviewRefused("Dataset identity changed")
-            if before["st_size"] > limits.max_file_bytes:
-                raise PreviewRefused("Dataset file exceeds limit")
-            held.guard()
-            suffix = path.suffix.lower()
-            sampled = False
-            if suffix == ".npz":
-                variables, keys, arrays = _npz(stream, limits)
-            elif suffix in {".h5", ".hdf5", ".mat"}:
-                hdf = suffix != ".mat" or headers._is_hdf(stream)
-                stream.seek(0)
-                if hdf:
-                    variables, keys, arrays, indices = _hdf(
-                        stream, limits, matlab=suffix == ".mat"
-                    )
-                    sampled = True
-                else:
-                    variables, keys, arrays = _mat(stream, limits)
-            else:
-                raise PreviewRefused("Unsupported dataset format")
-            shapes = [
-                next(v["shape"] for v in variables if v["name"] == key) for key in keys
-            ]
-            if not sampled:
-                indices = _indices(shapes, limits)
-                arrays = [array[indices] for array in arrays]
-            result = {
-                "schema_version": 1,
-                "identity": before,
-                "format": suffix[1:],
-                "input_key": keys[0],
-                "output_key": keys[1],
-                "input_shape": shapes[0],
-                "output_shape": shapes[1],
-                **_summaries(*arrays, indices, shapes, limits),
-                "limits": asdict(limits),
-            }
-            held.guard()
-            for anchor in ancestry:
-                anchor.guard()
-            if _identity(stream, held) != before:
-                raise PreviewRefused("Dataset changed during preview")
+            raise PreviewRefused("Unsupported dataset format")
+        shapes = [
+            next(v["shape"] for v in variables if v["name"] == key) for key in keys
+        ]
+        if not sampled:
+            indices = _indices(shapes, limits)
+            arrays = [array[indices] for array in arrays]
+        result = {
+            "schema_version": 1,
+            "identity": before,
+            "format": suffix[1:],
+            "input_key": keys[0],
+            "output_key": keys[1],
+            "input_shape": shapes[0],
+            "output_shape": shapes[1],
+            **_summaries(*arrays, indices, shapes, limits),
+            "limits": asdict(limits),
+        }
+        if paths.file_identity(os.fstat(stream.fileno())) != before:
+            raise PreviewRefused("Dataset changed during preview")
     if (
         len(json.dumps(result, allow_nan=False, separators=(",", ":")).encode())
         > limits.max_output_bytes

@@ -1,22 +1,21 @@
 # Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """Safe, capability-scoped dataset preview selection.
 
-Only administrator-configured roots may be selected.  Paths are lexical slash
-relative names and are opened through :mod:`wavedl.core.safe_files`, retaining
-all anchors until the caller's context exits.
+Only administrator-configured roots may be selected. Paths are slash-separated
+names that must stay inside their root. The selected file stays open until the
+caller's context exits, and its fingerprint and ancestry are checked again then.
 """
 
 from __future__ import annotations
 
 import os
 import re
-import stat
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from wavedl.core.safe_files import SafeDirectory, SafeFile, open_directory
+from wavedl_daemon import paths
 
 
 if TYPE_CHECKING:
@@ -32,19 +31,10 @@ class PreviewMissing(ValueError):
 
 
 class PreviewChanged(ValueError):
-    """A pinned root, ancestry, or file fingerprint changed."""
+    """The root, an ancestor directory, or the file fingerprint changed."""
 
 
 _EXTENSIONS = {".npz", ".mat", ".h5", ".hdf5"}
-
-
-def _identity_from_stat(info: os.stat_result) -> dict[str, int]:
-    return {
-        "st_dev": int(info.st_dev),
-        "st_ino": int(info.st_ino),
-        "st_size": int(info.st_size),
-        "st_mtime_ns": int(info.st_mtime_ns),
-    }
 
 
 def _validate_relative(path: str, extensions: frozenset[str]) -> list[str]:
@@ -75,8 +65,7 @@ class PreviewSelection:
     root_id: str
     relative_path: str
     root_path: Path
-    root_identity: dict[str, int]
-    ancestry: tuple[dict[str, int], ...]
+    ancestry: tuple[dict[str, object], ...]  # path, st_dev, st_ino of each directory
 
     @property
     def expected(self) -> dict:
@@ -86,46 +75,23 @@ class PreviewSelection:
             "root_id": self.root_id,
             "relative_path": self.relative_path,
             "root_path": str(self.root_path),
-            "root_identity": dict(self.root_identity),
             "ancestry": tuple(dict(item) for item in self.ancestry),
         }
 
 
-def _stat_file(handle: SafeFile) -> dict[str, int]:
-    info = os.fstat(handle.handle) if handle.api is None else None
-    if info is None:
-        native = handle.api.info(handle.handle)
-        return {
-            "st_dev": int(native.volume),
-            "st_ino": int(native.index_high << 32 | native.index_low),
-            "st_size": int(native.size_high << 32 | native.size_low),
-            "st_mtime_ns": (
-                (int(native.write.dwHighDateTime) << 32)
-                | int(native.write.dwLowDateTime)
-            )
-            * 100
-            - 11644473600000000000,
-        }
-    if not stat.S_ISREG(info.st_mode):
-        raise PreviewForbidden("Selected dataset is not a regular file")
-    return _identity_from_stat(info)
-
-
-def _stat_directory(directory: SafeDirectory) -> dict[str, int]:
-    if directory.api is None:
-        info = os.fstat(directory.handle)
-        return _identity_from_stat(info)
-    native = directory.api.info(directory.handle)
-    return {
-        "st_dev": int(native.volume),
-        "st_ino": int(native.index_high << 32 | native.index_low),
-        "st_size": 0,
-        "st_mtime_ns": 0,
-    }
+def _ancestry(root: Path, parts: list[str]) -> list[dict[str, object]]:
+    result = []
+    for depth in range(len(parts)):
+        directory = root.joinpath(*parts[:depth])
+        info = directory.stat()
+        result.append(
+            {"path": str(directory), "st_dev": info.st_dev, "st_ino": info.st_ino}
+        )
+    return result
 
 
 class PreviewAuthority:
-    """Resolve configured dataset roots and hold native capabilities."""
+    """Select datasets inside administrator-configured roots."""
 
     def __init__(self, roots: Mapping[str, Path], *, extensions=None):
         if type(roots) is not dict and not hasattr(roots, "items"):
@@ -157,38 +123,31 @@ class PreviewAuthority:
         if type(root_id) is not str or root_id not in self.roots:
             raise PreviewForbidden("Unknown preview root")
         parts = _validate_relative(relative_path, self.extensions)
+        root = self.roots[root_id]
         in_body = False
         try:
-            with ExitStack() as stack:
-                root = stack.enter_context(open_directory(self.roots[root_id]))
-                root.guard()
-                root_identity = _stat_directory(root)
-                current = root
-                ancestry = [{"path": str(self.roots[root_id]), **root_identity}]
-                for part in parts[:-1]:
-                    current = stack.enter_context(current.open_directory(part))
-                    current.guard()
-                    ancestry.append(
-                        {"path": str(current.path), **_stat_directory(current)}
-                    )
-                selected = stack.enter_context(current.open_file(parts[-1]))
-                selected.guard()
-                identity = _stat_file(selected)
+            try:
+                target = paths.inside(root, parts)
+            except paths.UnsafePath:
+                raise PreviewForbidden("Preview path escapes its root") from None
+            ancestry = _ancestry(root, parts)
+            with paths.open_regular(target) as stream:
+                identity = paths.file_identity(os.fstat(stream.fileno()))
                 in_body = True
                 yield PreviewSelection(
-                    path=self.roots[root_id].joinpath(*parts),
+                    path=root.joinpath(*parts),
                     identity=identity,
                     root_id=root_id,
                     relative_path=relative_path,
-                    root_path=self.roots[root_id],
-                    root_identity=root_identity,
+                    root_path=root,
                     ancestry=tuple(ancestry),
                 )
                 in_body = False
-                for anchor in (root, current):
-                    anchor.guard()
-                selected.guard()
-                if _stat_file(selected) != identity:
+                if (
+                    _ancestry(root, parts) != ancestry
+                    or paths.file_identity(os.fstat(stream.fileno())) != identity
+                    or paths.file_identity(target.stat()) != identity
+                ):
                     raise PreviewChanged("Selected dataset changed during preview")
         except (FileNotFoundError, NotADirectoryError):
             if in_body:
@@ -213,7 +172,7 @@ class PreviewAuthority:
 def open_preview_selection(
     roots: Mapping[str, Path], root_id: str, relative_path: str
 ) -> Iterator[PreviewSelection]:
-    """Convenience context manager retaining all authority anchors."""
+    """Convenience context manager over a one-off authority."""
     return PreviewAuthority(roots).open_preview_selection(root_id, relative_path)
 
 
@@ -223,9 +182,10 @@ def verify_selection(selection: PreviewSelection) -> None:
         {selection.root_id: selection.root_path},
         extensions=_EXTENSIONS | {Path(selection.relative_path).suffix.lower()},
     ).open_preview_selection(selection.root_id, selection.relative_path) as current:
-        if current.identity != selection.identity or [
-            (item["st_dev"], item["st_ino"]) for item in current.ancestry
-        ] != [(item["st_dev"], item["st_ino"]) for item in selection.ancestry]:
+        if (current.identity, current.ancestry) != (
+            selection.identity,
+            selection.ancestry,
+        ):
             raise PreviewChanged("Preview fingerprint changed")
 
 

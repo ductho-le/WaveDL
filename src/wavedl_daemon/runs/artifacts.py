@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import os
 import re
-import stat
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, BinaryIO
 
+from wavedl_daemon import paths
 from wavedl_daemon.execution.budget import BudgetExhausted
 
 
@@ -37,10 +37,8 @@ class ArtifactNotFound(FileNotFoundError):
 
 
 def _segment(value: str) -> bool:
-    # The browser refuses the same characters, so every listed name downloads.
-    return value not in {"", ".", ".."} and not any(
-        char in "/\\:%" or ord(char) < 32 or ord(char) == 127 for char in value
-    )
+    # The browser also refuses "%", so every listed name downloads.
+    return paths.is_segment(value) and "%" not in value
 
 
 def artifact_path(value: str) -> tuple[str, ...]:
@@ -124,17 +122,10 @@ class OpenedArtifact:
 
 def open_output(output: Path, name: str) -> OpenedArtifact:
     parts = artifact_path(name)
-    root = output.resolve()
-    target = root.joinpath(*parts).resolve()
-    if not target.is_relative_to(root) or target == root:
-        raise UnsafeArtifactPath("Invalid artifact path")
     try:
-        # Nonblocking, so a FIFO cannot stall the worker before the type check.
-        descriptor = os.open(target, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
-    except (FileNotFoundError, NotADirectoryError):
+        stream = paths.open_regular(paths.inside(output, parts))
+    except paths.UnsafePath:
+        raise UnsafeArtifactPath("Invalid artifact path") from None
+    except (FileNotFoundError, NotADirectoryError, ValueError):
         raise ArtifactNotFound("No such artifact") from None
-    info = os.fstat(descriptor)
-    if not stat.S_ISREG(info.st_mode):
-        os.close(descriptor)
-        raise ArtifactNotFound("No such artifact")
-    return OpenedArtifact(os.fdopen(descriptor, "rb"), info.st_size, parts[-1])
+    return OpenedArtifact(stream, os.fstat(stream.fileno()).st_size, parts[-1])

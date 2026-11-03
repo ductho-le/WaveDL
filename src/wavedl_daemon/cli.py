@@ -7,18 +7,18 @@ import argparse
 import asyncio
 import errno
 import ipaddress
+import json
 import os
 import secrets
 import socket
 import sys
 import threading
 import webbrowser
+from importlib.metadata import version
 from pathlib import Path
 from uuid import uuid4
 
-from wavedl import __version__
-from wavedl.core.protocol import strict_loads
-from wavedl.core.safe_files import open_directory
+from wavedl_daemon import paths
 from wavedl_daemon.backends.local import LocalBackend
 from wavedl_daemon.backends.scheduler import SchedulerCommands
 from wavedl_daemon.backends.slurm import SlurmBackend, SlurmSite
@@ -73,16 +73,7 @@ def build_parser():
 def _site(path):
     if path is None:
         return None
-    path = Path(path).expanduser().absolute()
-    with (
-        open_directory(path.parent) as directory,
-        directory.open_file(path.name) as stream,
-    ):
-        stream.verify_private_owner()
-        if stream.stat().size > 65536:
-            raise ValueError("Slurm site exceeds byte bound")
-        value = strict_loads(stream.read(65537))
-        stream.guard()
+    value = json.loads(paths.read_regular(Path(path).expanduser(), 65536))
     if type(value) is not dict:
         raise ValueError("Slurm site must be an object")
     setup = value.get("setup_commands", [])
@@ -198,7 +189,8 @@ async def serve(
             settings,
             token=token,
             daemon_id=str(uuid4()),
-            build_id=__version__,
+            # The trainer's own __version__ would import torch.
+            build_id=version("wavedl"),
             services=services,
             allowed_hosts=(authority, f"localhost:{port}"),
             bootstrap_credentials=bootstrap,

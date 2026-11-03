@@ -123,11 +123,13 @@ def test_traversal_rejected(tmp_path, path):
         asyncio.run(make_service(tmp_path, pool).preview(request(path=path)))
 
 
-def test_symlink_never_followed(tmp_path):
+def test_symlink_out_of_the_root_is_refused(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
     write_dataset(tmp_path)
-    (tmp_path / "link.npz").symlink_to(tmp_path / "data.npz")
-    with BoundedThreadPool(WorkBudget()) as pool, pytest.raises(ValueError):
-        asyncio.run(make_service(tmp_path, pool).preview(request(path="link.npz")))
+    (root / "link.npz").symlink_to(tmp_path / "data.npz")
+    with BoundedThreadPool(WorkBudget()) as pool, pytest.raises(PreviewForbidden):
+        asyncio.run(make_service(root, pool).preview(request(path="link.npz")))
 
 
 def test_no_content_cache(tmp_path):

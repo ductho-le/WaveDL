@@ -9,8 +9,7 @@ import re
 import tempfile
 from pathlib import Path
 
-from wavedl.core.protocol import strict_loads
-from wavedl.core.safe_files import open_directory
+from wavedl_daemon import paths
 from wavedl_daemon.storage.ownership import DispatchHeld, DispatchLock
 
 
@@ -40,15 +39,7 @@ def check_not_running(state_root: Path) -> None:
 
 def read_run_url(state_root: Path) -> str | None:
     try:
-        with (
-            open_directory(state_root) as directory,
-            directory.open_file("serve.json") as stream,
-        ):
-            stream.verify_private_owner(confidential=True)
-            if stream.stat().size > 4096:
-                return None
-            value = strict_loads(stream.read(4097))
-            stream.guard()
+        value = json.loads(paths.read_regular(state_root / "serve.json", 4096))
         url = value.get("url") if type(value) is dict else None
         if isinstance(url, str) and _RUN_URL.fullmatch(url):
             return url

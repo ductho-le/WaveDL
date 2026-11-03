@@ -253,24 +253,20 @@ def test_bad_credential_is_bounded_and_redacted(tmp_path, content):
     path = tmp_path / "credential"
     path.write_bytes(content)
     path.chmod(0o600)
-    with pytest.raises(ValueError, match="private, owned and bounded"):
+    with pytest.raises(ValueError, match="private and bounded"):
         read_credential(path)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode confidentiality")
-def test_credential_file_private_and_no_follow(tmp_path):
+@pytest.mark.parametrize("mode", [0o640, 0o604, 0o620])
+def test_credential_file_other_users_can_access_is_refused(tmp_path, mode):
     path = tmp_path / "credential"
     path.write_text("private-token\n")
     path.chmod(0o600)
     assert read_credential(path) == "private-token"
-    path.chmod(0o644)
+    path.chmod(mode)
     with pytest.raises(ValueError):
         read_credential(path)
-    path.chmod(0o600)
-    linked = tmp_path / "link"
-    linked.symlink_to(path)
-    with pytest.raises(ValueError):
-        read_credential(linked)
 
 
 @pytest.mark.parametrize("credential_mode", ["ephemeral", "private-file"])

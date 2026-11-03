@@ -8,14 +8,12 @@ import sys
 import zipfile
 import zlib
 from dataclasses import replace
-from types import SimpleNamespace
 
 import h5py
 import numpy as np
 import pytest
 from scipy.io import savemat
 
-from wavedl.core.safe_files import open_directory
 from wavedl_daemon.runs.dataset_preview import (
     PreviewLimits,
     PreviewRefused,
@@ -24,21 +22,6 @@ from wavedl_daemon.runs.dataset_preview import (
 
 
 def identity(path):
-    if os.name == "nt":
-        # Python 3.13 stat() exposes a wider file ID than the Win32 identity
-        # carried by dataset selections. Derive that public stamp independently.
-        with open_directory(path.parent) as parent, parent.open_file(path.name) as file:
-            info = file.api.info(file.handle)
-            return {
-                "st_dev": info.volume,
-                "st_ino": info.index_high << 32 | info.index_low,
-                "st_size": info.size_high << 32 | info.size_low,
-                "st_mtime_ns": (
-                    (info.write.dwHighDateTime << 32 | info.write.dwLowDateTime)
-                    - 116444736000000000
-                )
-                * 100,
-            }
     metadata = path.stat()
     return {
         key: getattr(metadata, key)
@@ -48,38 +31,6 @@ def identity(path):
 
 def preview(path, **kwargs):
     return preview_dataset(path, expected_identity=identity(path), **kwargs)
-
-
-def test_native_selection_identity_uses_handle_fields(tmp_path, monkeypatch):
-    from contextlib import nullcontext
-
-    native = SimpleNamespace(
-        volume=7,
-        index_high=2,
-        index_low=3,
-        size_high=1,
-        size_low=5,
-        write=SimpleNamespace(dwHighDateTime=27111902, dwLowDateTime=3577643008),
-    )
-    reads = []
-
-    def info(handle):
-        reads.append(handle)
-        return native
-
-    file = SimpleNamespace(handle=991, api=SimpleNamespace(info=info))
-    parent = SimpleNamespace(open_file=lambda name: nullcontext(file))
-    monkeypatch.setitem(identity.__globals__, "os", SimpleNamespace(name="nt"))
-    monkeypatch.setitem(
-        identity.__globals__, "open_directory", lambda path: nullcontext(parent)
-    )
-    assert identity(tmp_path / "data.npz") == {
-        "st_dev": 7,
-        "st_ino": 8589934595,
-        "st_size": 4294967301,
-        "st_mtime_ns": 0,
-    }
-    assert reads == [991]
 
 
 @pytest.mark.parametrize("suffix", [".npz", ".mat", ".h5", ".hdf5"])
@@ -184,17 +135,13 @@ def test_mismatched_rows_feature_width_and_output_caps(tmp_path):
         preview(path, limits=replace(PreviewLimits(), max_output_bytes=50))
 
 
-def test_changed_identity_symlink_and_changed_ancestry_refused(tmp_path):
+def test_changed_identity_and_changed_ancestry_refused(tmp_path):
     path = tmp_path / "data.npz"
     np.savez(path, X=np.ones((2, 2)), Y=np.ones((2, 1)))
     old = identity(path)
     np.savez(path, X=np.ones((3, 2)), Y=np.ones((3, 1)))
     with pytest.raises(PreviewRefused, match="identity"):
         preview_dataset(path, expected_identity=old)
-    link = tmp_path / "link.npz"
-    link.symlink_to(path)
-    with pytest.raises(ValueError):
-        preview_dataset(link, expected_identity=identity(path))
     envelope = {
         "path": str(path),
         "identity": identity(path),
