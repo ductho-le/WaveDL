@@ -27,7 +27,7 @@ from wavedl_daemon.runs.host_profile import HostProfiler
 from wavedl_daemon.runs.inspection import DatasetInspector
 from wavedl_daemon.runs.preview_service import DatasetPreviewService
 from wavedl_daemon.runs.service import RunService
-from wavedl_daemon.storage.database import open_database
+from wavedl_daemon.storage.database import database_generation, open_database
 from wavedl_daemon.storage.ownership import acquire_dispatch_lock
 from wavedl_daemon.storage.plans import PlanStore
 from wavedl_daemon.storage.run_log import RunLog
@@ -91,6 +91,7 @@ class ServiceSession:
                     "state_root": str(self.settings.state_root.resolve()),
                     "database_device": info.st_dev,
                     "database_inode": info.st_ino,
+                    "database_generation": database_generation(connection),
                     "principal": principal,
                 },
                 sort_keys=True,

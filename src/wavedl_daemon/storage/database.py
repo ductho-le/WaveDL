@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from secrets import token_hex
 from typing import TYPE_CHECKING
 
 from wavedl_daemon.storage.ownership import DispatchRequired, require_dispatch
@@ -42,7 +43,10 @@ class UnsupportedDatabase(RuntimeError):
 
 def _check(connection: sqlite3.Connection, path: Path) -> bool:
     """True for an empty file, False for schema 1; anything else is refused."""
-    version = connection.execute("PRAGMA user_version").fetchone()[0]
+    version_row = connection.execute("PRAGMA user_version").fetchone()
+    if version_row is None:
+        raise UnsupportedDatabase(f"{path} has no schema version")
+    version = version_row[0]
     tables = {
         row[0]
         for row in connection.execute(
@@ -59,6 +63,18 @@ def _check(connection: sqlite3.Connection, path: Path) -> bool:
     return False
 
 
+def database_generation(connection: sqlite3.Connection) -> str:
+    row = connection.execute(
+        "SELECT generation FROM database_identity WHERE singleton=1"
+    ).fetchone()
+    if row is None:
+        raise UnsupportedDatabase("database generation is missing")
+    generation = row[0]
+    if not isinstance(generation, str) or not generation:
+        raise UnsupportedDatabase("database generation is invalid")
+    return generation
+
+
 def open_database(path: Path, *, dispatch_lock: DispatchLock) -> sqlite3.Connection:
     path = Path(path).resolve()
     require_dispatch(dispatch_lock)
@@ -71,14 +87,26 @@ def open_database(path: Path, *, dispatch_lock: DispatchLock) -> sqlite3.Connect
         fresh = _check(connection, path)
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA synchronous=FULL")
+        connection.execute("BEGIN IMMEDIATE")
         if fresh:
-            connection.execute("BEGIN IMMEDIATE")
             if not _check(connection, path):
                 raise UnsupportedDatabase(f"{path} changed while it was created")
             for statement in (*_PLANS_SCHEMA, *RUN_LOG_SCHEMA):
                 connection.execute(statement)
             connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-            connection.execute("COMMIT")
+        # Supplemental metadata lets existing schema 1 databases acquire an
+        # identity without changing or invalidating their run/plan schema.
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS database_identity ("
+            "singleton INTEGER PRIMARY KEY CHECK (singleton = 1), "
+            "generation TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO database_identity (singleton, generation) "
+            "VALUES (1, ?)",
+            (token_hex(32),),
+        )
+        connection.execute("COMMIT")
     except BaseException:
         if connection.in_transaction:
             connection.execute("ROLLBACK")

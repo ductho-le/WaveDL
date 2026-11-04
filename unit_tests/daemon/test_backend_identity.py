@@ -3,6 +3,7 @@
 import asyncio
 import os
 import shutil
+from pathlib import Path
 
 import httpx
 
@@ -12,6 +13,8 @@ from wavedl_daemon.runs.runtime_service import (
     HostedServices,
     ServiceSession,
 )
+from wavedl_daemon.storage.database import database_generation, open_database
+from wavedl_daemon.storage.ownership import acquire_dispatch_lock
 from wavedl_daemon.storage.settings import Settings
 
 
@@ -50,6 +53,52 @@ def test_database_replacement_or_loss_starts_a_new_namespace(tmp_path):
     with ServiceSession(settings) as session:
         assert session.daemon_id not in {first, second}
         assert session.runs.list() == []
+
+
+def test_database_loss_with_reused_inode_starts_a_new_namespace(tmp_path, monkeypatch):
+    settings = settings_for(tmp_path)
+    path = settings.state_root / DATABASE_FILE
+    with ServiceSession(settings) as session:
+        first = session.daemon_id
+    info = path.stat()
+    path.rename(path.with_name("removed.db"))
+    original_stat = Path.stat
+
+    def reused_inode(self, *, follow_symlinks=True):
+        if self == path:
+            return info
+        return original_stat(self, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "stat", reused_inode)
+    with ServiceSession(settings) as session:
+        assert session.daemon_id != first
+        assert session.runs.list() == []
+
+
+def test_existing_schema_one_database_acquires_a_stable_generation(tmp_path):
+    settings = settings_for(tmp_path)
+    path = settings.state_root / DATABASE_FILE
+    with acquire_dispatch_lock(settings.state_root / "dispatch.lock") as lock:
+        connection = open_database(path, dispatch_lock=lock)
+        try:
+            original = database_generation(connection)
+            connection.execute("DROP TABLE database_identity")
+        finally:
+            connection.close()
+        connection = open_database(path, dispatch_lock=lock)
+        try:
+            generation = database_generation(connection)
+            assert generation != original
+            version = connection.execute("PRAGMA user_version").fetchone()
+            assert version is not None
+            assert version[0] == 1
+        finally:
+            connection.close()
+        connection = open_database(path, dispatch_lock=lock)
+        try:
+            assert database_generation(connection) == generation
+        finally:
+            connection.close()
 
 
 def test_hosted_health_adopts_owner_identity_and_never_exposes_auth_or_paths(tmp_path):
