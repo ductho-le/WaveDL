@@ -726,6 +726,8 @@ def test_installed_serve_bootstrap_plan_client_and_shutdown(installed, record_pr
             "0",
             "--state-root",
             str(state),
+            # A real browser would join the job and never exit with the daemon.
+            "--no-browser",
         ]
         native = (
             _WindowsInstalledDaemon(argv, outside, environment)

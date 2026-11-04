@@ -204,6 +204,21 @@ def test_main_messages(monkeypatch, capsys, kind, message, code):
     assert captured.err == (message + "\n" if message else "")
 
 
+@pytest.mark.parametrize(
+    ("argv", "expects_opener"), [([], True), (["--no-browser"], False)]
+)
+def test_no_browser_withholds_the_browser_opener(monkeypatch, argv, expects_opener):
+    seen = []
+
+    async def record(options, **kwargs):
+        seen.append(kwargs["open_browser"])
+
+    monkeypatch.setattr(cli, "serve", record)
+    opener = object()
+    assert cli.main(argv, open_browser=opener) == 0
+    assert seen == [opener if expects_opener else None]
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX state-root confidentiality")
 def test_public_state_root_is_refused_before_binding_or_database_write(
     tmp_path, capsys
