@@ -10,9 +10,9 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from wavedl.core.dataset_preview import PreviewLimits
 from wavedl_daemon.execution.budget import BudgetExhausted
 from wavedl_daemon.execution.commands import run_command
+from wavedl_daemon.runs.dataset_preview import PreviewLimits
 from wavedl_daemon.runs.preview_authority import PreviewAuthority
 from wavedl_daemon.supervision.base import ProcessSpec
 
@@ -286,7 +286,7 @@ class DatasetPreviewService:
                 argv = [
                     self.python,
                     "-m",
-                    "wavedl.core.dataset_preview",
+                    "wavedl_daemon.runs.dataset_preview",
                     "--path",
                     str(selected.path),
                     "--expected-identity",

@@ -238,7 +238,6 @@ def build_installed(tmp_path_factory, *, wheelhouse=None):
     environment = dict(os.environ)
     environment.pop("PYTHONPATH", None)
     environment.pop("WAVEDL_DAEMON_TOKEN", None)
-    environment.pop("WAVEDL_DAEMON_URL", None)
     environment.pop("PYTHONHOME", None)
     if wheelhouse is not None:
         environment["PYTHONNOUSERSITE"] = "1"
@@ -375,7 +374,7 @@ def build_installed(tmp_path_factory, *, wheelhouse=None):
     with zipfile.ZipFile(wheel) as archive:
         names = set(archive.namelist())
     assert {
-        "wavedl/core/client_transport.py",
+        "wavedl_daemon/client.py",
         "wavedl/distributed_launch.py",
         "wavedl/launcher.py",
         "wavedl/runtime.py",
@@ -594,7 +593,7 @@ def test_installed_entrypoints_and_lightweight_modules(installed):
             "-S",
             "-c",
             "import sys; sys.path.insert(0, sys.argv[1]); "
-            "import wavedl.client,wavedl.operations,wavedl.distributed_launch,wavedl_daemon.cli,wavedl.core.scheduler_attempt,wavedl.core.client_transport; "
+            "import wavedl_daemon.client,wavedl.operations,wavedl.distributed_launch,wavedl_daemon.cli,wavedl.core.scheduler_attempt; "
             "assert not any(n in sys.modules for n in ('torch','numpy','PySide6','qfluentwidgets','starlette','uvicorn'))",
             site,
         ],

@@ -3,11 +3,11 @@ import os
 
 import pytest
 
-from wavedl.core.journal_reader import JournalReader, seek_to_seq
 from wavedl.core.journal_writer import JournalWriter
 from wavedl.core.layout import RunLayout
 from wavedl.core.protocol import Envelope, ProtocolError, encode
 from wavedl.core.safe_files import SafeFile
+from wavedl_daemon.events.journal_reader import JournalReader, seek_to_seq
 
 
 RUN_ID = "00000000-0000-4000-8000-000000000001"

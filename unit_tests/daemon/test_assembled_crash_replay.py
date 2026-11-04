@@ -274,13 +274,19 @@ def test_assembled_http_crash_replay_is_durable_and_idempotent(
             assert response.status_code == 202, response.text
             response = await client.post(f"/api/runs/{run_id}/cancel")
             assert response.status_code == 202, response.text
+            journal = RunLayout(settings.run_root / run_id, run_id).journal(1)
             for _ in range(2):
-                response = await client.post(
-                    f"/api/runs/{run_id}/events",
-                    json={"attempt": 1, "events": [asdict(hello(run_id, 1))]},
+                # Re-read the journal from the start, so replay hits the
+                # already-committed hello instead of an end-of-file bookmark.
+                await services.host.call(
+                    lambda session: session.ingestor.forget(run_id, 1)
                 )
-                assert response.status_code == 200, response.text
-                assert response.json() == {"attempt": 1, "seq": 0}
+                cursor = await services.host.call(
+                    lambda session: session.ingestor.poll_once(
+                        planned["plan_id"], run_id, 1, journal
+                    )
+                )
+                assert cursor == 0
             assert durable_snapshot(database, run_id) == replayed
             assert replayed["plans"] == before["plans"]
             assert replayed["intent"] == before["intent"]

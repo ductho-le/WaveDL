@@ -34,7 +34,6 @@ class FakeServices:
         self.daemon_id = "daemon-test"
         self.run_service = Mock()
         self.catalog = Mock()
-        self.ingestor = Mock()
         self.event_log = Mock()
         self.broker = EventBroker()
         self.artifacts = Mock()

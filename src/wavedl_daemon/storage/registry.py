@@ -25,11 +25,11 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from wavedl.core.generations import PublishedGeneration, published_generations
-from wavedl.core.journal_reader import JournalReader
 from wavedl.core.layout import RunLayout
 from wavedl.core.manifest import describes_layout, read_manifest
 from wavedl.core.persistence import write_once
 from wavedl.core.protocol import ProtocolError
+from wavedl_daemon.events.journal_reader import JournalReader
 from wavedl_daemon.storage.collections import COLLECTION_MIGRATION
 from wavedl_daemon.storage.event_log import EVENT_LOG_MIGRATION, append_in_transaction
 from wavedl_daemon.storage.executions import EXECUTION_MIGRATION

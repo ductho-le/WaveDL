@@ -7,10 +7,10 @@ import time
 import pytest
 
 from wavedl.core import journal_writer, persistence, safe_files
-from wavedl.core.journal_reader import JournalReader
 from wavedl.core.journal_writer import AbandonedTail, JournalWriter, RecordTooLarge
 from wavedl.core.layout import RunLayout, allocate_attempt
 from wavedl.core.protocol import decode
+from wavedl_daemon.events.journal_reader import JournalReader
 
 
 RUN_ID = "00000000-0000-4000-8000-000000000001"

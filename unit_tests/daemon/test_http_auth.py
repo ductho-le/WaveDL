@@ -10,7 +10,6 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from wavedl_daemon.http.app import create_app, read_json
-from wavedl_daemon.http.bootstrap import BootstrapCredentials
 from wavedl_daemon.storage.settings import Settings
 
 
@@ -249,56 +248,6 @@ def test_cookie_and_query_credentials_never_authenticate(app):
         ).status_code
         == 401
     )
-
-
-def test_session_auth_does_not_grant_runtime_event_ingest(tmp_path):
-    credentials = BootstrapCredentials(TOKEN)
-    app = create_app(
-        None,
-        token=TOKEN,
-        daemon_id="daemon-test",
-        build_id="build-test",
-        bootstrap_credentials=credentials,
-    )
-
-    async def ingest(request):
-        return JSONResponse({"ok": True})
-
-    app.router.routes.append(
-        Route(
-            "/api/runs/12345678-1234-4234-8234-123456789abc/events",
-            ingest,
-            methods=["POST"],
-        )
-    )
-    app.router.routes.append(
-        Route(
-            "/api/runs/12345678-1234-4234-8234-123456789abc/events/",
-            ingest,
-            methods=["POST"],
-        )
-    )
-    session = credentials.mint_session()
-    path = "/api/runs/12345678-1234-4234-8234-123456789abc/events"
-    response = request(
-        app,
-        method="POST",
-        path=path,
-        headers={"Authorization": f"Bearer {session.token}"},
-    )
-    assert response.status_code == 403
-    assert request(app, method="POST", path=path, headers=AUTH).status_code == 200
-    trailing = path + "/"
-    assert (
-        request(
-            app,
-            method="POST",
-            path=trailing,
-            headers={"Authorization": f"Bearer {session.token}"},
-        ).status_code
-        == 403
-    )
-    assert request(app, method="POST", path=trailing, headers=AUTH).status_code == 200
 
 
 def test_multiple_authorization_headers_are_rejected(app):

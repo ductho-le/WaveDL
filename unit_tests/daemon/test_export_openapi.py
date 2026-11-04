@@ -158,7 +158,6 @@ def test_openapi_documents_daemon_errors_not_fastapi_422():
             "get",
             "/api/runs/{run_id}/artifacts/{generation}/{path}",
         ): "download_artifact",
-        ("post", "/api/runs/{run_id}/events"): "push_events",
         ("get", "/api/runs/{run_id}/events"): "stream_events",
         ("post", "/api/runs/plan"): "plan_run",
         ("post", "/api/runs"): "submit_run",

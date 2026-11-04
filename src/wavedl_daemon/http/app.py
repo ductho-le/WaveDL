@@ -82,13 +82,6 @@ class SecurityBoundary:
                     master = require_auth(
                         request, self.token, sessions=self.bootstrap_credentials
                     )
-                    if (
-                        scope["method"] == "POST"
-                        and scope["path"].startswith("/api/runs/")
-                        and scope["path"].rstrip("/").endswith("/events")
-                        and not master
-                    ):
-                        raise HTTPException(403, "Forbidden")
                     scope["wavedl.auth_master"] = master
                     scope["wavedl.auth_token"] = bearer_token(request)
         except HTTPException as exc:
@@ -314,7 +307,6 @@ def create_app(
         routes.extend(catalog_routes(services.catalog))
         routes.extend(
             event_routes(
-                ingestor=services.ingestor,
                 event_log=services.event_log,
                 broker=services.broker,
                 resolve_plan=services.resolve_plan,

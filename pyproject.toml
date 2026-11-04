@@ -110,7 +110,7 @@ dev = [
 ]
 
 [project.scripts]
-wavedl = "wavedl.client:main"
+wavedl = "wavedl_daemon.client:main"
 wavedl-train = "wavedl.launcher:main"  # Universal training (auto-detects HPC vs local)
 wavedl-hpc = "wavedl.launcher:main"    # Alias for backwards compatibility
 wavedl-test = "wavedl.test:main"

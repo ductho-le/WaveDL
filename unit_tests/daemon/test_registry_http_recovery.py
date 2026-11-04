@@ -101,7 +101,7 @@ def _fault_victim(root, order, *, metric=False):
             await _wait_for(bound)
 
             # Freeze the background reader after binding so only the following
-            # authenticated HTTP push can reach the armed transaction barrier.
+            # explicit journal poll can reach the armed transaction barrier.
             async def stop_pump(session):
                 session._pump_task.cancel()
                 try:
@@ -122,6 +122,19 @@ def _fault_victim(root, order, *, metric=False):
                     )
                 ),
             )
+            journal = (
+                settings.run_root
+                / plan["run_id"]
+                / "attempts"
+                / str(binding.attempt)
+                / "events.jsonl"
+            )
+
+            async def ingest(session):
+                return await session.ingestor.poll_once(
+                    plan["plan_id"], plan["run_id"], binding.attempt, journal
+                )
+
             hello = None
             if metric:
                 with JournalWriter(
@@ -130,12 +143,7 @@ def _fault_victim(root, order, *, metric=False):
                     fsync_every=1,
                 ) as writer:
                     hello = writer.append("hello", event.payload)
-                    committed = await client.post(
-                        f"/api/runs/{plan['run_id']}/events",
-                        json={"attempt": binding.attempt, "events": [asdict(hello)]},
-                    )
-                    assert committed.status_code == 200, committed.text
-                    assert committed.json() == {"attempt": binding.attempt, "seq": 0}
+                    assert await services.host.call(ingest) == 0
                     event = writer.append(
                         "metric",
                         asdict(
@@ -203,13 +211,6 @@ def _fault_victim(root, order, *, metric=False):
                     original_record(self, projected)
 
                 Registry._write_record = record
-            journal = (
-                settings.run_root
-                / plan["run_id"]
-                / "attempts"
-                / str(binding.attempt)
-                / "events.jsonl"
-            )
             if not metric:
                 with JournalWriter(
                     RunLayout(settings.run_root / plan["run_id"], plan["run_id"]),
@@ -229,10 +230,7 @@ def _fault_victim(root, order, *, metric=False):
                     }
                 ).encode(),
             )
-            await client.post(
-                f"/api/runs/{plan['run_id']}/events",
-                json={"attempt": binding.attempt, "events": [asdict(event)]},
-            )
+            await services.host.call(ingest)
 
     asyncio.run(run())
 

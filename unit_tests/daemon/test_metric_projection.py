@@ -3,7 +3,7 @@ import sqlite3
 import pytest
 
 from unit_tests.core.test_generations import setup_run
-from unit_tests.core.test_metric_history import (
+from unit_tests.daemon.test_metric_history import (
     RUN_ID,
     branched_events,
     causal_events,

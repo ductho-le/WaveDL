@@ -209,66 +209,8 @@ def test_event_routes_are_api_routes(fake_services):
         for route in hosted_app(fake_services).routes
         if route.path.endswith("/events")
     ]
-    assert len(routes) == 2
+    assert len(routes) == 1
     assert all(isinstance(route, APIRoute) for route in routes)
-
-
-@pytest.mark.parametrize("malformed", [None, [], "private-secret", 42, True, {}])
-def test_event_malformed_envelope_is_rejected_by_ingestor(fake_services, malformed):
-    run_id = "11111111-1111-1111-1111-111111111111"
-    response = request(
-        hosted_app(fake_services),
-        method="POST",
-        path=f"/api/runs/{run_id}/events",
-        content=json.dumps({"attempt": 1, "events": [malformed]}),
-    )
-    assert response.status_code == 409
-    assert response.content == b'{"error":"Conflict"}'
-    fake_services.ingestor.reject_runtime_events.assert_called_once()
-    args = fake_services.ingestor.reject_runtime_events.call_args.args
-    assert args[:3] == (run_id, run_id, 1)
-    fake_services.ingestor.push.assert_not_called()
-
-
-def test_event_push_ignores_extra_top_level_key(fake_services):
-    from wavedl.core.protocol import Envelope, encode
-
-    run_id = "11111111-1111-1111-1111-111111111111"
-    event = Envelope(
-        run_id,
-        1,
-        "log",
-        0,
-        "2026-10-31T00:00:00Z",
-        {"message": "message", "level": "info", "stream": "stdout"},
-    )
-    fake_services.ingestor.push.return_value = 0
-    response = request(
-        hosted_app(fake_services),
-        method="POST",
-        path=f"/api/runs/{run_id}/events",
-        content=json.dumps(
-            {"attempt": 1, "events": [json.loads(encode(event))], "extra": True}
-        ),
-    )
-    assert response.status_code == 200
-    assert response.content == b'{"attempt":1,"seq":0}'
-    assert "cache-control" not in response.headers
-    fake_services.ingestor.push.assert_called_once_with(run_id, run_id, 1, [event])
-    fake_services.ingestor.reject_runtime_events.assert_not_called()
-
-
-@pytest.mark.parametrize("content", [b"not-json", b" " * (1048576 + 1)])
-def test_event_push_checks_run_identity_before_reading_body(fake_services, content):
-    response = request(
-        hosted_app(fake_services),
-        method="POST",
-        path="/api/runs/not-a-uuid/events",
-        content=content,
-    )
-    assert response.status_code == 400
-    fake_services.ingestor.reject_runtime_events.assert_not_called()
-    fake_services.ingestor.push.assert_not_called()
 
 
 def test_every_api_route_is_fastapi(fake_services):
@@ -278,7 +220,7 @@ def test_every_api_route_is_fastapi(fake_services):
         if route.path.startswith("/api")
     ]
     assert (
-        len(routes) == 20
+        len(routes) == 19
     )  # Bootstrap is separately covered with credentials enabled.
     assert all(isinstance(route, APIRoute) for route in routes)
 
@@ -293,7 +235,6 @@ def test_every_api_route_is_fastapi(fake_services):
         ("/api/browse/resolve", 8192),
         ("/api/datasets/inspect", 16384),
         ("/api/datasets/preview", 65536),
-        ("/api/runs/11111111-1111-1111-1111-111111111111/events", 1048576),
     ],
 )
 @pytest.mark.parametrize("case", ["duplicate", "nan", "oversize"])
@@ -320,7 +261,7 @@ def test_strict_json_on_every_body_route(fake_services, path, limit, case):
 
 @pytest.mark.parametrize("group", ["inspect", "preview"])
 def test_dataset_refusal_is_bad_request(fake_services, group):
-    from wavedl.core.dataset_headers import InspectionRefused
+    from wavedl_daemon.runs.dataset_headers import InspectionRefused
     from wavedl_daemon.runs.preview_service import PreviewRefused
 
     async def inspect_dataset(root, path):

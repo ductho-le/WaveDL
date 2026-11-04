@@ -14,12 +14,12 @@ import pytest
 from starlette.testclient import TestClient
 
 from unit_tests.daemon.conftest import route_app
-from wavedl.core.dataset_headers import InspectionLimits, InspectionRefused
 from wavedl_daemon.execution.budget import WorkBudget
 from wavedl_daemon.execution.commands import run_command
 from wavedl_daemon.execution.pool import BoundedThreadPool, WorkCancelled
 from wavedl_daemon.http.inspection import inspection_routes
 from wavedl_daemon.runs.catalog import CatalogService
+from wavedl_daemon.runs.dataset_headers import InspectionLimits, InspectionRefused
 from wavedl_daemon.runs.inspection import DatasetInspector, validate_metadata
 from wavedl_daemon.supervision.base import ProcessSpec
 

@@ -56,7 +56,7 @@ def test_distribution_declares_only_supported_packages_and_entrypoints():
     dependencies = config["project"]["dependencies"]
     for name in ("fastapi", "pydantic", "starlette", "uvicorn", "h11"):
         assert any(item.startswith(name + ">=") for item in dependencies)
-    assert scripts["wavedl"] == "wavedl.client:main"
+    assert scripts["wavedl"] == "wavedl_daemon.client:main"
 
 
 def test_supported_runtime_has_no_desktop_imports():

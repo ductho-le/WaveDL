@@ -35,7 +35,6 @@ class _InertServices(_InertRunService):
     def __init__(self):
         self.run_service = _InertRunService()
         self.catalog = _InertRunService()
-        self.ingestor = _InertRunService()
         self.event_log = _InertRunService()
         self.broker = _InertRunService()
         self.artifacts = _InertRunService()

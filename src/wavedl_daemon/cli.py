@@ -17,13 +17,12 @@ from pathlib import Path
 from uuid import uuid4
 
 from wavedl import __version__
-from wavedl.core.credentials import read_credential
-from wavedl.core.live_push import LivePushConfig
 from wavedl.core.protocol import strict_loads
 from wavedl.core.safe_files import open_directory
 from wavedl_daemon.backends.local import LocalBackend
 from wavedl_daemon.backends.scheduler import SchedulerCommands
 from wavedl_daemon.backends.slurm import SlurmBackend, SlurmSite
+from wavedl_daemon.credentials import read_credential
 from wavedl_daemon.execution.budget import WorkBudget
 from wavedl_daemon.serve_state import (
     AlreadyRunning,
@@ -175,12 +174,9 @@ async def serve(
         if services_factory is not None:
             services = services_factory(settings, budget=budget)
         else:
-            live_push = LivePushConfig(f"http://{authority}", token)
 
             def backends(lock):
-                result = {
-                    "local": LocalBackend(dispatch_lock=lock, live_push=live_push)
-                }
+                result = {"local": LocalBackend(dispatch_lock=lock)}
                 if site is not None:
                     import pwd
 

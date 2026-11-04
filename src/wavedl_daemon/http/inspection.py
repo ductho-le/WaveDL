@@ -11,12 +11,12 @@ from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import Response
 
-from wavedl.core.dataset_headers import InspectionRefused
 from wavedl_daemon.execution.budget import BudgetExhausted, StorageWorkError
 from wavedl_daemon.execution.pool import WorkCancelled
 from wavedl_daemon.http.app import strict_json_route
 from wavedl_daemon.http.schemas.common import JSON_BODY_ERRORS, NO_STORE
 from wavedl_daemon.http.schemas.datasets import InspectionResponse, InspectRequest
+from wavedl_daemon.runs.dataset_headers import InspectionRefused
 
 
 def inspection_routes(inspector):

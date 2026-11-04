@@ -1,8 +1,8 @@
 import pytest
 
 from wavedl.core.events import SupersedePayload, validate_supersession
-from wavedl.core.metric_history import MetricHistory
 from wavedl.core.protocol import Envelope, ProtocolError
+from wavedl_daemon.storage.metric_history import MetricHistory
 
 
 RUN_ID = "00000000-0000-4000-8000-000000000001"

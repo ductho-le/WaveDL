@@ -15,8 +15,12 @@ import numpy as np
 import pytest
 from scipy.io import savemat
 
-from wavedl.core.dataset_preview import PreviewLimits, PreviewRefused, preview_dataset
 from wavedl.core.safe_files import open_directory
+from wavedl_daemon.runs.dataset_preview import (
+    PreviewLimits,
+    PreviewRefused,
+    preview_dataset,
+)
 
 
 def identity(path):
@@ -271,7 +275,7 @@ def test_worker_stdout_is_finite_json_only(tmp_path):
         [
             sys.executable,
             "-m",
-            "wavedl.core.dataset_preview",
+            "wavedl_daemon.runs.dataset_preview",
             "--path",
             str(path),
             "--expected-identity",
@@ -296,7 +300,7 @@ def test_worker_reports_identity_changed_for_mutated_input(tmp_path):
         [
             sys.executable,
             "-m",
-            "wavedl.core.dataset_preview",
+            "wavedl_daemon.runs.dataset_preview",
             "--path",
             str(path),
             "--expected-identity",
@@ -313,7 +317,7 @@ def test_worker_reports_identity_changed_for_mutated_input(tmp_path):
 def test_content_mutation_during_numeric_read_is_refused(tmp_path, monkeypatch):
     path = tmp_path / "mutation.npz"
     np.savez(path, X=np.ones((2, 2)), Y=np.ones((2, 1)))
-    import wavedl.core.dataset_preview as module
+    import wavedl_daemon.runs.dataset_preview as module
 
     original = module._summaries
     original_bytes = path.read_bytes()

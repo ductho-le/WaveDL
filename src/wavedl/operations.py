@@ -22,7 +22,6 @@ from wavedl.core.events import (
 from wavedl.core.generations import publish_generation
 from wavedl.core.inference_cli import inference_defaults
 from wavedl.core.layout import OperationKind
-from wavedl.core.live_push import LivePushClient, LivePushConfig
 from wavedl.core.manifest import RuntimeSelection
 from wavedl.core.persistence import sync_directory
 from wavedl.core.safe_files import open_directory
@@ -74,13 +73,6 @@ def open_operation_runtime(args, *, operation, runtime, device, allocated_device
         operation=operation,
         approved_defaults=inference_defaults(),
     )
-    client = None
-    try:
-        config = LivePushConfig.from_environment(os.environ)
-        if config is not None:
-            client = LivePushClient(config)
-    except (ValueError, RuntimeError):
-        pass
     journal = RunJournal(
         bootstrap,
         hello=HelloPayload(
@@ -96,7 +88,6 @@ def open_operation_runtime(args, *, operation, runtime, device, allocated_device
             prefix=sys.prefix,
             base_prefix=sys.base_prefix,
         ),
-        push_client=client,
     )
     journal.emit("state", StatePayload("starting"))
     journal._operation_artifacts = {}

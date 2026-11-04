@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 from scipy.io import savemat
 
-from wavedl.core.dataset_headers import (
+from wavedl_daemon.runs.dataset_headers import (
     InspectionLimits,
     InspectionRefused,
     inspect_dataset,
@@ -167,7 +167,13 @@ def test_cli_corrupt_header_reports_generic_json_no_trace(tmp_path):
     path = tmp_path / "private-secret.npy"
     path.write_bytes(b"broken")
     result = subprocess.run(
-        [sys.executable, "-m", "wavedl.core.dataset_headers", "--path", str(path)],
+        [
+            sys.executable,
+            "-m",
+            "wavedl_daemon.runs.dataset_headers",
+            "--path",
+            str(path),
+        ],
         capture_output=True,
         timeout=10,
     )
@@ -179,7 +185,7 @@ def test_cli_corrupt_header_reports_generic_json_no_trace(tmp_path):
 def test_import_stays_lightweight_without_site_packages():
     # -S bypasses editable-install .pth files, so expose only the checkout source.
     source_root = Path(__file__).resolve().parents[2] / "src"
-    code = "import sys; import wavedl.core.dataset_headers; assert not any(x in sys.modules for x in ['numpy','torch','h5py','scipy','PySide6'])"
+    code = "import sys; import wavedl_daemon.runs.dataset_headers; assert not any(x in sys.modules for x in ['numpy','torch','h5py','scipy','PySide6'])"
     subprocess.run(
         [sys.executable, "-S", "-c", code],
         check=True,
@@ -331,7 +337,7 @@ def test_mat_v4_reports_storage_dtype_not_generic_double_class(tmp_path, dtype):
 
 
 def test_expected_identity_is_checked_before_reading_metadata(tmp_path, monkeypatch):
-    from wavedl.core import dataset_headers
+    from wavedl_daemon.runs import dataset_headers
 
     path = tmp_path / "selected.npy"
     np.save(path, np.zeros((3, 2), dtype="float32"))
@@ -363,7 +369,8 @@ def test_windows_header_identity_uses_borrowed_native_handle_not_wider_fstat(
 ):
     from types import SimpleNamespace
 
-    from wavedl.core import dataset_headers, safe_files
+    from wavedl.core import safe_files
+    from wavedl_daemon.runs import dataset_headers
 
     path = tmp_path / "native-fingerprint.npy"
     np.save(path, np.zeros((3, 2), dtype="float32"))
@@ -423,7 +430,8 @@ def test_native_header_identity_failure_closes_owned_stream_without_closing_borr
 ):
     from types import SimpleNamespace
 
-    from wavedl.core import dataset_headers, safe_files
+    from wavedl.core import safe_files
+    from wavedl_daemon.runs import dataset_headers
 
     path = tmp_path / "native-query-failure.npy"
     np.save(path, np.zeros((3, 2)))

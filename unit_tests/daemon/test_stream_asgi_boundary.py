@@ -13,8 +13,8 @@ from unit_tests.daemon.test_event_stream_live_boundaries import (
     authenticated_app,
     event,
     loopback_app,
+    read_events,
 )
-from wavedl.core.client_transport import HttpTransport
 from wavedl_daemon.events.broker import EventBroker
 from wavedl_daemon.storage.event_log import EventLogStore
 from wavedl_daemon.storage.registry import Registry
@@ -59,7 +59,7 @@ def test_real_authenticated_handler_snapshot_and_subsequent_request_cursor(tmp_p
             broker = EventBroker()
             try:
                 registry.apply_events(RUN, 1, [event(0)])
-                real_app = authenticated_app(None, store, broker)
+                real_app = authenticated_app(store, broker)
                 handler_bytes, forwarded_bytes = [], []
 
                 async def fragmented(scope, receive, send):
@@ -89,16 +89,12 @@ def test_real_authenticated_handler_snapshot_and_subsequent_request_cursor(tmp_p
                     url,
                     _,
                 ):
-                    first = [
-                        item async for item in HttpTransport(url, TOKEN).events(RUN)
-                    ]
+                    first = [item async for item in read_events(url, TOKEN, RUN)]
                     assert first == [event(0)]
                     registry.apply_events(RUN, 1, [event(1)])
                     second = [
                         item
-                        async for item in HttpTransport(url, TOKEN).events(
-                            RUN, cursor=(1, 0)
-                        )
+                        async for item in read_events(url, TOKEN, RUN, cursor=(1, 0))
                     ]
                     assert second == [event(1)]
                 assert b"".join(handler_bytes) == b"".join(forwarded_bytes)

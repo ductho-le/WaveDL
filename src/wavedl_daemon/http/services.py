@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from wavedl_daemon.runs.adoption_service import AdoptionResponse
     from wavedl_daemon.runs.artifacts import ArtifactStore
     from wavedl_daemon.runs.catalog import AsyncCatalogService
-    from wavedl_daemon.runs.runtime_service import _AsyncEventLog, _AsyncIngestor
+    from wavedl_daemon.runs.runtime_service import _AsyncEventLog
 
 
 class DaemonServices(Protocol):
@@ -22,7 +22,6 @@ class DaemonServices(Protocol):
     daemon_id: str
     run_service: AsyncRunService
     catalog: AsyncCatalogService
-    ingestor: _AsyncIngestor
     event_log: _AsyncEventLog
     broker: EventBroker
     artifacts: ArtifactStore
@@ -53,7 +52,6 @@ def require_services(services: DaemonServices) -> None:
         "daemon_id",
         "run_service",
         "catalog",
-        "ingestor",
         "event_log",
         "broker",
         "artifacts",

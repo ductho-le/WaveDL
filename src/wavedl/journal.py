@@ -39,7 +39,6 @@ from wavedl.core.scheduler_attempt import (
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from wavedl.core.live_push import LivePushClient
     from wavedl.core.protocol import Envelope
 
 
@@ -274,7 +273,6 @@ class RunJournal:
         is_main_process: bool = True,
         rank: int = 0,
         fsync_every: int = 1,
-        push_client: LivePushClient | None = None,
     ):
         if (
             type(is_main_process) is not bool
@@ -293,24 +291,17 @@ class RunJournal:
         self._writer = None
         self._rank_stream = None
         self._terminal = False
-        self._push_client = push_client if is_main_process else None
         if is_main_process:
             try:
                 self._writer = JournalWriter(
                     bootstrap.layout, attempt=bootstrap.attempt, fsync_every=fsync_every
                 )
-                first = self._writer.append("hello", asdict(checked))
+                self._writer.append("hello", asdict(checked))
                 # The handshake must be durable even under batched metric fsync.
                 self._writer.flush()
-                self._push(first)
             except BaseException:
                 if self._writer is not None:
                     self._writer.close()
-                if self._push_client is not None:
-                    try:
-                        self._push_client.close()
-                    except Exception:
-                        pass
                 raise
         else:
             path = bootstrap.layout.attempt_dir(bootstrap.attempt) / "rank"
@@ -321,18 +312,6 @@ class RunJournal:
     def last_sequence(self) -> int | None:
         """Last included event sequence, for causal checkpoint lineage cutoffs."""
         return self._writer.seq - 1 if self._writer is not None else None
-
-    def _push(self, envelope):
-        if self._push_client is not None:
-            try:
-                self._push_client.submit(envelope)
-            except Exception:
-                # An optional delivery bug cannot invalidate a durable append.
-                try:
-                    self._push_client.close()
-                except Exception:
-                    pass
-                self._push_client = None
 
     def emit(
         self, event_type: str, payload: Payload | dict[str, object]
@@ -349,7 +328,6 @@ class RunJournal:
         if self._writer is None:
             return None
         result = self._writer.append(event_type, asdict(checked))
-        self._push(result)
         if event_type == "exit":
             self._terminal = True
         return result
@@ -374,11 +352,6 @@ class RunJournal:
                 self._rank_stream.close()
         finally:
             self._terminal = True
-            if self._push_client is not None:
-                try:
-                    self._push_client.close()
-                except Exception:
-                    pass
 
     def __enter__(self) -> RunJournal:
         return self

@@ -16,12 +16,12 @@ from scipy.io import savemat
 from starlette.testclient import TestClient
 
 from unit_tests.daemon.conftest import route_app
-from wavedl.core.dataset_preview import PreviewLimits
 from wavedl_daemon.execution.budget import BudgetExhausted, WorkBudget
 from wavedl_daemon.execution.pool import BoundedThreadPool, WorkCancelled
 from wavedl_daemon.http.app import create_app
 from wavedl_daemon.http.preview import preview_routes
 from wavedl_daemon.runs.catalog import CatalogService
+from wavedl_daemon.runs.dataset_preview import PreviewLimits
 from wavedl_daemon.runs.preview_authority import PreviewForbidden
 from wavedl_daemon.runs.preview_service import (
     DatasetPreviewService,

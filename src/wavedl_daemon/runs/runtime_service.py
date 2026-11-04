@@ -372,23 +372,6 @@ class _AsyncEventLog:
         )
 
 
-class _AsyncIngestor:
-    def __init__(self, host):
-        self.host = host
-
-    async def push(self, plan_id, run_id, attempt, events):
-        return await self.host.call(
-            lambda session: session.ingestor.push(plan_id, run_id, attempt, events)
-        )
-
-    async def reject_runtime_events(self, plan_id, run_id, attempt, reason):
-        return await self.host.call(
-            lambda session: session.ingestor.reject_runtime_events(
-                plan_id, run_id, attempt, reason
-            )
-        )
-
-
 def _unresolved_layout(run_id):
     raise RuntimeError("Artifacts require owner-resolved layout")
 
@@ -421,7 +404,6 @@ class HostedServices(DaemonServices):
         self.run_service = AsyncRunService(self.host)
         self.catalog = AsyncCatalogService(self.host)
         self.event_log = _AsyncEventLog(self.host)
-        self.ingestor = _AsyncIngestor(self.host)
         self.artifacts = ArtifactStore(_unresolved_layout)
         self._start_task = None
         self._close_task = None

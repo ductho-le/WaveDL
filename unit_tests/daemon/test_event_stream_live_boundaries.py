@@ -1,25 +1,22 @@
 """Real authenticated ASGI routes over fragmented loopback HTTP, not API mocks.
 
 The adapter below is test-owned HTTP framing, not a production ASGI server. SQLite,
-ingestion, authentication, replay/live delivery and the native client are real;
-runtime negotiation is deliberately the small accepted-controller test seam.
+ingestion, authentication and replay/live delivery are real; runtime negotiation is
+deliberately the small accepted-controller test seam.
 """
 
 import asyncio
+import json
 import time
 from contextlib import asynccontextmanager, suppress
-from dataclasses import asdict
+from dataclasses import dataclass
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi import FastAPI
 
-from wavedl.core.client_transport import (
-    ClientTransportError,
-    HttpTransport,
-    StreamControl,
-)
-from wavedl.core.protocol import Envelope
+from wavedl.core.protocol import Envelope, decode
 from wavedl_daemon.events.broker import EventBroker
 from wavedl_daemon.events.ingestion import Ingestor
 from wavedl_daemon.http.app import SecurityBoundary
@@ -49,8 +46,49 @@ class AcceptedController:
         return SimpleNamespace(status=NegotiationStatus.ACCEPTED, reason="")
 
 
+@dataclass(frozen=True)
+class StreamControl:
+    kind: str
+    cursor: tuple[int, int]
+
+
+async def read_events(url, token, run_id, *, cursor=(0, -1), last_event_id=None):
+    """Yield daemon SSE frames as envelopes or overflow/error controls."""
+    headers = {"Authorization": f"Bearer {token}", "Accept": "text/event-stream"}
+    params = None
+    if last_event_id is None:
+        params = {"attempt": cursor[0], "seq": cursor[1]}
+    else:
+        headers["Last-Event-ID"] = last_event_id
+    # Deadlines belong to wire_phase; an httpx timeout would race it.
+    async with (
+        httpx.AsyncClient(timeout=None) as client,
+        client.stream(
+            "GET", f"{url}/api/runs/{run_id}/events", params=params, headers=headers
+        ) as response,
+    ):
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        frame = {}
+        async for line in response.aiter_lines():
+            if line:
+                name, _, value = line.partition(":")
+                if name:
+                    frame.setdefault(name, []).append(value.removeprefix(" "))
+                continue
+            if "data" in frame:
+                data = "\n".join(frame["data"])
+                kind = frame.get("event", ["message"])[0]
+                if kind == "message":
+                    yield decode(data)
+                else:
+                    resume = json.loads(data)["resumePosition"]
+                    yield StreamControl(kind, (resume["attempt"], resume["seq"]))
+            frame = {}
+
+
 @asynccontextmanager
-async def loopback_app(app, *, on_body=None, corrupt_control=None, cleanup_timeout=5):
+async def loopback_app(app, *, on_body=None, cleanup_timeout=5):
     """Bridge real ASGI into byte-sized HTTP chunks, including split CRLF/UTF-8."""
     tasks, requests, failures = set(), [], []
 
@@ -93,8 +131,6 @@ async def loopback_app(app, *, on_body=None, corrupt_control=None, cleanup_timeo
                     )
                 elif message["type"] == "http.response.body":
                     payload = message.get("body", b"")
-                    if corrupt_control is not None and b"event: overflow" in payload:
-                        payload = corrupt_control
                     # Each byte is an independent HTTP chunk, so even coalesced
                     # TCP packets cannot conceal parser boundary regressions.
                     for value in payload.replace(b"\n", b"\r\n"):
@@ -163,10 +199,9 @@ async def wire_phase(app, *, timeout=5, **options):
             yield connection
 
 
-def authenticated_app(ingestor, store, broker):
+def authenticated_app(store, broker):
     app = FastAPI(
         routes=event_routes(
-            ingestor=ingestor,
             event_log=store,
             broker=broker,
             resolve_plan=lambda run: "test-owned-plan",
@@ -175,7 +210,7 @@ def authenticated_app(ingestor, store, broker):
     return SecurityBoundary(app, token=TOKEN.encode(), allowed_hosts=("127.0.0.1",))
 
 
-def test_authenticated_commit_reject_restart_and_sparse_attempt_replay(tmp_path):
+def test_restart_and_sparse_attempt_replay(tmp_path):
     path = tmp_path / "registry.db"
 
     async def scenario():
@@ -183,50 +218,23 @@ def test_authenticated_commit_reject_restart_and_sparse_attempt_replay(tmp_path)
             store, broker = EventLogStore(path), EventBroker()
             try:
                 ingestor = Ingestor(registry, AcceptedController(), broker, None)
-                app = authenticated_app(ingestor, store, broker)
-                async with wire_phase(app) as (url, _):
-                    client = HttpTransport(url, TOKEN)
-                    route = f"/api/runs/{RUN}/events"
-                    body = {"attempt": 1, "events": [asdict(event(0))]}
-                    with pytest.raises(ClientTransportError) as refused:
-                        await HttpTransport(url, "wrong-token").request(
-                            "POST", route, body=body
-                        )
-                    assert refused.value.status_code == 401
-                    assert registry.cursor(RUN, 1) == -1
-                    assert store.read_after(RUN) == []
-                    assert await client.request("POST", route, body=body) == {
-                        "attempt": 1,
-                        "seq": 0,
-                    }
-                    # A valid but gapped live push must not commit a cursor/row.
-                    with pytest.raises(ClientTransportError) as rejected:
-                        await client.request(
-                            "POST",
-                            route,
-                            body={"attempt": 1, "events": [asdict(event(80))]},
-                        )
-                    assert rejected.value.status_code == 409
-                    assert registry.cursor(RUN, 1) == 0
-                    assert store.read_after(RUN) == [event(0)]
-                    malformed = asdict(event(1))
-                    malformed["seq"] = True
-                    with pytest.raises(ClientTransportError) as malformed_rejection:
-                        await client.request(
-                            "POST",
-                            route,
-                            body={"attempt": 1, "events": [malformed]},
-                        )
-                    assert malformed_rejection.value.status_code == 409
-                    assert registry.cursor(RUN, 1) == 0
-                    assert registry.get(RUN).event_count == 1
-                    assert store.read_after(RUN) == [event(0)]
                 # Journal-origin ingestion legitimately contains sparse seqs.
-                ingestor.push("test-owned-plan", RUN, 1, [event(80)], journal=True)
+                ingestor.push(
+                    "test-owned-plan", RUN, 1, [event(0), event(80)], journal=True
+                )
                 ingestor.push(
                     "test-owned-plan", RUN, 2, [event(0, 2), event(90, 2)], journal=True
                 )
                 ingestor.push("test-owned-plan", RUN, 10, [event(0, 10)], journal=True)
+                async with (
+                    wire_phase(authenticated_app(store, broker)) as (url, _),
+                    httpx.AsyncClient() as client,
+                ):
+                    refused = await client.get(
+                        f"{url}/api/runs/{RUN}/events",
+                        headers={"Authorization": "Bearer wrong-token"},
+                    )
+                    assert refused.status_code == 401
             finally:
                 store.close()
 
@@ -242,12 +250,12 @@ def test_authenticated_commit_reject_restart_and_sparse_attempt_replay(tmp_path)
                     if b"id: 10:0" in payload:
                         disconnected.set()
 
-                app = authenticated_app(None, store, broker)
+                app = authenticated_app(store, broker)
                 async with wire_phase(app, on_body=finish) as (url, requests):
                     received = [
                         item
-                        async for item in HttpTransport(url, TOKEN).events(
-                            RUN, last_event_id="1:0"
+                        async for item in read_events(
+                            url, TOKEN, RUN, last_event_id="1:0"
                         )
                     ]
                     assert received == [
@@ -265,16 +273,7 @@ def test_authenticated_commit_reject_restart_and_sparse_attempt_replay(tmp_path)
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize(
-    "corrupt_control",
-    [
-        None,
-        b'event: overflow\ndata: {"resumePosition":{"attempt":2,"seq":0}}\n\n',
-        b'event: overflow\ndata: {"resumePosition":{"attempt":true,"seq":0}}\n\n',
-        b"event: overflow\ndata: not-json\n\n",
-    ],
-)
-def test_real_overflow_and_corrupt_controls_do_not_advance(tmp_path, corrupt_control):
+def test_real_overflow_does_not_advance(tmp_path):
     async def scenario():
         with Registry(tmp_path / "registry.db") as registry:
             registry.apply_events(RUN, 1, [event(0)])
@@ -289,31 +288,19 @@ def test_real_overflow_and_corrupt_controls_do_not_advance(tmp_path, corrupt_con
                         broker.notify(RUN)
                         broker.notify(RUN)
 
-                app = authenticated_app(None, store, broker)
+                app = authenticated_app(store, broker)
                 delivered, committed_cursor = [], (0, -1)
-                async with wire_phase(
-                    app,
-                    on_body=overflow_after_delivery,
-                    corrupt_control=corrupt_control,
-                ) as (url, _):
+                async with wire_phase(app, on_body=overflow_after_delivery) as (url, _):
 
                     async def consume():
                         nonlocal committed_cursor
-                        async for item in HttpTransport(url, TOKEN).events(RUN):
+                        async for item in read_events(url, TOKEN, RUN):
                             delivered.append(item)
                             if isinstance(item, Envelope):
                                 committed_cursor = item.attempt, item.seq
 
-                    if corrupt_control is None:
-                        await consume()
-                        assert delivered == [
-                            event(0),
-                            StreamControl("overflow", (1, 0)),
-                        ]
-                    else:
-                        with pytest.raises(ClientTransportError):
-                            await consume()
-                        assert delivered == [event(0)]
+                    await consume()
+                    assert delivered == [event(0), StreamControl("overflow", (1, 0))]
                 assert committed_cursor == (1, 0)
                 assert registry.cursor(RUN, 1) == 1
                 assert store.read_after(RUN, committed_cursor) == [event(1)]
@@ -333,7 +320,9 @@ def test_real_overflow_and_corrupt_controls_do_not_advance(tmp_path, corrupt_con
                 ):
                     replayed = [
                         item
-                        async for item in HttpTransport(url, TOKEN).events(
+                        async for item in read_events(
+                            url,
+                            TOKEN,
                             RUN,
                             last_event_id=(
                                 f"{committed_cursor[0]}:{committed_cursor[1]}"
@@ -360,7 +349,7 @@ def test_durable_setup_does_not_consume_wire_phase_deadline(tmp_path):
                 # Stand in for slow synchronous Windows migrations/fsync. The
                 # original whole-scenario deadline expired at the next await.
                 time.sleep(5.1)
-                app = authenticated_app(None, store, broker)
+                app = authenticated_app(store, broker)
                 async with wire_phase(app):
                     pass
                 assert not broker._subscribers
@@ -377,10 +366,10 @@ def test_stalled_wire_phase_times_out_and_reaps_real_stream(tmp_path):
             store, broker = EventLogStore(registry.path), EventBroker()
             delivered = []
             try:
-                app = authenticated_app(None, store, broker)
+                app = authenticated_app(store, broker)
                 with pytest.raises(TimeoutError):
                     async with wire_phase(app) as (url, _):
-                        async for item in HttpTransport(url, TOKEN).events(RUN):
+                        async for item in read_events(url, TOKEN, RUN):
                             delivered.append(item)
                             # No finish callback: a real subscriber waits for
                             # another event until the wire deadline cancels it.

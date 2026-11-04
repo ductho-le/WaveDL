@@ -13,10 +13,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from wavedl.core.credentials import credential_bytes, read_credential
-from wavedl.core.live_push import LivePushConfig
 from wavedl.core.protocol import strict_loads
 from wavedl.core.safe_files import read_regular_file
+from wavedl_daemon.credentials import credential_bytes, read_credential
 
 
 class ClientError(RuntimeError):
@@ -32,15 +31,52 @@ def _unique_pairs(items):
     return result
 
 
+def _origin(url):
+    """Accept only a bare https origin, or http to a loopback host."""
+    try:
+        # urlsplit silently strips tabs and newlines, so refuse them first.
+        if any(not 33 <= ord(char) <= 126 for char in url):
+            raise ValueError
+        parsed = urlsplit(url)
+        host = parsed.hostname
+        port = parsed.port
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            # Refuse shorthand numeric hosts such as 127.1, which resolvers
+            # expand to a different address than the text shows.
+            if not host or all(char in "0123456789." for char in host):
+                raise
+            address = None
+        loopback = host.lower() == "localhost" or bool(address and address.is_loopback)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+            or port == 0
+            or "%" in host
+            or (parsed.scheme == "http" and not loopback)
+        ):
+            raise ValueError
+    except (TypeError, ValueError, AttributeError):
+        raise ValueError("Invalid daemon URL") from None
+    return url
+
+
 class DaemonClient:
     """Bounded header-authenticated requests, with no proxies or redirects."""
 
     def __init__(self, url, token, *, timeout=30):
         credential_bytes(token)
-        self._config = LivePushConfig(url, token, deadline=timeout)
+        if type(timeout) not in (int, float) or not 0 < timeout <= 30:
+            raise ValueError("Invalid daemon timeout")
+        self._url, self._token, self._timeout = _origin(url), token, timeout
 
     async def _exchange(self, method, path, body, headers):
-        parsed = urlsplit(self._config.url)
+        parsed = urlsplit(self._url)
         host = parsed.hostname
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         writer = None
@@ -103,7 +139,7 @@ class DaemonClient:
         data, headers = self._request_parts(method, path, body, idempotency_key)
         try:
             raw = await asyncio.wait_for(
-                self._exchange(method, path, data, headers), self._config.deadline
+                self._exchange(method, path, data, headers), self._timeout
             )
             result = strict_loads(raw)
             # Check duplicate identity keys without relaxing the finite-number
@@ -143,7 +179,7 @@ class DaemonClient:
         ):
             raise ClientError("Invalid daemon request")
         headers = {
-            "Authorization": f"Bearer {self._config.token}",
+            "Authorization": f"Bearer {self._token}",
             "Accept": "application/json",
         }
         try:

@@ -11,7 +11,6 @@ from pathlib import Path
 
 from wavedl import __version__
 from wavedl.core.events import ErrorPayload, ExitPayload, HelloPayload, StatePayload
-from wavedl.core.live_push import LivePushClient, LivePushConfig
 from wavedl.core.manifest import RuntimeSelection
 from wavedl.core.training_cli import training_defaults
 from wavedl.journal import RunJournal, _read_manifest, bootstrap_run
@@ -102,15 +101,6 @@ def open_training_runtime(args, accelerator):
         prefix=sys.prefix,
         base_prefix=sys.base_prefix,
     )
-    push_client = None
-    if main:
-        try:
-            push_config = LivePushConfig.from_environment(os.environ)
-            if push_config is not None:
-                push_client = LivePushClient(push_config)
-        except (ValueError, RuntimeError):
-            # Misconfigured optional delivery never prevents authoritative IO.
-            pass
     journal = None
     try:
         journal = RunJournal(
@@ -118,7 +108,6 @@ def open_training_runtime(args, accelerator):
             hello=hello,
             is_main_process=main,
             rank=rank,
-            push_client=push_client,
         )
         journal.log(
             f"Training runtime rank {rank}: {device}, {sys.executable}", stream="system"
@@ -126,13 +115,10 @@ def open_training_runtime(args, accelerator):
         journal.emit("state", StatePayload("starting"))
     except BaseException as primary:
         # Lifecycle ownership transfers only after all startup writes succeed.
-        # RunJournal cleans up a failed constructor, but an optional push client
-        # can also exist before construction reaches that cleanup scope.
+        # RunJournal cleans up a failed constructor itself.
         try:
             if journal is not None:
                 journal.close()
-            elif push_client is not None:
-                push_client.close()
         except BaseException as cleanup:
             raise BaseExceptionGroup(
                 "Runtime startup and cleanup failed", [primary, cleanup]

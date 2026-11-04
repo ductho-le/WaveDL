@@ -13,7 +13,6 @@ from uuid import uuid4
 import pytest
 
 from wavedl.core.layout import OperationKind, RunLayout, allocate_attempt
-from wavedl.core.live_push import LivePushConfig
 from wavedl.core.manifest import RuntimeSelection, build_manifest, write_manifest
 from wavedl_daemon.backends.contracts import (
     ObservationStatus,
@@ -188,13 +187,13 @@ def test_explicit_reserved_local_environment_is_refused_before_execution(tmp_pat
         prepared(tmp_path, **{key: "unapproved"})
 
 
-def test_live_credentials_are_ephemeral_child_environment_only(tmp_path, dispatch):
+def test_local_child_environment_has_no_daemon_credentials(
+    tmp_path, dispatch, monkeypatch
+):
+    monkeypatch.setenv("WAVEDL_DAEMON_TOKEN", "ambient-private-token")
+    monkeypatch.setenv("WAVEDL_DAEMON_URL", "http://127.0.0.1:8420")
     plan, attempt = prepared(tmp_path)
-    token = "ephemeral-private-token"
-    backend = LocalBackend(
-        dispatch_lock=dispatch,
-        live_push=LivePushConfig("http://127.0.0.1:8420", token),
-    )
+    backend = LocalBackend(dispatch_lock=dispatch)
     specs = []
     original = backend._supervisor.start
 
@@ -207,16 +206,10 @@ def test_live_credentials_are_ephemeral_child_environment_only(tmp_path, dispatc
     try:
         handle = backend.submit(plan, request_id="request", attempt=attempt)
         terminal(backend, handle)
-        assert "WAVEDL_DAEMON_TOKEN" not in specs[0].environment
-        assert specs[1].environment["WAVEDL_DAEMON_TOKEN"] == token
-        assert specs[1].environment["WAVEDL_DAEMON_URL"] == "http://127.0.0.1:8420"
-        assert token not in plan.to_json()
-        root = Path(plan.run_dir)
-        assert token.encode() not in (root / "manifest.json").read_bytes()
-        assert (
-            token.encode()
-            not in (root / "attempts/1/local-submission.json").read_bytes()
-        )
+        assert len(specs) == 2
+        for spec in specs:
+            assert "WAVEDL_DAEMON_TOKEN" not in spec.environment
+            assert "WAVEDL_DAEMON_URL" not in spec.environment
     finally:
         backend.close()
 

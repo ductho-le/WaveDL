@@ -13,7 +13,6 @@ on:
       - "src/wavedl/launch_runtime.py"
       - "src/wavedl/local_startup.py"
       - "src/wavedl/checkpointing.py"
-      - "src/wavedl/client.py"
       - "src/wavedl/operations.py"
       - "src/wavedl/utils/**"
       - "src/wavedl_daemon/**"
@@ -41,7 +40,6 @@ on:
       - "src/wavedl/launch_runtime.py"
       - "src/wavedl/local_startup.py"
       - "src/wavedl/checkpointing.py"
-      - "src/wavedl/client.py"
       - "src/wavedl/operations.py"
       - "src/wavedl/utils/**"
       - "src/wavedl_daemon/**"
@@ -154,9 +152,9 @@ jobs:
       - name: Verify installed dependency contracts
         run: python -m pip check
       - name: Check daemon coding conventions
-        run: python -m ruff check src/wavedl/core src/wavedl/client.py src/wavedl/operations.py src/wavedl/launcher.py src/wavedl/distributed_launch.py src/wavedl/launch_runtime.py src/wavedl/local_startup.py src/wavedl/runtime.py src/wavedl/checkpointing.py src/wavedl/journal.py src/wavedl/train.py src/wavedl/test.py src/wavedl_daemon unit_tests/core unit_tests/daemon
+        run: python -m ruff check src/wavedl/core src/wavedl/operations.py src/wavedl/launcher.py src/wavedl/distributed_launch.py src/wavedl/launch_runtime.py src/wavedl/local_startup.py src/wavedl/runtime.py src/wavedl/checkpointing.py src/wavedl/journal.py src/wavedl/train.py src/wavedl/test.py src/wavedl_daemon unit_tests/core unit_tests/daemon
       - name: Check daemon formatting
-        run: python -m ruff format --check src/wavedl/core src/wavedl/client.py src/wavedl/operations.py src/wavedl/launcher.py src/wavedl/distributed_launch.py src/wavedl/launch_runtime.py src/wavedl/local_startup.py src/wavedl/runtime.py src/wavedl/checkpointing.py src/wavedl/journal.py src/wavedl/train.py src/wavedl/test.py src/wavedl_daemon unit_tests/core unit_tests/daemon
+        run: python -m ruff format --check src/wavedl/core src/wavedl/operations.py src/wavedl/launcher.py src/wavedl/distributed_launch.py src/wavedl/launch_runtime.py src/wavedl/local_startup.py src/wavedl/runtime.py src/wavedl/checkpointing.py src/wavedl/journal.py src/wavedl/train.py src/wavedl/test.py src/wavedl_daemon unit_tests/core unit_tests/daemon
       # The top-level runtime/cleanup/DDP tests use parent ML fixtures and run in
       # test.yml; this matrix preserves independently runnable light contracts.
       - name: Verify scoped test-process ownership setup and native restoration

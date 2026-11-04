@@ -17,10 +17,10 @@ import httpx
 import pytest
 import uvicorn
 
-from wavedl.client import ClientError, DaemonClient
-from wavedl.core.credentials import read_credential
 from wavedl_daemon import cli
 from wavedl_daemon.cli import _site, build_parser, serve
+from wavedl_daemon.client import ClientError, DaemonClient
+from wavedl_daemon.credentials import read_credential
 from wavedl_daemon.runs.runtime_service import HostedServices
 from wavedl_daemon.storage.ownership import acquire_dispatch_lock
 
@@ -33,7 +33,7 @@ def daemon_entrypoint(tmp_path):
     root = Path(__file__).resolve().parents[2]
     project = tomllib.loads((root / "pyproject.toml").read_text())
     entrypoint = project["project"]["scripts"]["wavedl"]
-    assert entrypoint == "wavedl.client:main"
+    assert entrypoint == "wavedl_daemon.client:main"
     environment = dict(os.environ)
     for key in ("PYTHONPATH", "PYTHONHOME", "WAVEDL_DAEMON_TOKEN"):
         environment.pop(key, None)
@@ -152,7 +152,7 @@ def options(tmp_path, *extra):
 
 def test_wavedl_help_lists_serve():
     result = subprocess.run(
-        [sys.executable, "-m", "wavedl.client", "--help"],
+        [sys.executable, "-m", "wavedl_daemon.client", "--help"],
         capture_output=True,
         text=True,
         check=False,
@@ -599,11 +599,41 @@ def test_client_refuses_malformed_request_target(path):
         "https://u:p@example.com",
         "https://example.com/api",
         "http://127.1",
+        "https://127.1",
+        "ftp://127.0.0.1",
+        "http://127.0.0.1:0",
+        "http://127.0.0.1#fragment",
+        "http://",
+        "https://exa\rmple.com",
+        " http://127.0.0.1:8420",
+        "http://127.0.0.1:8420\n",
+        "https://éxample.com",
+        "http://[::1%25lo0]:8420",
+        "https://bad%20host",
     ],
 )
 def test_client_refuses_unsafe_origin(url):
     with pytest.raises(ValueError):
         DaemonClient(url, "private-token")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1:8420",
+        "http://localhost:8420/",
+        "http://[::1]:8420",
+        "https://example.com",
+    ],
+)
+def test_client_accepts_loopback_or_https_origin(url):
+    DaemonClient(url, "private-token")
+
+
+@pytest.mark.parametrize("timeout", [0, -1, 31, True, "5"])
+def test_client_refuses_unbounded_timeout(timeout):
+    with pytest.raises(ValueError):
+        DaemonClient("http://127.0.0.1:8420", "private-token", timeout=timeout)
 
 
 @pytest.mark.parametrize(

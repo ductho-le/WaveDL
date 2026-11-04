@@ -127,7 +127,6 @@ class LocalExecution:
         probe_timeout: float = 10,
         cancel_grace: float = 0.2,
         supervisor: Supervisor | None = None,
-        live_push=None,
     ):
         for value in (max_processes, max_handles):
             if type(value) is not int or value < 1:
@@ -151,12 +150,6 @@ class LocalExecution:
 
                 supervisor = POSIXSupervisor()
         self.dispatch_lock = dispatch_lock
-        if live_push is not None:
-            from wavedl.core.live_push import LivePushConfig
-
-            if not isinstance(live_push, LivePushConfig):
-                raise ValueError("Live push requires a validated ephemeral config")
-        self._live_push = live_push
         self._pid = os.getpid()
         self.owner = owner or secrets.token_urlsafe(32)
         self._supervisor = supervisor
@@ -353,13 +346,6 @@ class LocalExecution:
                     "Local submission reservation already exists; never resubmit"
                 ) from error
             environment = local_environment(plan)
-            # Credentials exist only in the child environment. They never enter
-            # an approved/persisted plan, reservation, manifest or argv.
-            if self._live_push is not None:
-                environment.update(
-                    WAVEDL_DAEMON_URL=self._live_push.url,
-                    WAVEDL_DAEMON_TOKEN=self._live_push.token,
-                )
             environment.update(
                 WAVEDL_RUN_ID=plan.run_id,
                 WAVEDL_REQUEST_ID=request_id,
@@ -479,11 +465,6 @@ class LocalExecution:
                 ).encode(),
             )
             environment = local_environment(plan)
-            if self._live_push is not None:
-                environment.update(
-                    WAVEDL_DAEMON_URL=self._live_push.url,
-                    WAVEDL_DAEMON_TOKEN=self._live_push.token,
-                )
             environment.update(
                 WAVEDL_RUN_ID=plan.run_id,
                 WAVEDL_REQUEST_ID=request_id,

@@ -7,8 +7,12 @@ import json
 from typing import TYPE_CHECKING
 
 from wavedl.core.events import ArtifactPayload, SupersedePayload
-from wavedl.core.metric_history import MetricRecord, checked_metric, validate_boundary
 from wavedl.core.protocol import ProtocolError
+from wavedl_daemon.storage.metric_history import (
+    MetricRecord,
+    checked_metric,
+    validate_boundary,
+)
 from wavedl_daemon.storage.schema import Migration, MigrationFailed, schema_version
 
 

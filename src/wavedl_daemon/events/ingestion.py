@@ -7,10 +7,10 @@ from contextlib import ExitStack
 from itertools import islice
 from pathlib import Path
 
-from wavedl.core.journal_reader import JournalReader
 from wavedl.core.protocol import Envelope, ProtocolError
 from wavedl.core.safe_files import open_directory
 from wavedl_daemon.backends.contracts import Handle
+from wavedl_daemon.events.journal_reader import JournalReader
 from wavedl_daemon.execution.budget import BudgetExhausted
 from wavedl_daemon.runs.negotiation import (
     NegotiationStatus,

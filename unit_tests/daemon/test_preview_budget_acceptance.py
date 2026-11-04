@@ -15,11 +15,11 @@ import pytest
 from scipy.io import savemat
 from starlette.testclient import TestClient
 
-from wavedl.core.dataset_preview import PreviewLimits
 from wavedl_daemon.execution.budget import WorkBudget
 from wavedl_daemon.execution.pool import BoundedThreadPool
 from wavedl_daemon.http.app import create_app
 from wavedl_daemon.runs.catalog import CatalogService
+from wavedl_daemon.runs.dataset_preview import PreviewLimits
 from wavedl_daemon.runs.preview_service import (
     DatasetPreviewService,
     PreviewTooLarge,

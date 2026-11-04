@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import inspect
-import json
 import re
 from uuid import UUID
 
@@ -14,15 +13,8 @@ from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import StreamingResponse
 
-from wavedl.core.protocol import ProtocolError, decode
 from wavedl_daemon.events.streaming import EVENT_SERVICE_ERRORS, stream_events
-from wavedl_daemon.http.app import strict_json_route
-from wavedl_daemon.http.schemas.common import (
-    API_ERRORS,
-    JSON_BODY_ERRORS,
-    ErrorResponse,
-)
-from wavedl_daemon.http.schemas.events import EventAck, EventPushRequest
+from wavedl_daemon.http.schemas.common import API_ERRORS
 from wavedl_daemon.storage.event_log import validate_cursor
 
 
@@ -35,19 +27,6 @@ def _identity(request):
     if canonical != run_id:
         raise HTTPException(400, "Invalid run identity")
     return run_id
-
-
-class _EventPushRoute(strict_json_route(1024 * 1024)):
-    """Retain identity refusal before body reading on the frozen producer route."""
-
-    def get_route_handler(self):
-        original_handler = super().get_route_handler()
-
-        async def check_identity(request: Request):
-            _identity(request)
-            return await original_handler(request)
-
-        return check_identity
 
 
 def _number(value, minimum):
@@ -73,32 +52,11 @@ class _OwnedStreamingResponse(StreamingResponse):
             self.broker.unsubscribe(self.subscription)
 
 
-def event_routes(*, ingestor, event_log, broker, resolve_plan):
+def event_routes(*, event_log, broker, resolve_plan):
     """resolve_plan(run_id) supplies the daemon-approved active plan identity."""
 
     async def resolve(value):
         return await value if inspect.isawaitable(value) else value
-
-    async def push(run_id: str, body: EventPushRequest, request: Request):
-        run_id = _identity(request)
-        attempt, values = body.attempt, body.events
-        try:
-            plan_id = await resolve(resolve_plan(run_id))
-            try:
-                batch = [decode(json.dumps(value, allow_nan=False)) for value in values]
-            except (ProtocolError, ValueError) as error:
-                await resolve(
-                    ingestor.reject_runtime_events(plan_id, run_id, attempt, str(error))
-                )
-                raise
-            position = await resolve(ingestor.push(plan_id, run_id, attempt, batch))
-        except KeyError:
-            raise HTTPException(404, "Unknown run") from None
-        except (ProtocolError, ValueError):
-            raise HTTPException(409, "Runtime events rejected") from None
-        except EVENT_SERVICE_ERRORS:
-            raise HTTPException(503, "Event service unavailable") from None
-        return {"attempt": attempt, "seq": position}
 
     async def events(run_id: str, request: Request):
         run_id = _identity(request)
@@ -160,15 +118,6 @@ def event_routes(*, ingestor, event_log, broker, resolve_plan):
             raise
 
     router = APIRouter()
-    router.add_api_route(
-        "/api/runs/{run_id}/events",
-        push,
-        operation_id="push_events",
-        responses=JSON_BODY_ERRORS | {403: {"model": ErrorResponse}},
-        methods=["POST"],
-        response_model=EventAck,
-        route_class_override=_EventPushRoute,
-    )
     router.add_api_route(
         "/api/runs/{run_id}/events",
         events,

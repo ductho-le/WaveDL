@@ -15,11 +15,11 @@ from starlette.requests import ClientDisconnect, Request
 from unit_tests.daemon import test_adoption_service as adoption_tests
 from unit_tests.daemon.conftest import route_app
 from wavedl.core.events import HelloPayload
-from wavedl.core.journal_reader import JournalReader
 from wavedl.core.protocol import Envelope, ProtocolError, decode, encode
 from wavedl.journal import RunJournal, bootstrap_run
 from wavedl_daemon.events.broker import EventBroker
 from wavedl_daemon.events.ingestion import Ingestor
+from wavedl_daemon.events.journal_reader import JournalReader
 from wavedl_daemon.events.streaming import stream_events
 from wavedl_daemon.execution.budget import BudgetExhausted, StorageWorkError, WorkBudget
 from wavedl_daemon.execution.pool import BoundedThreadPool
@@ -325,11 +325,13 @@ def test_first_push_gap_does_not_commit_hello_provenance(tmp_path, include_hello
             )
             later = replace(event(2), run_id=plan.run_id, attempt=binding.attempt)
             with pytest.raises(ProtocolError, match="gap"):
-                await services.ingestor.push(
-                    plan.plan_id,
-                    plan.run_id,
-                    binding.attempt,
-                    [hello, later] if include_hello else [later],
+                await services.host.call(
+                    lambda session: session.ingestor.push(
+                        plan.plan_id,
+                        plan.run_id,
+                        binding.attempt,
+                        [hello, later] if include_hello else [later],
+                    )
                 )
             snapshot = await services.host.call(
                 lambda session: (
@@ -339,8 +341,10 @@ def test_first_push_gap_does_not_commit_hello_provenance(tmp_path, include_hello
             )
             assert snapshot == (None, -1)
             assert await services.event_log.read_after(plan.run_id) == []
-            await services.ingestor.push(
-                plan.plan_id, plan.run_id, binding.attempt, [hello]
+            await services.host.call(
+                lambda session: session.ingestor.push(
+                    plan.plan_id, plan.run_id, binding.attempt, [hello]
+                )
             )
             assert await services.event_log.read_after(plan.run_id) == [hello]
         finally:
@@ -384,9 +388,7 @@ def test_conflicting_duplicate_push_is_rejected(tmp_path):
     ],
 )
 def test_http_rejects_invalid_or_partial_cursors(query):
-    routes = event_routes(
-        ingestor=None, event_log=None, broker=None, resolve_plan=lambda run: "plan"
-    )
+    routes = event_routes(event_log=None, broker=None, resolve_plan=lambda run: "plan")
 
     async def scenario():
         async with httpx.AsyncClient(
@@ -407,9 +409,7 @@ def test_http_rejects_noncanonical_run_identity_without_resolving():
         called = True
         raise AssertionError("noncanonical identity must be rejected at the route")
 
-    routes = event_routes(
-        ingestor=None, event_log=None, broker=None, resolve_plan=resolve
-    )
+    routes = event_routes(event_log=None, broker=None, resolve_plan=resolve)
 
     async def scenario():
         async with httpx.AsyncClient(
@@ -423,35 +423,6 @@ def test_http_rejects_noncanonical_run_identity_without_resolving():
 
     asyncio.run(scenario())
     assert not called
-
-
-def test_http_push_is_bounded_and_requires_explicit_attempt():
-    routes = event_routes(
-        ingestor=None, event_log=None, broker=None, resolve_plan=lambda run: "plan"
-    )
-
-    async def scenario():
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=route_app(routes=routes)),
-            base_url="http://testserver",
-        ) as client:
-            path = f"/api/runs/{RUN_ID}/events"
-            response = await client.post(path, json={"events": []})
-            assert response.status_code == 400
-            response = await client.post(path, json={"attempt": True, "events": [{}]})
-            assert response.status_code == 400
-            response = await client.post(
-                path, json={"attempt": 1, "events": [{}] * 1025}
-            )
-            assert response.status_code == 400
-            response = await client.post(
-                path,
-                content=b"x" * (1024 * 1024 + 1),
-                headers={"Content-Type": "application/json"},
-            )
-            assert response.status_code == 413
-
-    asyncio.run(scenario())
 
 
 def test_only_filesystem_read_runs_on_shared_worker(tmp_path, monkeypatch):
@@ -592,47 +563,16 @@ def test_unsupported_first_journal_protocol_records_rejection_on_owner(tmp_path)
     ]
 
 
-def test_async_owner_adapter_replay_and_http_push():
+def test_async_owner_adapter_replay():
     class AsyncStore:
         async def read_after(self, run_id, cursor, *, limit):
             await asyncio.sleep(0)
             return [event(0)] if cursor == (0, -1) else []
 
-    class AsyncIngestor:
-        async def push(self, plan_id, run_id, attempt, events):
-            await asyncio.sleep(0)
-            assert (plan_id, run_id, attempt) == ("plan", RUN_ID, 1)
-            return events[-1].seq
-
-    async def resolve(run_id):
-        await asyncio.sleep(0)
-        return "plan"
-
     async def scenario():
-        broker = EventBroker()
-        stream = stream_events(AsyncStore(), broker, RUN_ID)
+        stream = stream_events(AsyncStore(), EventBroker(), RUN_ID)
         assert b"id: 1:0" in await anext(stream)
         await stream.aclose()
-        routes = event_routes(
-            ingestor=AsyncIngestor(),
-            event_log=AsyncStore(),
-            broker=broker,
-            resolve_plan=resolve,
-        )
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=route_app(routes=routes)),
-            base_url="http://testserver",
-        ) as client:
-            import json
-
-            response = await client.post(
-                f"/api/runs/{RUN_ID}/events",
-                json={
-                    "attempt": 1,
-                    "events": [json.loads(encode(event(0)))],
-                },
-            )
-            assert response.json() == {"attempt": 1, "seq": 0}
 
     asyncio.run(scenario())
 
@@ -784,28 +724,21 @@ def test_unregistered_historical_record_never_rejects_active_runtime(tmp_path):
         assert registry.cursor(RUN_ID, 1) == -1
 
 
-@pytest.mark.parametrize("method", ["GET", "POST"])
 @pytest.mark.parametrize(
     "failure", [BudgetExhausted, StorageWorkError, sqlite3.OperationalError]
 )
-def test_event_http_resolver_storage_failures_are_redacted_503(method, failure):
+def test_event_http_resolver_storage_failures_are_redacted_503(failure):
     async def resolver(run_id):
         raise failure("secret-token private-path")
 
-    routes = event_routes(
-        ingestor=None, event_log=None, broker=EventBroker(), resolve_plan=resolver
-    )
+    routes = event_routes(event_log=None, broker=EventBroker(), resolve_plan=resolver)
 
     async def scenario():
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=route_app(routes=routes)),
             base_url="http://testserver",
         ) as client:
-            response = await client.request(
-                method,
-                f"/api/runs/{RUN_ID}/events",
-                json={"attempt": 1, "events": [{}]},
-            )
+            response = await client.get(f"/api/runs/{RUN_ID}/events")
             assert response.status_code == 503
             assert "secret-token" not in response.text
             assert "private-path" not in response.text
@@ -818,7 +751,6 @@ def test_event_http_full_broker_rejects_before_stream_headers():
         broker = EventBroker(max_subscribers=1)
         occupied = broker.subscribe(RUN_ID)
         routes = event_routes(
-            ingestor=None,
             event_log=None,
             broker=broker,
             resolve_plan=lambda run: "plan",
@@ -847,7 +779,6 @@ def test_event_http_first_read_failure_releases_admitted_subscriber():
     async def scenario():
         broker = EventBroker()
         routes = event_routes(
-            ingestor=None,
             event_log=FailedStore(),
             broker=broker,
             resolve_plan=lambda run: "plan",
@@ -875,7 +806,6 @@ def test_event_http_cancelled_initial_query_releases_admitted_subscriber():
 
         broker = EventBroker()
         routes = event_routes(
-            ingestor=None,
             event_log=SlowStore(),
             broker=broker,
             resolve_plan=lambda run: "plan",
@@ -921,7 +851,6 @@ def test_stream_asgi_failure_before_iteration_releases_preadmitted_subscriber():
     async def scenario():
         broker = EventBroker()
         routes = event_routes(
-            ingestor=None,
             event_log=Store(),
             broker=broker,
             resolve_plan=lambda run: "plan",
@@ -935,7 +864,7 @@ def test_stream_asgi_failure_before_iteration_releases_preadmitted_subscriber():
             "path_params": {"run_id": RUN_ID},
             "asgi": {"version": "3.0", "spec_version": "2.4"},
         }
-        response = await routes[1].endpoint(RUN_ID, Request(scope))
+        response = await routes[0].endpoint(RUN_ID, Request(scope))
         assert broker._subscribers
 
         async def receive():

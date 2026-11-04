@@ -20,7 +20,7 @@ from wavedl.core.local_attempt import (
     coordinate_local_attempt,
     read_local_binding,
 )
-from wavedl.core.protocol import Envelope
+from wavedl.core.protocol import Envelope, encode
 from wavedl.core.submission import (
     create_submission,
     identity_for_submission,
@@ -155,7 +155,7 @@ class Backend:
         pass
 
 
-def test_hosted_lifecycle_push_and_artifacts(tmp_path, monkeypatch):
+def test_hosted_lifecycle_journal_and_artifacts(tmp_path, monkeypatch):
     def forbidden_allocation(*args, **kwargs):
         pytest.fail("The daemon must not allocate writer-mode runtime attempts")
 
@@ -259,12 +259,14 @@ def test_hosted_lifecycle_push_and_artifacts(tmp_path, monkeypatch):
                     )
                 ),
             )
-            response = await client.post(
-                f"/api/runs/{planned['run_id']}/events",
-                json={"attempt": attempt, "events": [asdict(hello)]},
-            )
-            assert response.status_code == 200, response.text
-            page = await services.event_log.read_after(planned["run_id"])
+            layout = RunLayout(settings.run_root / planned["run_id"], planned["run_id"])
+            layout.journal(attempt).write_bytes(encode(hello))
+            # The real hosted pump discovers and ingests the durable journal.
+            deadline = time.monotonic() + 3
+            page = []
+            while not page and time.monotonic() < deadline:
+                page = await services.event_log.read_after(planned["run_id"])
+                await asyncio.sleep(0.01)
             assert page == [hello]
             attempts_page = await client.get(f"/api/runs/{planned['run_id']}/attempts")
             assert attempts_page.status_code == 200
@@ -285,7 +287,6 @@ def test_hosted_lifecycle_push_and_artifacts(tmp_path, monkeypatch):
                 assert (
                     await client.get(f"/api/runs/{planned['run_id']}/attempts?{query}")
                 ).status_code == 400
-            layout = RunLayout(settings.run_root / planned["run_id"], planned["run_id"])
             layout.checkpoints.mkdir(exist_ok=True)
             source = tmp_path / "staging"
             source.mkdir()

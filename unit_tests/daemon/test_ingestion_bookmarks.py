@@ -6,11 +6,11 @@ from uuid import uuid4
 import pytest
 
 from wavedl.core.events import HelloPayload
-from wavedl.core.journal_reader import JournalReader
 from wavedl.core.protocol import Envelope, ProtocolError, encode
 from wavedl_daemon.backends.contracts import Handle
 from wavedl_daemon.events.broker import EventBroker
 from wavedl_daemon.events.ingestion import Ingestor
+from wavedl_daemon.events.journal_reader import JournalReader
 from wavedl_daemon.execution.budget import BudgetExhausted, WorkBudget
 from wavedl_daemon.execution.pool import BoundedThreadPool
 from wavedl_daemon.runs.negotiation import NegotiationStatus

@@ -9,8 +9,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from wavedl.core.dataset_headers import InspectionLimits, InspectionRefused
 from wavedl_daemon.execution.commands import run_command
+from wavedl_daemon.runs.dataset_headers import InspectionLimits, InspectionRefused
 from wavedl_daemon.runs.preview_authority import (
     PreviewAuthority,
     PreviewChanged,
@@ -190,7 +190,7 @@ class DatasetInspector:
             raise
 
     def _inspect_path(self, path: str, token, *, expected_identity=None) -> dict:
-        argv = [self.python, "-m", "wavedl.core.dataset_headers", "--path", path]
+        argv = [self.python, "-m", "wavedl_daemon.runs.dataset_headers", "--path", path]
         if expected_identity is not None:
             argv.extend(
                 (
