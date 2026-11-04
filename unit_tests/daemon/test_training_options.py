@@ -1,5 +1,6 @@
 """The daemon's option table matches upstream's command line and the browser's copy."""
 
+import argparse
 import importlib.util
 import json
 import os
@@ -60,8 +61,28 @@ def upstream():
     }
 
 
+@pytest.fixture
+def upstream_required_options(upstream, monkeypatch):
+    from wavedl import test
+
+    required = {}
+
+    def capture(parser: argparse.ArgumentParser) -> argparse.Namespace:
+        for action in parser._actions:
+            if action.required:
+                for alias in action.option_strings:
+                    required[alias] = (action.default, action.required)
+        return argparse.Namespace()
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", capture)
+    test.parse_args()
+    return required
+
+
 @pytest.mark.parametrize("operation", [Operation.TRAIN, Operation.TEST])
-def test_every_table_option_is_upstream_with_a_compatible_shape(upstream, operation):
+def test_every_table_option_is_upstream_with_a_compatible_shape(
+    upstream, upstream_required_options, operation
+):
     for name, option in OPTIONS[operation].items():
         assert flag(name) in upstream[operation], name
         arguments, shown = upstream[operation][flag(name)]
@@ -70,7 +91,15 @@ def test_every_table_option_is_upstream_with_a_compatible_shape(upstream, operat
         if arguments.startswith("{"):
             choices = set(arguments.split(" ")[0][1:-1].split(","))
             assert option.choices and set(option.choices) <= choices, name
-        assert str(option.default) == shown, name
+        if operation is Operation.TEST:
+            assert option.required == (flag(name) in upstream_required_options), name
+        if option.required:
+            assert upstream_required_options[flag(name)] == (option.default, True), name
+            # Python versions differ on whether required options show defaults.
+            if shown is not None:
+                assert str(option.default) == shown, name
+        else:
+            assert str(option.default) == shown, name
 
 
 @pytest.mark.parametrize("operation", [Operation.TRAIN, Operation.TEST])
