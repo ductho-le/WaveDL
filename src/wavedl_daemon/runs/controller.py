@@ -91,6 +91,7 @@ class _Watch:
     """One Live Slurm run's polling state. A daemon restart starts it afresh."""
 
     plan_id: PlanId
+    created_at: datetime  # bounds the accounting a reused job ID could match
     due: float = 0.0
     failures: int = 0
     error: str | None = None
@@ -368,7 +369,7 @@ class RunController:
         ):
             return False
         handle = stage.handle
-        watch = self._watches.setdefault(head.ref.run_id, _Watch(head.ref.plan_id))
+        watch = self._watch(head)
         now = self._clock()
         if watch.kill_at is None:
             watch.kill_at = now + CANCEL_GRACE_SECONDS
@@ -378,6 +379,13 @@ class RunController:
         watch.kill_at = now + CANCEL_GRACE_SECONDS
         self._submit(WorkKind.CANCEL, head.ref.run_id, lambda: _kill(backend, head, handle))
         return True
+
+    def _watch(self, head: RunHead) -> _Watch:
+        watch = self._watches.get(head.ref.run_id)
+        if watch is None:
+            created_at = datetime.fromisoformat(self._record(head).created_at)
+            watch = self._watches[head.ref.run_id] = _Watch(head.ref.plan_id, created_at)
+        return watch
 
     def _submit(
         self, kind: WorkKind, run_id: RunId, work: Callable[[], Done | None]
@@ -446,18 +454,23 @@ class RunController:
             return
         now = self._clock()
         batch: list[tuple[RunId, SlurmHandle]] = []
+        since: datetime | None = None
         for head in heads:
             stage = head.stage
             if not isinstance(stage, Live) or not isinstance(stage.handle, SlurmHandle):
                 continue
-            watch = self._watches.setdefault(head.ref.run_id, _Watch(head.ref.plan_id))
+            watch = self._watch(head)
             if watch.due <= now and len(batch) < OBSERVE_BATCH:
                 batch.append((head.ref.run_id, stage.handle))
-        if not batch:
+                since = watch.created_at if since is None else min(since, watch.created_at)
+        if since is None:
             return
-        backend = self._slurm
+        backend, start = self._slurm, since
         try:
-            work = self._pool.control_lane.submit(lambda token: backend.observe_many(batch))
+            # Each scheduler command has its own timeout; a batch may take longer.
+            work = self._pool.control_lane.submit(
+                lambda token: backend.observe_many(batch, since=start), deadline=False
+            )
         except BudgetExhausted:
             self.observation_refusals += 1
             return

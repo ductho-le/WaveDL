@@ -1,9 +1,11 @@
 # Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """The Slurm backend: submit a planned batch script, find, observe and cancel it.
 
-A job is named ``wavedl-<run_id>`` with the run ID as its comment, so the
-owner, name and comment identify it in every scheduler source. Submission is
-never retried: an unknown sbatch outcome is recovered with ``find``.
+A job is named ``wavedl-<run_id>``, so its owner, name and cluster identify it
+in every scheduler source. The run ID is also its comment, which corroborates
+the name where it is stored: accounting keeps comments only with
+``AccountingStoreFlags=job_comment``. Submission is never retried: an unknown
+sbatch outcome is recovered with ``find``.
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ from wavedl_daemon.runs.model import ObservationFailed, SlurmHandle
 from wavedl_daemon.storage.ownership import require_dispatch
 
 from .contracts import UnsupportedPlan
-from .slurm_observation import observe_cluster
+from .slurm_observation import corroborates, observe_cluster
 from .slurm_plan import SlurmPlanner, SlurmSite, job_name
 
 
@@ -131,18 +133,20 @@ class SlurmBackend:
         """The job a lost submission created, if any. Never authorizes a retry.
 
         Searches the live queue and accounting since the plan was created, by
-        owner, job name and comment.
+        owner, job name and cluster.
         """
         cluster = dict(plan.resources).get("cluster")
         if not isinstance(cluster, str):
             raise UnsupportedPlan("A Slurm plan with a cluster is required")
-        name, comment = job_name(plan.run_id), plan.run_id
+        name = job_name(plan.run_id)
         since = (created_at - _CLOCK_SKEW).astimezone(UTC)
         commands = (
             (
                 "squeue",
                 "--noheader",
                 f"--user={self.owner}",
+                f"--name={name}",
+                "--states=all",
                 "--Format=JobID:100|,UserName:256|,Name:256|,Comment:256|,Cluster:256",
                 f"--clusters={cluster}",
             ),
@@ -153,6 +157,7 @@ class SlurmBackend:
                 "--allocations",
                 "--duplicates",
                 f"--user={self.owner}",
+                f"--name={name}",
                 f"--starttime={since.strftime('%Y-%m-%dT%H:%M:%S')}",
                 "--format=JobIDRaw,User%256,JobName%256,Comment%256,Cluster%256",
                 f"--clusters={cluster}",
@@ -165,18 +170,18 @@ class SlurmBackend:
             except ValueError as error:
                 raise SchedulerUnavailable(str(error)) from error
             for line in output.splitlines():
-                if not line.strip():
+                # squeue --clusters heads its rows with "CLUSTER: <name>" even with --noheader.
+                if not line.strip() or line.startswith("CLUSTER:"):
                     continue
                 fields = [field.strip() for field in line.split("|")]
                 if len(fields) != 5:
                     raise SchedulerUnavailable(f"Malformed {argv[0]} recovery row")
                 job, owner, found_name, found_comment, found_cluster = fields
-                if (owner, found_name, found_comment, found_cluster) != (
+                if (owner, found_name, found_cluster) != (
                     self.owner,
                     name,
-                    comment,
                     cluster,
-                ):
+                ) or not corroborates(found_comment, plan.run_id):
                     continue
                 if not _ACK.fullmatch(job):
                     raise SchedulerUnavailable("Invalid recovered job ID")
@@ -186,9 +191,13 @@ class SlurmBackend:
         return SlurmHandle(jobs.pop(), cluster, self.owner) if jobs else None
 
     def observe_many(
-        self, targets: Sequence[tuple[RunId, SlurmHandle]]
+        self, targets: Sequence[tuple[RunId, SlurmHandle]], *, since: datetime
     ) -> dict[RunId, SlurmObservation | ObservationFailed]:
-        """Observe jobs in one batch of queries per cluster. Blocking."""
+        """Observe jobs in one batch of queries per cluster. Blocking.
+
+        ``since`` is when the oldest of the targets' plans was created.
+        """
+        start = (since - _CLOCK_SKEW).astimezone(UTC)
         answer: dict[RunId, SlurmObservation | ObservationFailed] = {}
         clusters: dict[str, dict[str, RunId]] = {}
         for run_id, handle in targets:
@@ -199,7 +208,7 @@ class SlurmBackend:
         for cluster, jobs in clusters.items():
             try:
                 observed = observe_cluster(
-                    self._query, owner=self.owner, cluster=cluster, jobs=jobs
+                    self._query, owner=self.owner, cluster=cluster, jobs=jobs, since=start
                 )
             except (ValueError, UnicodeError) as error:
                 failed = ObservationFailed(str(error)[:512])

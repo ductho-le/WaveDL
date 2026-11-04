@@ -1,5 +1,7 @@
 """Scheduler-shaped fake responses; no real cluster commands."""
 
+import re
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -17,8 +19,43 @@ from wavedl_daemon.runs.model import (
 from wavedl_daemon.supervision.base import ProcessResult
 
 
+def listed(control):
+    """squeue's rows for scontrol records: both read the controller's memory."""
+    rows = []
+    for line in control.splitlines():
+        pairs = re.findall(r"(?:^|\s)([^\s=]+)=(\S*)", line)
+        fields = dict(reversed(pairs))
+        for job in dict.fromkeys(value for key, value in pairs if key == "JobId"):
+            rows.append(
+                "|".join(
+                    (
+                        job,
+                        fields.get("UserId", "").split("(")[0],
+                        fields.get("JobName", ""),
+                        fields.get("JobState", ""),
+                        fields.get("Reason", "None"),
+                        fields.get("Comment", "(null)"),
+                    )
+                )
+                + "\n"
+            )
+    return "".join(rows)
+
+
+def shown(control, job):
+    """``scontrol show job <job>``: only that job's record."""
+    return "".join(
+        line
+        for line in control.splitlines(keepends=True)
+        if re.search(rf"JobId={re.escape(job)}(?:\s|$)", line)
+    )
+
+
 class Runner:
-    """Answers each scheduler command with its configured output."""
+    """Answers each scheduler command with its configured output.
+
+    Unless squeue is configured, it lists the jobs scontrol knows.
+    """
 
     def __init__(self, **responses):
         self.responses = responses
@@ -31,6 +68,11 @@ class Runner:
             raise result
         if isinstance(result, ProcessResult):
             return result
+        control = self.responses.get("scontrol", "")
+        if argv[0] == "squeue" and "squeue" not in self.responses and isinstance(control, str):
+            result = listed(control)
+        if argv[0] == "scontrol":
+            result = shown(result, argv[-1])
         return ProcessResult(0, result.encode(), b"")
 
 
@@ -75,9 +117,12 @@ def queue(target, state="PENDING", reason="None", comment=None):
     return f"{handle.job_id}|alice|wavedl-{run_id}|{state}|{reason}|{comment or run_id}\n"
 
 
+SINCE = datetime(2026, 10, 1, 9, 0, tzinfo=UTC)
+
+
 def observe(runner, *targets):
     backend = SlurmBackend(SlurmSite("cpu", cluster="alpha"), runner, owner="alice")
-    result = backend.observe_many(targets)
+    result = backend.observe_many(targets, since=SINCE)
     return result[targets[0][0]] if len(targets) == 1 else result
 
 
@@ -160,12 +205,40 @@ def test_current_controller_running_overrides_accounting_terminal():
 
 @pytest.mark.parametrize(
     "change",
-    [{"owner": "bob"}, {"cluster": "other"}, {"comment": "foreign"}, {"name": "foreign"}],
+    [
+        {"owner": "bob"},
+        {"cluster": "other"},
+        {"comment": "foreign"},
+        {"name": "foreign"},
+        {"name": "a|b"},
+    ],
 )
-def test_native_identity_mismatch_rejected(change):
+def test_accounting_rows_of_a_reused_job_id_are_dropped(change):
     target = run()
-    observation = observe(Runner(sacct=account(target, **change)), target)
+    foreign = account(target, "FAILED", "1:0", **change)
+    observation = observe(Runner(sacct=foreign), target)
+    assert observation.terminal and observation.native_state is None
+    observation = observe(Runner(sacct=foreign + account(target)), target)
+    assert observation.native_state == "COMPLETED" and observation.exit_code == 0
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"UserId": "bob(1001)"}, {"Cluster": "other"}, {"Comment": "foreign"}, {"JobName": "x"}],
+)
+def test_a_live_job_of_another_identity_is_rejected(change):
+    target = run()
+    observation = observe(Runner(scontrol=controller(target, **change)), target)
     assert isinstance(observation, ObservationFailed)
+    assert "identity mismatch" in observation.detail
+
+
+def test_accounting_is_bounded_by_the_oldest_plan():
+    target = run()
+    runner = Runner(sacct=account(target))
+    observe(runner, target)
+    (sacct,) = [call for call in runner.calls if call[0] == "sacct"]
+    assert "--starttime=2026-10-01T08:55:00" in sacct
 
 
 def test_another_owners_job_is_never_queried():
@@ -222,14 +295,21 @@ def test_a_queued_job_needs_the_controller_for_its_restart_count():
 
 
 @pytest.mark.parametrize(
-    "accounting",
-    ["", "42||||||||\n", "garbage", "42|alpha|alice|name| |0:0|0|time|comment\n"],
+    "change", [{"state": " "}, {"state": ""}, {"restart": "x"}, {"code": "bad"}]
 )
-def test_malformed_and_missing_states_fail_closed(accounting):
+def test_malformed_fields_of_this_job_fail_closed(change):
     target = run()
-    if not accounting:
-        accounting = account(target, state=" ")
-    assert isinstance(observe(Runner(sacct=accounting), target), ObservationFailed)
+    assert isinstance(observe(Runner(sacct=account(target, **change)), target), ObservationFailed)
+
+
+def test_rows_of_other_jobs_never_fail_this_one():
+    target = run()
+    noise = "42||||||||\ngarbage\n43|alpha|alice|a|b|c|RUNNING|0:0|0|t|x\n"
+    observation = observe(Runner(sacct=noise + account(target)), target)
+    assert observation.native_state == "COMPLETED"
+    other = "77|alice|my|job|RUNNING|None|x\n"
+    runner = Runner(squeue=other + queue(target, "RUNNING"), scontrol=controller(target))
+    assert observe(runner, target).phase is Phase.RUNNING
 
 
 def test_queries_are_batched_per_cluster():
@@ -238,18 +318,30 @@ def test_queries_are_batched_per_cluster():
     result = observe(runner, first, second)
     assert set(result) == {first[0], second[0]}
     assert all(observation.terminal for observation in result.values())
-    assert [call[0] for call in runner.calls] == ["squeue", "scontrol", "sacct"]
-    assert "42,43" in runner.calls[2]
+    assert [call[0] for call in runner.calls] == ["squeue", "sacct"]
+    assert "42,43" in runner.calls[1]
 
 
-def test_live_identity_can_verify_accounting_without_stored_comments():
+def test_the_controller_is_asked_only_about_listed_jobs():
+    first, second, purged = run(), run("43"), run("44")
+    runner = Runner(scontrol=controller(first) + controller(second))
+    result = observe(runner, first, second, purged)
+    assert all(result[target[0]].phase is Phase.RUNNING for target in (first, second))
+    assert result[purged[0]].terminal
+    shows = [call for call in runner.calls if call[0] == "scontrol"]
+    assert shows == [
+        ("scontrol", "--clusters", "alpha", "--oneliner", "show", "job", job)
+        for job in ("42", "43")
+    ]
+
+
+@pytest.mark.parametrize("comment", ["", "(null)"])
+def test_a_job_is_identified_without_a_stored_comment(comment):
     target = run()
-    runner = Runner(
-        scontrol=controller(target, state="COMPLETED"), sacct=account(target, comment="")
-    )
-    assert observe(runner, target).terminal
-    alone = Runner(sacct=account(target, comment=""))
-    assert isinstance(observe(alone, target), ObservationFailed)
+    observation = observe(Runner(sacct=account(target, comment=comment)), target)
+    assert observation.native_state == "COMPLETED"
+    live = Runner(scontrol=controller(target, Comment=comment))
+    assert observe(live, target).phase is Phase.RUNNING
 
 
 def test_held_reason_and_queue_comment_identity():
@@ -290,15 +382,17 @@ def test_a_bad_job_does_not_fail_its_peer():
     assert result[second[0]].phase is Phase.RUNNING
 
 
-def test_controller_truncation_does_not_hide_valid_accounting():
-    target = run()
+def test_a_controller_failure_fails_only_its_listed_job():
+    first, second = run(), run("43")
     runner = Runner(
-        scontrol=ProcessResult(0, b"partial", b"", stdout_truncated=True),
-        sacct=account(target),
+        squeue=queue(first, "RUNNING"),
+        scontrol=ProcessResult(1, b"", b"controller busy"),
+        sacct=account(second),
     )
-    assert observe(runner, target).terminal
-    runner.responses["sacct"] = ""
-    assert isinstance(observe(runner, target), ObservationFailed)
+    result = observe(runner, first, second)
+    assert isinstance(result[first[0]], ObservationFailed)
+    assert "controller busy" in result[first[0]].detail
+    assert result[second[0]].native_state == "COMPLETED"
 
 
 @pytest.mark.parametrize("first_value", ["foreign", ""])
@@ -322,6 +416,7 @@ def test_quoted_native_identity_does_not_gain_authority(key):
 def test_native_field_name_suffix_does_not_gain_identity_authority():
     target = run()
     output = controller(target, restart=1).replace("JobId=", "Other-JobId=")
-    observation = observe(Runner(scontrol=output), target)
+    runner = Runner(squeue=queue(target, "RUNNING"), scontrol=output)
+    observation = observe(runner, target)
     assert isinstance(observation, ObservationFailed)
     assert "Malformed native" in observation.detail

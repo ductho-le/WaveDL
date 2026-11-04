@@ -58,7 +58,7 @@ from wavedl_daemon.storage.settings import Settings
 from wavedl_daemon.supervision.base import ProcessResult
 
 from .test_hosted_app import train_payload
-from .test_slurm_observation import account, controller
+from .test_slurm_observation import SINCE, account, controller, listed, shown
 
 
 def ok(stdout=b""):
@@ -88,8 +88,10 @@ class Scheduler:
                 return ok(self.found.encode())
             case "sacct" if "--allocations" in argv:
                 return ok(self.found.encode())
+            case "squeue":
+                return ok(listed(self.controller).encode())
             case "scontrol":
-                return ok(self.controller.encode())
+                return ok(shown(self.controller, argv[-1]).encode())
             case "sacct":
                 return ok(self.accounting.encode())
         return ok()
@@ -270,7 +272,7 @@ def test_react_and_settle_read_a_requeue_from_scheduler_text(environment, tmp_pa
     runner.controller = controller(target(run_id), "PENDING", restart=1)
     runner.accounting = account(target(run_id), "PREEMPTED", "0:15")
     backend = SlurmBackend(SlurmSite("compute", cluster="alpha"), runner, owner="alice")
-    observation = backend.observe_many([target(run_id)])[run_id]
+    observation = backend.observe_many([target(run_id)], since=SINCE)[run_id]
     assert react(head, observation) == Work(
         WorkKind.SETTLE, run_id, head.revision, 1, head.metrics_offset
     )
@@ -282,8 +284,8 @@ def test_react_and_settle_read_a_requeue_from_scheduler_text(environment, tmp_pa
     )
 
 
-def recovery_row(run_id, job="4242", owner="alice", cluster="alpha"):
-    return f"{job}|{owner}|{job_name(run_id)}|{run_id}|{cluster}\n"
+def recovery_row(run_id, job="4242", owner="alice", cluster="alpha", comment=None):
+    return f"{job}|{owner}|{job_name(run_id)}|{comment or run_id}|{cluster}\n"
 
 
 def test_an_unknown_sbatch_outcome_is_recovered_by_find_never_resubmitted(environment):
@@ -298,6 +300,9 @@ def test_an_unknown_sbatch_outcome_is_recovered_by_find_never_resubmitted(enviro
     created = datetime.fromisoformat(environment.plans.by_run(run_id).created_at)
     since = (created - timedelta(minutes=5)).astimezone(UTC)
     assert f"--starttime={since:%Y-%m-%dT%H:%M:%S}" in sacct
+    squeue = next(call for call in scheduler.commands("squeue") if "--states=all" in call and any(arg.startswith("--Format") for arg in call))
+    for query in (sacct, squeue):
+        assert f"--name={job_name(run_id)}" in query and "--user=alice" in query
 
 
 @pytest.mark.parametrize("found", [True, False])
@@ -447,6 +452,10 @@ def test_find_filters_identity_and_refuses_two_jobs(environment):
         + recovery_row(run_id, cluster="beta")
         + recovery_row(str(uuid4()))
     )
+    assert find() is None
+    scheduler.found = "CLUSTER: alpha\n" + recovery_row(run_id, comment="(null)")
+    assert find() == SlurmHandle("4242", "alpha", "alice")
+    scheduler.found = recovery_row(run_id, comment="foreign")
     assert find() is None
     scheduler.found = recovery_row(run_id) + recovery_row(run_id, job="4243")
     with pytest.raises(SchedulerUnavailable, match="Several"):

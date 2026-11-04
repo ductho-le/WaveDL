@@ -2,8 +2,11 @@
 """Bounded scheduler evidence for one cluster's jobs, never a training verdict.
 
 Native field semantics follow https://slurm.schedmd.com/{sacct,squeue,scontrol}.html.
-Each job is checked against its owner, name and comment in every source, so a
-reused job ID never reports another job. A failed or truncated query cannot
+Each job is checked against its owner, name and cluster in every source, and
+against its comment where one is stored. A live row of another job fails the
+observation; an accounting row of another job (a reused ID) is not this job's
+and is dropped. Rows are matched to a job by ID before they are validated, so
+another job's odd row never fails this one. A failed or truncated query cannot
 prove absence.
 """
 
@@ -19,6 +22,7 @@ from .slurm_plan import job_name
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
+    from datetime import datetime
 
     from wavedl_daemon.runs.model import RunId
 
@@ -47,6 +51,11 @@ _UNAVAILABLE = (
     "accountingstorage/none",
     "accounting storage type is none",
 )
+
+
+def corroborates(comment: str, run_id: str) -> bool:
+    """Whether a job's comment agrees with its run: the run ID, or none stored."""
+    return comment in (run_id, "", "(null)")
 
 
 def parse_controller(output: str) -> list[dict[str, str]]:
@@ -115,31 +124,33 @@ def observe_cluster(
     owner: str,
     cluster: str,
     jobs: Mapping[str, RunId],
+    since: datetime,
 ) -> dict[str, SlurmObservation | ObservationFailed]:
-    """Observe ``jobs`` (job ID to run ID) on one cluster in three queries.
+    """Observe ``jobs`` (job ID to run ID) on one cluster.
 
     ``query`` returns stdout or raises ValueError. A squeue failure fails the
-    batch. The controller listing and accounting may each be missing, as long
-    as the other still proves the job's state and restart count.
+    batch. The controller is asked about each job squeue lists, since only it
+    knows a live job's restart count. The controller and accounting may each
+    be missing, as long as the other still proves the job's state and restart
+    count. ``since`` (UTC) bounds accounting, so a reused job ID's old records
+    are never read.
     """
-    queue = query(
-        (
-            "squeue",
-            "--noheader",
-            "--local",
-            "--clusters",
-            cluster,
-            f"--user={owner}",
-            "--states=all",
-            "--format=%i|%u|%j|%T|%r|%k",
-        )
+    queue = _rows(
+        query(
+            (
+                "squeue",
+                "--noheader",
+                "--local",
+                "--clusters",
+                cluster,
+                f"--user={owner}",
+                "--states=all",
+                "--format=%i|%u|%j|%T|%r|%k",
+            )
+        ),
+        jobs,
     )
     failures = []
-    try:
-        control = query(("scontrol", "--clusters", cluster, "--oneliner", "show", "jobs"))
-    except ValueError as error:
-        control = ""
-        failures.append(str(error)[:512])
     try:
         accounting = query(
             (
@@ -151,6 +162,7 @@ def observe_cluster(
                 cluster,
                 "--jobs",
                 ",".join(jobs),
+                f"--starttime={since.strftime('%Y-%m-%dT%H:%M:%S')}",
                 "--format=JobIDRaw,Cluster,User,JobName%256,State%64,ExitCode,Restarts,Submit,Comment%256",
             )
         )
@@ -158,33 +170,41 @@ def observe_cluster(
         accounting = ""
         if not any(message in str(error).lower() for message in _UNAVAILABLE):
             failures.append(str(error)[:512])
-    queue_rows = [
-        line.split("|")
-        for line in queue.splitlines()
-        if line and not line.startswith("CLUSTER:")
-    ]
-    account_rows = [line.split("|") for line in accounting.splitlines() if line]
-    if any(len(row) != 6 for row in queue_rows) or any(
-        len(row) != 9 for row in account_rows
-    ):
-        raise ValueError("Malformed native scheduler rows")
-    controls = parse_controller(control)
+    account = _rows(accounting, jobs)
     answer: dict[str, SlurmObservation | ObservationFailed] = {}
     for job, run_id in jobs.items():
+        control, controller_failures = "", []
+        if job in queue:
+            try:
+                control = query(
+                    ("scontrol", "--clusters", cluster, "--oneliner", "show", "job", job)
+                )
+            except ValueError as error:
+                controller_failures.append(str(error)[:512])
         try:
             answer[job] = _observe_job(
                 job,
                 run_id,
                 owner=owner,
                 cluster=cluster,
-                queue=[row for row in queue_rows if row[0] == job],
-                control=[row for row in controls if row.get("JobId") == job],
-                accounting=[row for row in account_rows if row[0] == job],
-                failures=failures,
+                queue=queue.get(job, []),
+                control=[row for row in parse_controller(control) if row["JobId"] == job],
+                accounting=account.get(job, []),
+                failures=controller_failures + failures,
             )
         except ValueError as error:
             answer[job] = ObservationFailed(str(error)[:512])
     return answer
+
+
+def _rows(output: str, jobs: Mapping[str, RunId]) -> dict[str, list[list[str]]]:
+    """``|`` rows by job ID, keeping only ``jobs``; IDs never contain ``|``."""
+    rows: dict[str, list[list[str]]] = {}
+    for line in output.splitlines():
+        row = line.split("|")
+        if row[0] in jobs:
+            rows.setdefault(row[0], []).append(row)
+    return rows
 
 
 def _observe_job(
@@ -199,22 +219,22 @@ def _observe_job(
     failures: list[str],
 ) -> SlurmObservation | ObservationFailed:
     name = job_name(run_id)
-    q, c, a = queue, control, accounting
-    if (
-        any(row[1:3] != [owner, name] or row[5] != run_id for row in q)
-        or any(
-            row.get("UserId", "").split("(")[0] != owner
-            or row.get("JobName") != name
-            or row.get("Comment") != run_id
-            or (row.get("Cluster") is not None and row["Cluster"] != cluster)
-            for row in c
-        )
-        or any(
-            row[1:4] != [cluster, owner, name]
-            # Accounting may not store comments; live identity then vouches.
-            or (row[8] != run_id and not (row[8] in {"", "(null)"} and (q or c)))
-            for row in a
-        )
+    q, c = queue, control
+    # This job's name and comment cannot contain "|", so a wider row is another job's.
+    a = [
+        row
+        for row in accounting
+        if len(row) == 9 and row[1:4] == [cluster, owner, name] and corroborates(row[8], run_id)
+    ]
+    if any(
+        len(row) != 6 or row[1:3] != [owner, name] or not corroborates(row[5], run_id)
+        for row in q
+    ) or any(
+        row.get("UserId", "").split("(")[0] != owner
+        or row.get("JobName") != name
+        or not corroborates(row.get("Comment", ""), run_id)
+        or (row.get("Cluster") is not None and row["Cluster"] != cluster)
+        for row in c
     ):
         raise ValueError("Scheduler native identity mismatch")
     if len(q) > 1 or len(c) > 1:
