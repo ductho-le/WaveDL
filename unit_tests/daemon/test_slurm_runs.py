@@ -70,6 +70,7 @@ class Scheduler:
     def __init__(self):
         self.calls = []
         self.sbatch = ok(b"4242;alpha\n")
+        self.scancel = ok()
         self.controller = ""
         self.accounting = ""
         self.found = ""  # recovery rows of squeue --Format and sacct --allocations
@@ -82,7 +83,7 @@ class Scheduler:
                     raise self.sbatch
                 return self.sbatch
             case "scancel":
-                return ok()
+                return self.scancel
             case "squeue" if any(arg.startswith("--Format") for arg in argv):
                 return ok(self.found.encode())
             case "sacct" if "--allocations" in argv:
@@ -389,6 +390,21 @@ def test_a_completed_job_whose_exit_record_is_not_visible_completes(environment)
     assert head.stage.exit == Exited(
         Outcome.COMPLETED, True, exit_code=0, native_state="COMPLETED"
     )
+
+
+def test_a_timed_out_scancel_is_not_a_delivered_cancel(environment):
+    scheduler = environment.scheduler
+    run_id, _ = submitted(environment)
+    tick_until(environment, run_id, lambda head: isinstance(head.stage, Live))
+    scheduler.controller = controller(target(run_id), "RUNNING")
+    tick_until(environment, run_id, live(Phase.RUNNING))
+    scheduler.scancel = ProcessResult(0, b"", b"", timed_out=True)
+    environment.service.cancel(run_id)
+    tick_until(environment, run_id, lambda head: len(scheduler.commands("scancel")) == 1, advance=1)
+    assert not environment.log.head(run_id).stage.cancel_delivered
+    scheduler.scancel = ok()
+    tick_until(environment, run_id, lambda head: head.stage.cancel_delivered, advance=6)
+    assert len(scheduler.commands("scancel")) == 2
 
 
 def test_cancelling_a_queued_job_ends_it_without_a_signal(environment):
