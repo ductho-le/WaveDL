@@ -58,7 +58,8 @@ def test_app_lib_typescript_is_not_gitignored():
         check=False,
     )
     assert ts.returncode == 1
-    assert js.returncode == 0
+    # The root-only /lib/ packaging ignore no longer needs TS-only exceptions.
+    assert js.returncode == 1
 
 
 def test_manifest_prunes_web_source():

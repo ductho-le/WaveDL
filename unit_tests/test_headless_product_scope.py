@@ -87,11 +87,17 @@ def test_browser_class_utility_is_present_and_not_ignored(tmp_path):
         capture_output=True,
         check=True,
     )
-    ignored = ["lib/package.py", "src/wavedl_daemon/web/app/lib/package.py"]
+    # Only the repository-root packaging directory is ignored, not source lib/ trees.
+    ignored = ["lib/package.py"]
+    sources = [
+        utility,
+        "src/wavedl_daemon/web/app/lib/package.py",
+        "src/wavedl_daemon/web/app/lib/probe.js",
+    ]
     result = subprocess.run(
         ["git", "check-ignore", "--no-index", "--stdin"],
         cwd=tmp_path,
-        input="\n".join([utility, *ignored]) + "\n",
+        input="\n".join([*sources, *ignored]) + "\n",
         capture_output=True,
         text=True,
         timeout=10,
