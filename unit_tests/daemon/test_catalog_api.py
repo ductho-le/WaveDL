@@ -188,6 +188,7 @@ def test_daemon_owned_catalog_preserves_complete_descriptive_payload():
 
 
 def test_model_metadata_ids_match_registered_model_ids():
+    pytest.importorskip("torch")
     from wavedl.models import list_models
 
     metadata_ids = {model["id"] for model in CatalogService({}).models()["models"]}
