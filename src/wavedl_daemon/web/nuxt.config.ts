@@ -91,7 +91,9 @@ export default defineNuxtConfig({
     },
   },
   nitro: {
-    compressPublicAssets: true,
+    // The daemon serves original files without precompressed-asset negotiation.
+    // Keep output within the vendor's verified static-asset allowlist.
+    compressPublicAssets: false,
     minify: true,
     preset: 'static',
     prerender: { routes: ['/'], crawlLinks: false },

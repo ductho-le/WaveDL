@@ -35,6 +35,7 @@ def test_web_validation_keeps_only_daemon_client_logic():
         "run-monitor-publication",
         "autoplot-controller",
         "result-operations",
+        "workstation-controls",
     }
     assert not list((web / "test/generated").glob("*.test.mjs"))
 
