@@ -11,6 +11,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import sysconfig
 import tarfile
 import time
 import tomllib
@@ -370,6 +371,27 @@ def build_installed(tmp_path_factory, *, wheelhouse=None):
     )
     binary = venv / ("Scripts" if os.name == "nt" else "bin")
     python = binary / ("python.exe" if os.name == "nt" else "python")
+    if wheelhouse is None:
+        # Nested venvs inherit the base interpreter's sites, not the invoking
+        # venv's dependencies. Add those directories after this venv's packages
+        # without processing their editable-install .pth files.
+        inherited_sites = dict.fromkeys(
+            sysconfig.get_path(name) for name in ("purelib", "platlib")
+        )
+        installed_site = Path(
+            checked(
+                [
+                    str(python),
+                    "-c",
+                    "import sysconfig; print(sysconfig.get_path('purelib'))",
+                ],
+                cwd=outside,
+                environment=environment,
+            ).strip()
+        )
+        (installed_site / "wavedl-test-dependencies.pth").write_text(
+            "\n".join(inherited_sites) + "\n"
+        )
     (wheel,) = wheels.glob("*.whl")
     with zipfile.ZipFile(wheel) as archive:
         names = set(archive.namelist())
@@ -570,7 +592,6 @@ def test_installed_entrypoints_and_lightweight_modules(installed):
     for name, args in (
         ("wavedl", ["run", "--help"]),
         ("wavedl", ["serve", "--help"]),
-        ("wavedl-train", ["--help"]),
     ):
         script = binary / (name + (".exe" if os.name == "nt" else ""))
         assert script.exists()
@@ -580,7 +601,7 @@ def test_installed_entrypoints_and_lightweight_modules(installed):
         [
             str(python),
             "-c",
-            "import wavedl,pathlib; print(pathlib.Path(wavedl.__file__).parent.parent)",
+            "import wavedl_daemon,pathlib; print(pathlib.Path(wavedl_daemon.__file__).parent.parent)",
         ],
         cwd=outside,
         environment=environment,
@@ -615,6 +636,18 @@ def test_installed_entrypoints_and_lightweight_modules(installed):
         cwd=outside,
         environment=environment,
     )
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("torch") is None,
+    reason="Installed trainer entrypoint needs ML dependencies",
+)
+def test_installed_trainer_entrypoint_help(installed):
+    outside, _venv, binary, _python, environment = installed
+    script = binary / ("wavedl-train.exe" if os.name == "nt" else "wavedl-train")
+    assert script.exists()
+    text = checked([str(script), "--help"], cwd=outside, environment=environment)
+    assert "usage:" in text.lower()
 
 
 def test_isolated_resolved_wheelhouse_console_scripts_and_assets(
