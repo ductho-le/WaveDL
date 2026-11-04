@@ -11,9 +11,12 @@ name: Lint
 
 on:
   push:
-    branches: [main, 'review/daemon-browser-ci-*']
+    branches: [main]
   pull_request:
     branches: [main]
+
+permissions:
+  contents: read
 
 # Cancel in-progress runs when a new commit is pushed
 concurrency:
@@ -47,3 +50,24 @@ jobs:
 
       - name: Run Ruff formatter check
         run: ruff format . --check --diff
+
+  web-lint:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/wavedl_daemon/web
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: src/wavedl_daemon/web/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: src/wavedl_daemon/web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run lint
+      - run: pnpm run format:check

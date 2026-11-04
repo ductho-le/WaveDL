@@ -359,10 +359,8 @@ def test_typed_native_bindings_query_set_compare_and_close(monkeypatch):
 
 
 def test_foundations_daemon_uses_owned_wrapper_without_weakening_gates():
-    value = yaml.safe_load(
-        (ROOT / ".github/workflows/daemon-foundations.yml").read_text()
-    )
-    foundation = value["jobs"]["foundations"]
+    value = yaml.safe_load((ROOT / ".github/workflows/test.yml").read_text())
+    foundation = value["jobs"]["daemon-native"]
     steps = foundation["steps"]
     step = next(
         step
@@ -381,7 +379,24 @@ def test_foundations_daemon_uses_owned_wrapper_without_weakening_gates():
         if step.get("name") == "Require native foundations acceptance reports"
     )
     assert guard["if"] == "always()"
+    assert guard["run"] == (
+        "python tools/verify_native_foundations_report.py daemon-foundations.xml"
+    )
     assert foundation["timeout-minutes"] == 15
+    commands = [step.get("run", "") for step in steps]
+    assert (
+        commands.index("python -m pip check")
+        < commands.index("python -m pip install --no-deps .")
+        < steps.index(step)
+    )
+    evidence = next(
+        step for step in steps if step.get("name") == "Upload foundations test evidence"
+    )
+    assert evidence["if"] == "always()"
+    assert evidence["with"]["name"] == (
+        "daemon-foundations-${{ matrix.os }}-py${{ matrix.python }}"
+    )
+    assert evidence["with"]["path"] == "daemon-foundations.xml"
     verification = next(
         step
         for step in steps

@@ -16,31 +16,30 @@ def workflow(name):
 
 
 def test_release_waits_for_reusable_acceptance_and_exact_package():
-    jobs = workflow("release.yml")["jobs"]
-    assert set(jobs["release"]["needs"]) == {
-        "test",
-        "package",
-        "foundations",
-        "web-client",
-    }
-    for gate in ("foundations", "web-client"):
-        called = jobs[gate]["uses"].removeprefix("./.github/workflows/")
-        # PyYAML uses YAML 1.1, where unquoted GitHub's `on` parses as True.
-        assert "workflow_call" in workflow(called)[True]
-        assert "github.workflow" in workflow(called)["concurrency"]["group"]
-        assert "if" not in jobs[gate]
+    release = workflow("release.yml")
+    jobs = release["jobs"]
+    assert set(jobs["release"]["needs"]) == {"test", "package"}
+    assert jobs["test"]["uses"] == "./.github/workflows/test.yml"
+    assert "if" not in jobs["test"]
+    called = workflow("test.yml")
+    # PyYAML uses YAML 1.1, where unquoted GitHub's `on` parses as True.
+    assert "workflow_call" in called[True]
+    assert "concurrency" not in called
+    assert release["permissions"] == called["permissions"] == {"contents": "read"}
+    for job in called["jobs"].values():
+        assert job.get("permissions", called["permissions"]) == {"contents": "read"}
+    for gate in ("test", "distribution", "web-client", "daemon-native"):
+        assert "if" not in called["jobs"][gate]
     assert "if" not in jobs["release"]
     assert jobs["publish"]["needs"] == ["release", "package"]
 
 
 def test_release_static_client_gate_requires_complete_quality_checks():
-    static = workflow("web-client.yml")["jobs"]["static-client"]
+    static = workflow("test.yml")["jobs"]["web-client"]
     assert static["defaults"]["run"]["working-directory"] == "src/wavedl_daemon/web"
     commands = [step["run"] for step in static["steps"] if "run" in step]
     required = [
         "pnpm install --frozen-lockfile",
-        "pnpm run lint",
-        "pnpm run format:check",
         "pnpm run typecheck",
         "pnpm test",
         "pnpm run generate",
@@ -51,16 +50,30 @@ def test_release_static_client_gate_requires_complete_quality_checks():
         commands.index(command) for command in required
     )
     assert all("if" not in step for step in static["steps"])
+    lint = workflow("lint.yml")["jobs"]["web-lint"]
+    assert "if" not in lint
+    assert lint["defaults"]["run"]["working-directory"] == "src/wavedl_daemon/web"
+    assert [step["run"] for step in lint["steps"] if "run" in step] == [
+        "pnpm install --frozen-lockfile",
+        "pnpm run lint",
+        "pnpm run format:check",
+    ]
+    assert all("if" not in step for step in lint["steps"])
+    checkout = next(
+        step for step in lint["steps"] if step.get("uses") == "actions/checkout@v4"
+    )
+    assert checkout["with"]["persist-credentials"] is False
 
 
 @pytest.mark.parametrize(
     ("filename", "job"),
     [
-        ("web-client.yml", "static-client"),
+        ("lint.yml", "web-lint"),
+        ("test.yml", "web-client"),
         ("test.yml", "test"),
-        ("release.yml", "test"),
+        ("test.yml", "daemon-native"),
+        ("test.yml", "windows-installed"),
         ("release.yml", "package"),
-        ("windows-cpu-acceptance.yml", "installed-cpu"),
     ],
 )
 def test_web_build_jobs_set_up_pinned_pnpm_before_node_cache(filename, job):
@@ -76,15 +89,15 @@ def test_web_build_jobs_set_up_pinned_pnpm_before_node_cache(filename, job):
         if step.get("uses", "").startswith("actions/setup-node@")
     )
     assert setup < node
+    assert steps[setup]["uses"] == "pnpm/action-setup@v6"
+    assert steps[node]["uses"] == "actions/setup-node@v4"
+    assert steps[node]["with"]["node-version"] == "24"
     assert steps[setup]["with"] == {
         "package_json_file": "src/wavedl_daemon/web/package.json"
     }
     options = steps[node]["with"]
-    if "cache" in options:
-        assert options["cache"] == "pnpm"
-        assert options["cache-dependency-path"] == (
-            "src/wavedl_daemon/web/pnpm-lock.yaml"
-        )
+    assert options["cache"] == "pnpm"
+    assert options["cache-dependency-path"] == ("src/wavedl_daemon/web/pnpm-lock.yaml")
     commands = "\n".join(step.get("run", "") for step in steps)
     assert "pnpm install --frozen-lockfile" in commands
     assert "npm ci" not in commands
@@ -105,18 +118,23 @@ def test_release_is_headless_without_reducing_shipped_test_gates():
     release = workflow("release.yml")
     jobs = release["jobs"]
     assert "gui" not in jobs
-    test = jobs["test"]
+    assert jobs["test"]["uses"] == "./.github/workflows/test.yml"
+    shared = workflow("test.yml")
+    test = shared["jobs"]["test"]
     assert test["strategy"]["matrix"]["python-version"] == ["3.11", "3.12", "3.13"]
     commands = "\n".join(step.get("run", "") for step in test["steps"])
     assert 'python -m pip install -e ".[dev]"' in commands
-    assert 'python -m pytest unit_tests -v -m "not slow and not gpu"' in commands
+    assert (
+        'python -m pytest unit_tests/ -v --tb=short -m "not slow and not gpu"'
+        in commands
+    )
     assert "python -m pip check" in commands
     assert "QT_QPA_PLATFORM" not in test["env"]
     for retired in ("Qt", ",gui", "test_gui_", "verify_gui_ci_report"):
         assert retired not in (ROOT / ".github/workflows/release.yml").read_text()
     assert release["permissions"] == {"contents": "read"}
     assert jobs["release"]["permissions"] == {"contents": "write"}
-    for job in jobs.values():
+    for job in [*jobs.values(), *shared["jobs"].values()]:
         for step in job.get("steps", []):
             if step.get("uses", "").startswith("actions/checkout@"):
                 assert step["with"]["persist-credentials"] is False
@@ -124,25 +142,76 @@ def test_release_is_headless_without_reducing_shipped_test_gates():
 
 def test_retired_desktop_workflow_and_paths_are_not_active():
     assert not (ROOT / ".github/workflows/daemon-gui-integration.yml").exists()
-    foundations = workflow("daemon-foundations.yml")
-    for event in ("push", "pull_request"):
-        paths = foundations[True][event]["paths"]
-        assert not any("wavedl_gui" in path or "test_gui_" in path for path in paths)
-        assert "src/wavedl_daemon/**" in paths
-        assert "unit_tests/daemon/**" in paths
-        assert not any(path.startswith("src/wavedl/") for path in paths)
-    jobs = foundations["jobs"]
-    assert set(jobs) == {"foundations"}
-    assert jobs["foundations"]["strategy"]["matrix"] == {
-        "os": ["ubuntu-latest", "macos-latest", "windows-latest"],
-        "python": ["3.11", "3.13"],
+    tests = workflow("test.yml")
+    assert tests[True] == {
+        "push": {"branches": ["main"]},
+        "pull_request": {"branches": ["main"]},
+        "workflow_dispatch": None,
+        "workflow_call": None,
     }
-    commands = "\n".join(step.get("run", "") for step in jobs["foundations"]["steps"])
+    assert workflow("lint.yml")[True] == {
+        "push": {"branches": ["main"]},
+        "pull_request": {"branches": ["main"]},
+    }
+    native = tests["jobs"]["daemon-native"]
+    assert native["strategy"]["matrix"] == {
+        "os": ["macos-latest", "windows-latest"],
+        "python": ["3.11"],
+    }
+    assert native["strategy"]["fail-fast"] is False
+    commands = "\n".join(step.get("run", "") for step in native["steps"])
     assert (
         "run_user_owned_pytest.py unit_tests/daemon --confcutdir=unit_tests/daemon"
         in commands
     )
     assert "verify_native_foundations_report.py" in commands
+    assert "torch" not in commands
+    assert "pip install --no-deps ." in commands
+    assert "ruff check" not in commands and "ruff format" not in commands
+    lint = workflow("lint.yml")["jobs"]["lint"]
+    lint_commands = "\n".join(step.get("run", "") for step in lint["steps"])
+    assert "ruff check . --output-format=github" in lint_commands
+    assert "ruff format . --check --diff" in lint_commands
+
+
+def test_windows_installed_gate_runs_only_on_main_tags_or_manual_dispatch():
+    windows = workflow("test.yml")["jobs"]["windows-installed"]
+    assert " ".join(windows["if"].split()) == (
+        "github.event_name == 'workflow_dispatch' || "
+        "(github.event_name == 'push' && "
+        "(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))"
+    )
+    assert windows["runs-on"] == "windows-latest"
+    assert windows["strategy"]["matrix"] == {"python-version": ["3.11", "3.13"]}
+    assert windows["strategy"]["fail-fast"] is False
+    steps = windows["steps"]
+    acceptance = next(
+        step
+        for step in steps
+        if step.get("name") == "Run native installed CPU acceptance outside checkout"
+    )
+    assert acceptance["if"] == "${{ success() && !cancelled() }}"
+    assert acceptance["run"] == (
+        "python tools/run_user_owned_pytest.py "
+        "unit_tests/daemon/test_installed_cli.py --confcutdir=unit_tests/daemon "
+        "-k isolated_resolved --junitxml=windows-cpu-installed.xml -q"
+    )
+    guard = next(
+        step
+        for step in steps
+        if step.get("name")
+        == "Require exactly one successful native installed CPU case"
+    )
+    assert steps.index(acceptance) < steps.index(guard)
+    assert guard["if"] == "always()"
+    for check in (
+        'ET.parse("windows-cpu-installed.xml")',
+        "assert len(cases) == 1",
+        'assert cases[0].get("classname") == "unit_tests.daemon.test_installed_cli"',
+        'assert cases[0].get("name") == "test_isolated_resolved_wheelhouse_console_scripts_and_assets"',
+        'assert not any(list(root.iter(kind)) for kind in ("skipped", "failure", "error"))',
+    ):
+        assert check in guard["run"]
 
 
 def test_release_and_pypi_consume_the_same_verified_distribution():
@@ -219,7 +288,8 @@ def test_release_and_pypi_consume_the_same_verified_distribution():
 
 def test_release_generates_assets_before_tests_and_classifies_pep440():
     jobs = workflow("release.yml")["jobs"]
-    steps = jobs["test"]["steps"]
+    assert jobs["test"]["uses"] == "./.github/workflows/test.yml"
+    steps = workflow("test.yml")["jobs"]["test"]["steps"]
     vendor = next(
         index
         for index, step in enumerate(steps)
