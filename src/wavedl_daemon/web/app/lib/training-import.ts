@@ -2,7 +2,11 @@ import { parse } from 'yaml';
 import { clientError } from '../i18n/client-messages';
 import type { DraftConfig } from '../../shared/schemas/project-draft';
 import { validDraftConfig } from './project-draft';
-import { trainingImportSchema, importedSelectionsSchema, type TrainingImportDocument } from '../../shared/schemas/training-import';
+import {
+  trainingImportSchema,
+  importedSelectionsSchema,
+  type TrainingImportDocument,
+} from '../../shared/schemas/training-import';
 
 export const CONFIG_IMPORT_LIMIT = 64 * 1024;
 
@@ -19,13 +23,15 @@ const commaSeparated = new Set(['loss_weights', 'betas', 'milestones']);
 const listFields = new Set(['import_modules', 'constraint', 'constraint_weight']);
 
 function normalizedTrainingConfig(document: TrainingImportDocument): TrainingImportDocument {
-  return Object.fromEntries(Object.entries(document).map(([name, value]): [string, TrainingImportDocument[string]] => {
-    if (commaSeparated.has(name) && Array.isArray(value)) return [name, value.join(',')];
+  return Object.fromEntries(
+    Object.entries(document).map(([name, value]): [string, TrainingImportDocument[string]] => {
+      if (commaSeparated.has(name) && Array.isArray(value)) return [name, value.join(',')];
 
-    if (listFields.has(name) && value !== null && !Array.isArray(value)) return [name, [value]];
+      if (listFields.has(name) && value !== null && !Array.isArray(value)) return [name, [value]];
 
-    return [name, value];
-  }));
+      return [name, value];
+    }),
+  );
 }
 
 /**

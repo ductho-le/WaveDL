@@ -117,31 +117,37 @@ const pathParts = computed(() => (path.value ? path.value.split('/') : []));
 const suggestions = computed<SearchOption[]>(() => {
   const search = query.value.trim().toLocaleLowerCase();
 
-  const rootOptions = roots.value
-    .flatMap((item) => !search || item.toLocaleLowerCase().includes(search) ? [{
-      id: `root:${item}`,
-      label: item,
-      detail: t('datasets.configuredRoot'),
-      kind: 'root' as const,
-      root: item,
-      path: '',
-    }] : []);
+  const rootOptions = roots.value.flatMap((item) =>
+    !search || item.toLocaleLowerCase().includes(search)
+      ? [
+          {
+            id: `root:${item}`,
+            label: item,
+            detail: t('datasets.configuredRoot'),
+            kind: 'root' as const,
+            root: item,
+            path: '',
+          },
+        ]
+      : [],
+  );
 
-  const entryOptions = (page.value?.entries ?? [])
-    .flatMap((entry) => {
-      const entryPath = [path.value, entry.name].filter(Boolean).join('/');
+  const entryOptions = (page.value?.entries ?? []).flatMap((entry) => {
+    const entryPath = [path.value, entry.name].filter(Boolean).join('/');
 
-      if (search && !`${root.value}/${entryPath}`.toLocaleLowerCase().includes(search)) return [];
+    if (search && !`${root.value}/${entryPath}`.toLocaleLowerCase().includes(search)) return [];
 
-      return [{
+    return [
+      {
         id: `entry:${root.value}:${entryPath}`,
         label: entry.name,
         detail: entry.kind === 'directory' ? t('datasets.folder') : t('datasets.file'),
         kind: entry.kind,
         root: root.value,
         path: entryPath,
-      }];
-    });
+      },
+    ];
+  });
 
   const ordered = root.value ? [...rootOptions, ...entryOptions] : rootOptions;
 

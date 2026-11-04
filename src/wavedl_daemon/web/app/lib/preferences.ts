@@ -144,9 +144,7 @@ export function loadKeepSignedIn(storage = browserStorage()): boolean {
   try {
     const raw = storage?.getItem(keepSignedInKey);
 
-    return raw != null && raw.length <= 5
-      ? keepSignedInSchema.parse(parseJson(raw))
-      : false;
+    return raw != null && raw.length <= 5 ? keepSignedInSchema.parse(parseJson(raw)) : false;
   } catch {
     return false;
   }

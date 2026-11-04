@@ -16,7 +16,10 @@ import {
   Target,
   TrendingDown,
 } from '@lucide/vue';
-import { trainingFieldMetadata, type TrainingRequest } from '../../../shared/schemas/training-request';
+import {
+  trainingFieldMetadata,
+  type TrainingRequest,
+} from '../../../shared/schemas/training-request';
 import {
   trainingChoiceLabel,
   trainingFieldMessageKeys,
@@ -94,19 +97,22 @@ const essentials = computed(() =>
 );
 
 const sections = computed(() =>
-  trainingSections
-    .flatMap((section) => {
-      const fields = section.fields.filter((name) => trainingFieldVisible(name, config.value));
-      const changed = fields.filter((name) => changedFromDefault(name, config.value));
+  trainingSections.flatMap((section) => {
+    const fields = section.fields.filter((name) => trainingFieldVisible(name, config.value));
+    const changed = fields.filter((name) => changedFromDefault(name, config.value));
 
-      return fields.length ? [{
-        ...section,
-        fields,
-        changed,
-        title: t(trainingSectionMessageKeys[section.id]),
-        icon: sectionIcons[section.id],
-      }] : [];
-    }),
+    return fields.length
+      ? [
+          {
+            ...section,
+            fields,
+            changed,
+            title: t(trainingSectionMessageKeys[section.id]),
+            icon: sectionIcons[section.id],
+          },
+        ]
+      : [];
+  }),
 );
 
 const sectionIcons: Record<TrainingSectionId, Component> = {

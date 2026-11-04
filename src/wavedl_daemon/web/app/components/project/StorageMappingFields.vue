@@ -50,8 +50,7 @@ function remove(index: number) {
   if (props.disabled) return;
   emit(
     'update',
-    mappings.value
-      .flatMap((mapping, position) => position !== index ? [{ ...mapping }] : []),
+    mappings.value.flatMap((mapping, position) => (position !== index ? [{ ...mapping }] : [])),
   );
 }
 </script>

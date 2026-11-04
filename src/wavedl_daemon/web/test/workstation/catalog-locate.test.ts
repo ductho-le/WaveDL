@@ -72,8 +72,9 @@ async function setup(
   expect(await session.connect('token')).toBe(true);
 
   const resolved = () =>
-    fetcher.mock.calls
-      .flatMap(([url, init]) => String(url).endsWith('/api/browse/resolve') ? [resolveBody(init)] : []);
+    fetcher.mock.calls.flatMap(([url, init]) =>
+      String(url).endsWith('/api/browse/resolve') ? [resolveBody(init)] : [],
+    );
 
   return { api: new CatalogApi(session), fetcher, resolved };
 }
@@ -163,9 +164,12 @@ describe('locating imported dataset paths', () => {
     );
   });
 });
+
 describe('imported draft boundary parity', () => {
   it('normalizes CLI lists and preserves individually valid fields beside invalid YAML numbers', () => {
-    const imported = parseTrainingConfig('epochs: 4\nlr: .inf\nloss_weights: [1, 2]\nbetas: [0.9, 0.99]\nmodel: "custom.Model"\ndata_path: " /data/train.npz "\nunknown_option: .nan\n');
+    const imported = parseTrainingConfig(
+      'epochs: 4\nlr: .inf\nloss_weights: [1, 2]\nbetas: [0.9, 0.99]\nmodel: "custom.Model"\ndata_path: " /data/train.npz "\nunknown_option: .nan\n',
+    );
 
     expect(imported.config.epochs).toBe(4);
     expect(imported.config.loss_weights).toBe('1,2');
@@ -177,7 +181,9 @@ describe('imported draft boundary parity', () => {
 
   it('keeps the precision alias precedence and rejects non-object documents and duplicate keys', () => {
     expect(parseTrainingConfig('mixed_precision: bf16\n').config.precision).toBe('bf16');
-    expect(parseTrainingConfig('mixed_precision: bf16\nprecision: no\n').config.precision).toBe('no');
+    expect(parseTrainingConfig('mixed_precision: bf16\nprecision: no\n').config.precision).toBe(
+      'no',
+    );
 
     for (const source of ['null', '[]', 'epochs: 1\nepochs: 2\n']) {
       expect(() => parseTrainingConfig(source)).toThrow();

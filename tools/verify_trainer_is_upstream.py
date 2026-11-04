@@ -64,7 +64,10 @@ def merge_file(ours: bytes, base: bytes, theirs: bytes) -> bytes:
             files[-1].write_bytes(data)
         # The exit status counts conflicts; a negative status is an error.
         return git(
-            "merge-file", "-p", f"--marker-size={MARKER}", *map(str, files),
+            "merge-file",
+            "-p",
+            f"--marker-size={MARKER}",
+            *map(str, files),
             ok=tuple(range(128)),
         ).stdout
 

@@ -5,7 +5,9 @@ import type { LocationQueryValue } from 'vue-router';
 
 const WORK_PATHS = ['/experiments', '/new', '/datasets', '/results'];
 
-export function validatedNextPath(input: LocationQueryValue | LocationQueryValue[] | undefined): string {
+export function validatedNextPath(
+  input: LocationQueryValue | LocationQueryValue[] | undefined,
+): string {
   const parsed = nextPathSchema.safeParse(input);
 
   if (!parsed.success) return '/experiments';
@@ -18,7 +20,10 @@ export function validatedNextPath(input: LocationQueryValue | LocationQueryValue
 
     // Check every encoding layer, but return the original query/path encoding.
     for (let depth = 0; depth < 8; depth++) {
-      if ([...decoded].some((char) => char === '\\' || char <= '\u001f' || char === '\u007f') || decoded.startsWith('//'))
+      if (
+        [...decoded].some((char) => char === '\\' || char <= '\u001f' || char === '\u007f') ||
+        decoded.startsWith('//')
+      )
         return '/experiments';
       const url = new URL(decoded, 'https://wavedl.invalid');
 

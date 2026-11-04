@@ -124,7 +124,7 @@ export function object(value: unknown): value is JsonObject {
 export { isUuid } from './daemon-api-schemas';
 
 function freezeJson(item: Json): void {
-  if (Array.isArray(item) || object(item)) {
+  if (item instanceof Object) {
     for (const child of Object.values(item)) freezeJson(child);
     Object.freeze(item);
   }

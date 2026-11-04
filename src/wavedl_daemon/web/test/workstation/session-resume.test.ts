@@ -81,9 +81,9 @@ describe('resumable browser session', () => {
     expect(calls.map(({ path }) => path)).toEqual(['/api/health', '/api/session']);
     expect(calls.every(({ authorization }) => authorization === `Bearer ${master}`)).toBe(true);
 
-    const persisted = credentialSchema.parse(JSON.parse(
-      window.sessionStorage.getItem(SESSION_CREDENTIAL_KEY) ?? 'null',
-    ));
+    const persisted = credentialSchema.parse(
+      JSON.parse(window.sessionStorage.getItem(SESSION_CREDENTIAL_KEY) ?? 'null'),
+    );
 
     expect(persisted.token).toBe(sessionToken);
     expect(JSON.stringify(persisted)).not.toContain(master);
@@ -105,14 +105,18 @@ describe('resumable browser session', () => {
     expect(window.sessionStorage.getItem(SESSION_CREDENTIAL_KEY)).not.toBeNull();
     expect(owner.setKeepSignedIn(true)).toBe(true);
     expect(window.sessionStorage.getItem(SESSION_CREDENTIAL_KEY)).toBeNull();
-    expect(credentialSchema.parse(JSON.parse(window.localStorage.getItem(SESSION_CREDENTIAL_KEY) ?? 'null')).token).toBe(
-      sessionToken,
-    );
+    expect(
+      credentialSchema.parse(
+        JSON.parse(window.localStorage.getItem(SESSION_CREDENTIAL_KEY) ?? 'null'),
+      ).token,
+    ).toBe(sessionToken);
     expect(owner.setKeepSignedIn(false)).toBe(true);
     expect(window.localStorage.getItem(SESSION_CREDENTIAL_KEY)).toBeNull();
-    expect(credentialSchema.parse(JSON.parse(window.sessionStorage.getItem(SESSION_CREDENTIAL_KEY) ?? 'null')).token).toBe(
-      sessionToken,
-    );
+    expect(
+      credentialSchema.parse(
+        JSON.parse(window.sessionStorage.getItem(SESSION_CREDENTIAL_KEY) ?? 'null'),
+      ).token,
+    ).toBe(sessionToken);
     owner.dispose();
   });
 
@@ -132,9 +136,11 @@ describe('resumable browser session', () => {
 
     expect(await owner.bootstrapCode('bootstrap-code', false, true)).toBe(true);
     expect(window.sessionStorage.getItem(SESSION_CREDENTIAL_KEY)).toBeNull();
-    expect(credentialSchema.parse(JSON.parse(window.localStorage.getItem(SESSION_CREDENTIAL_KEY) ?? 'null')).token).toBe(
-      fresh,
-    );
+    expect(
+      credentialSchema.parse(
+        JSON.parse(window.localStorage.getItem(SESSION_CREDENTIAL_KEY) ?? 'null'),
+      ).token,
+    ).toBe(fresh);
     expect(loadSessionCredential({}, origin)?.credential.token).toBe(fresh);
     owner.dispose();
   });
@@ -419,7 +425,9 @@ describe('resumable browser session', () => {
       JSON.parse(window.sessionStorage.getItem(SESSION_CREDENTIAL_KEY) ?? 'null'),
     ).toMatchObject({ token: first, daemonId: health.daemon_id, expiresAt: expect.any(Number) });
     expect(
-      credentialSchema.parse(JSON.parse(window.sessionStorage.getItem(SESSION_CREDENTIAL_KEY) ?? 'null')).token,
+      credentialSchema.parse(
+        JSON.parse(window.sessionStorage.getItem(SESSION_CREDENTIAL_KEY) ?? 'null'),
+      ).token,
     ).not.toBe(second);
     owner.dispose();
   });

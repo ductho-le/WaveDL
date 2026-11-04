@@ -32,9 +32,11 @@ const integer = z.number().refine(Number.isSafeInteger);
 const positive = integer.refine((value) => value > 0);
 const printable = z.string().regex(/^[\x21-\x7e]{1,256}$/);
 
-export const planPreviewSchema = jsonObjectSchema.and(z.object({
-  spec: jsonObjectSchema.optional(),
-}));
+export const planPreviewSchema = jsonObjectSchema.and(
+  z.object({
+    spec: jsonObjectSchema.optional(),
+  }),
+);
 
 export const runViewSchema = z.object({
   plan_id: uuid,

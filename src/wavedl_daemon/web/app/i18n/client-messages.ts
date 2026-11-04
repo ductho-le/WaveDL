@@ -4,7 +4,10 @@ import englishZodLocale from 'zod/v4/locales/en.js';
 import vietnameseZodLocale from 'zod/v4/locales/vi.js';
 import { z } from 'zod';
 import type { MessageParams, WorkstationLocale } from './core';
-import { clientDiagnosticSchema, customIssueParamsSchema } from '../../shared/schemas/client-diagnostic';
+import {
+  clientDiagnosticSchema,
+  customIssueParamsSchema,
+} from '../../shared/schemas/client-diagnostic';
 
 export type ClientErrorKey = keyof typeof englishClientErrors;
 

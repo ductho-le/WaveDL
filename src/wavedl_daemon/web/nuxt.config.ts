@@ -14,6 +14,10 @@ const identitySource = `/** Generated from the Python package version by nuxt.co
 if (readFileSync(identityPath, 'utf8') !== identitySource)
   writeFileSync(identityPath, identitySource);
 
+// `nuxt dev` forwards API calls to a separately started daemon. The daemon
+// rejects any Origin other than its own, so the proxy presents the daemon's.
+const daemonUrl = new URL(process.env.WAVEDL_DAEMON_URL ?? 'http://127.0.0.1:8420').origin;
+
 // The Nuxt 4 default app/ source root contains the browser application. There is
 // no Nitro API or backend.
 export default defineNuxtConfig({
@@ -91,6 +95,9 @@ export default defineNuxtConfig({
     minify: true,
     preset: 'static',
     prerender: { routes: ['/'], crawlLinks: false },
+    devProxy: {
+      '/api': { target: `${daemonUrl}/api`, changeOrigin: true, headers: { origin: daemonUrl } },
+    },
   },
   typescript: {
     tsConfig: {

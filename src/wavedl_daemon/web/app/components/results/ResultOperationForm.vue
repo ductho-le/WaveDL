@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import type { AcceptableValue } from 'reka-ui';
-import { segmentedSelectionSchema, resultExportSchema } from '../../../shared/schemas/workstation-controls';
+import {
+  segmentedSelectionSchema,
+  resultExportSchema,
+} from '../../../shared/schemas/workstation-controls';
 import { useForm, Field as VeeField } from 'vee-validate';
 import { resultRequestSchema } from '../../../shared/schemas/result-request';
 import type { ConnectionSession } from '../../lib/connection-session';
@@ -87,7 +90,9 @@ function sourceLabel(item: Checkpoint): string {
 
   if (item.name === 'interrupted_checkpoint') return t('results.interrupted');
 
-  return t('results.periodic', { epoch: item.name.match(/^epoch_([0-9]+)_checkpoint$/)?.[1] ?? '' });
+  return t('results.periodic', {
+    epoch: item.name.match(/^epoch_([0-9]+)_checkpoint$/)?.[1] ?? '',
+  });
 }
 
 function chooseData(selected: DataSelection) {

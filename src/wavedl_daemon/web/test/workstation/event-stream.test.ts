@@ -36,7 +36,9 @@ describe('attempt aware fetch stream', () => {
   it('decodes additive cursor fields without weakening the zero-attempt sentinel', () => {
     expect(validCursor({ attempt: 0, seq: -1, extra: true })).toBe(true);
     expect(validCursor({ attempt: 1, seq: -1 })).toBe(true);
-    expect(validCursor({ attempt: Number.MAX_SAFE_INTEGER, seq: Number.MAX_SAFE_INTEGER })).toBe(true);
+    expect(validCursor({ attempt: Number.MAX_SAFE_INTEGER, seq: Number.MAX_SAFE_INTEGER })).toBe(
+      true,
+    );
 
     for (const value of [
       { attempt: 0, seq: 0 },

@@ -163,13 +163,16 @@ export function trainingPresetMessageKeysFor(presetId: string) {
 }
 
 export const trainingFieldMessageKeys = Object.fromEntries(
-  trainingOptions.map(({ name }) => [
-    name,
-    {
-      label: `training.${name}.label`,
-      description: `training.${name}.description`,
-    },
-  ] as const),
+  trainingOptions.map(
+    ({ name }) =>
+      [
+        name,
+        {
+          label: `training.${name}.label`,
+          description: `training.${name}.description`,
+        },
+      ] as const,
+  ),
 );
 
 export const runtimeValues = [

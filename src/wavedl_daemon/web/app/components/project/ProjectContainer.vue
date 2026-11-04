@@ -1021,15 +1021,20 @@ const reviewLabel = computed(() =>
 );
 
 const readiness = computed<ReadinessItem[]>(() =>
-  blocks.value
-    .flatMap((block) => block.id !== 'plan' ? [{
-      block: block.id,
-      label: block.label,
-      detail: issueCount(block.id)
-        ? t('builder.issueCount', { count: issueCount(block.id) })
-        : `${block.value} · ${block.detail}`,
-      done: block.state !== 'pending' && !issueCount(block.id),
-    }] : []),
+  blocks.value.flatMap((block) =>
+    block.id !== 'plan'
+      ? [
+          {
+            block: block.id,
+            label: block.label,
+            detail: issueCount(block.id)
+              ? t('builder.issueCount', { count: issueCount(block.id) })
+              : `${block.value} · ${block.detail}`,
+            done: block.state !== 'pending' && !issueCount(block.id),
+          },
+        ]
+      : [],
+  ),
 );
 
 const draftSummary = computed<DraftSummary | null>(() => {

@@ -4,6 +4,7 @@ import {
 } from '../../app/lib/connection-session';
 
 export type { ConnectionState } from '../../app/lib/connection-session';
+
 import { healthSchema } from '../../app/lib/daemon-api-schemas';
 
 /** Add the session endpoints to domain fixtures without altering their API responses. */
@@ -36,7 +37,9 @@ export class ConnectionSession extends BrowserConnectionSession {
       const response = await fetcher(input, init);
 
       if (url.pathname === '/api/health' && response.ok) {
-        const parsed = healthSchema.pick({ daemon_id: true }).safeParse(await response.clone().json());
+        const parsed = healthSchema
+          .pick({ daemon_id: true })
+          .safeParse(await response.clone().json());
 
         if (parsed.success) daemonId = parsed.data.daemon_id;
       }

@@ -41,6 +41,7 @@
       "app/components/project/ProjectContainer.vue",
       "app/components/catalog/model-facets.ts",
       "app/i18n/dynamic-keys.ts",
+      "test/workstation/catalog-api.test.ts",
     ],
     "rules": { "anti-slop/no-shape-in-symbol-names": "off" },
   }],

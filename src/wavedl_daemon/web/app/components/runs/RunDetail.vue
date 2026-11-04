@@ -65,6 +65,7 @@ onMounted(() => {
 });
 
 const { copy, copied, isSupported: canCopy } = useClipboard({ copiedDuring: 1600 });
+
 const metricsUnavailable = computed(
   () => props.snapshot.freshness !== 'fresh' || props.snapshot.run?.attempt == null,
 );

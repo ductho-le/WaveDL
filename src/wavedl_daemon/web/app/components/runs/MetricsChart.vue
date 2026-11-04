@@ -22,6 +22,7 @@ const styles = {
 };
 
 const { t, locale } = useI18n({ useScope: 'global' });
+
 function metricLabel(field: string): string {
   const key = Object.entries(plotMetricMessageKeys).find(([name]) => name === field)?.[1];
 

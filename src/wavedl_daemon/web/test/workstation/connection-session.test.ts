@@ -31,7 +31,9 @@ function session(fetcher: typeof fetch, online = true) {
 
     if (url.endsWith('/api/health') && response.ok) {
       try {
-        const parsed = healthSchema.pick({ daemon_id: true }).safeParse(await response.clone().json());
+        const parsed = healthSchema
+          .pick({ daemon_id: true })
+          .safeParse(await response.clone().json());
 
         if (parsed.success) daemonId = parsed.data.daemon_id;
       } catch {

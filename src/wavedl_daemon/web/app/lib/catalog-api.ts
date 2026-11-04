@@ -157,7 +157,12 @@ export class CatalogApi {
 
         const parsed = browsePageSchema.safeParse(body);
 
-        if (!parsed.success || parsed.data.root !== root || parsed.data.path !== path || parsed.data.offset !== offset)
+        if (
+          !parsed.success ||
+          parsed.data.root !== root ||
+          parsed.data.path !== path ||
+          parsed.data.offset !== offset
+        )
           return fail();
         const entries = parsed.data.entries.map((item) => Object.freeze(item));
 
@@ -187,7 +192,12 @@ export class CatalogApi {
 
         const parsed = resolvedDatasetSchema.safeParse(body);
 
-        if (!parsed.success || parsed.data.root !== root || parsed.data.relative_path !== path || !api.daemonId)
+        if (
+          !parsed.success ||
+          parsed.data.root !== root ||
+          parsed.data.relative_path !== path ||
+          !api.daemonId
+        )
           return fail();
         const resolved = parsed.data;
 

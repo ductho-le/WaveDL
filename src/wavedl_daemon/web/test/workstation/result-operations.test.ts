@@ -11,19 +11,41 @@ import { parseCvSummary } from '../../app/lib/cv-summary';
 
 describe('CV summary decoding parity', () => {
   const config = {
-    model: '', folds: 2, stratify: false, stratify_bins: 1, batch_size: 1,
-    lr: 1e100, epochs: 1, patience: 0, loss: '', optimizer: '', scheduler: '',
+    model: '',
+    folds: 2,
+    stratify: false,
+    stratify_bins: 1,
+    batch_size: 1,
+    lr: 1e100,
+    epochs: 1,
+    patience: 0,
+    loss: '',
+    optimizer: '',
+    scheduler: '',
   };
 
   const fold = {
-    fold: 1, best_val_loss: null, best_epoch: 0, r2: -1e100,
-    mae_normalized: 0, mae_physical: null, epochs_trained: 1,
-    r2_target_0: null, mae_target_0: 1e100,
+    fold: 1,
+    best_val_loss: null,
+    best_epoch: 0,
+    r2: -1e100,
+    mae_normalized: 0,
+    mae_physical: null,
+    epochs_trained: 1,
+    r2_target_0: null,
+    mae_target_0: 1e100,
   };
 
   const summary = {
-    config, timestamp: '2026-10-31', folds: 2, r2_mean: -1e100, r2_std: null,
-    mae_mean: 0, mae_std: 0, val_loss_mean: null, val_loss_std: 0,
+    config,
+    timestamp: '2026-10-31',
+    folds: 2,
+    r2_mean: -1e100,
+    r2_std: null,
+    mae_mean: 0,
+    mae_std: 0,
+    val_loss_mean: null,
+    val_loss_std: 0,
     fold_results: [fold, { ...fold, fold: 2 }],
   };
 
@@ -52,7 +74,9 @@ describe('CV summary decoding parity', () => {
     const { mae_target_0: omitted, ...unpaired } = fold;
 
     expect(omitted).toBe(1e100);
-    expect(() => parseCvSummary({ ...summary, fold_results: [fold, { ...unpaired, fold: 2 }] })).toThrow();
+    expect(() =>
+      parseCvSummary({ ...summary, fold_results: [fold, { ...unpaired, fold: 2 }] }),
+    ).toThrow();
   });
 });
 
@@ -137,7 +161,16 @@ async function setup() {
     topology: { num_machines: 1, processes_per_machine: 1, machine_rank: 0 },
   });
 
-  return { session, data, best, periodic, draft, keys, bodies, workflow: new ResultOperations(session) };
+  return {
+    session,
+    data,
+    best,
+    periodic,
+    draft,
+    keys,
+    bodies,
+    workflow: new ResultOperations(session),
+  };
 }
 
 describe('explicit published inference workflow', () => {
@@ -192,7 +225,10 @@ describe('explicit published inference workflow', () => {
       run_id: sourceRun,
       checkpoint: 'best_checkpoint',
     });
-    expect(jsonObjectSchema.parse(resultRequestSchema.parse(JSON.parse(bodies[0] ?? '{}')).config).checkpoint).toBeUndefined();
+    expect(
+      jsonObjectSchema.parse(resultRequestSchema.parse(JSON.parse(bodies[0] ?? '{}')).config)
+        .checkpoint,
+    ).toBeUndefined();
     expect((await workflow.submit()).run_id).toBe(ids.run_id);
     workflow.invalidate();
     await expect(workflow.submit()).rejects.toThrow();

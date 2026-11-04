@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { canRequestCancellation, eventDiagnostic, RunMonitor, type RunTransport } from '../../app/lib/run-monitor';
+import {
+  canRequestCancellation,
+  eventDiagnostic,
+  RunMonitor,
+  type RunTransport,
+} from '../../app/lib/run-monitor';
 import { DaemonApiError, parseJson, type RunView } from '../../app/lib/daemon-api';
 import { CursorStore } from '../../app/lib/event-stream';
 import type { RunEvent } from '../../app/lib/event-stream';
@@ -14,8 +19,16 @@ function metricEvent(
   attempt = 1,
   seq = 0,
 ): RunEvent {
-  return { protocol: 'wavedl-run', version: 2, run_id: id, attempt, seq, type,
-    ts: '2026-10-07T00:00:00Z', payload };
+  return {
+    protocol: 'wavedl-run',
+    version: 2,
+    run_id: id,
+    attempt,
+    seq,
+    type,
+    ts: '2026-10-07T00:00:00Z',
+    payload,
+  };
 }
 
 describe('metric payload boundary schemas', () => {
@@ -23,7 +36,14 @@ describe('metric payload boundary schemas', () => {
     const history = new MetricHistory(id);
 
     for (const [seq, value] of [4, null, '5', false, [6], { nested: 7 }].entries()) {
-      history.apply(metricEvent({ name: 'custom', value: 99, step: seq, metrics: { custom: value } }, 'metric', 1, seq));
+      history.apply(
+        metricEvent(
+          { name: 'custom', value: 99, step: seq, metrics: { custom: value } },
+          'metric',
+          1,
+          seq,
+        ),
+      );
     }
 
     history.apply(metricEvent({ name: 'custom', value: 8, step: 6 }, 'metric', 1, 6));
@@ -42,8 +62,14 @@ describe('metric payload boundary schemas', () => {
 
   it('uses ingestion-time numeric values for physical parameter summaries and isolates snapshots', () => {
     const history = new MetricHistory(id);
-    history.apply(metricEvent({ name: 'loss', value: 1, step: 0,
-      metrics: { MAE_Phys_P2: 3, MAE_Phys_P1: null, extra: 'ignored' } }));
+    history.apply(
+      metricEvent({
+        name: 'loss',
+        value: 1,
+        step: 0,
+        metrics: { MAE_Phys_P2: 3, MAE_Phys_P1: null, extra: 'ignored' },
+      }),
+    );
     const record = history.metrics()[0];
 
     if (!record) throw new Error('Missing metric record');
@@ -66,12 +92,33 @@ describe('metric payload boundary schemas', () => {
     { payload: { name: 1, step: 0, value: null }, key: 'invalidMetricPayload' },
     { payload: { name: '', step: 0, value: null, unit: null }, key: 'invalidMetricPayload' },
     { payload: { name: '', step: 0, value: null, metrics: [] }, key: 'invalidMetricDetails' },
-    { payload: { name: '', step: 0, value: null, metrics: { lr: '1' } }, key: 'invalidNumericMetric', field: 'lr' },
-    { payload: { name: '', step: 0, value: null, metrics: { epoch: 0.5 } }, key: 'invalidIntegerMetric', field: 'epoch' },
-    { payload: { name: '', step: 0, value: null, metrics: { MAE_Phys_P1: false } }, key: 'invalidNumericMetric', field: 'MAE_Phys_P1' },
-    { payload: { name: '', step: 0, value: null, metrics: { mae_per_param: [true] } }, key: 'invalidPerParameterMetrics' },
-    { payload: { name: '', step: 0, value: null, metrics: { per_param_mae: { x: '1' } } }, key: 'invalidPerParameterMetrics' },
-    { payload: { name: '', step: 0, value: null, metrics: { other: Infinity } }, key: 'invalidJsonValue' },
+    {
+      payload: { name: '', step: 0, value: null, metrics: { lr: '1' } },
+      key: 'invalidNumericMetric',
+      field: 'lr',
+    },
+    {
+      payload: { name: '', step: 0, value: null, metrics: { epoch: 0.5 } },
+      key: 'invalidIntegerMetric',
+      field: 'epoch',
+    },
+    {
+      payload: { name: '', step: 0, value: null, metrics: { MAE_Phys_P1: false } },
+      key: 'invalidNumericMetric',
+      field: 'MAE_Phys_P1',
+    },
+    {
+      payload: { name: '', step: 0, value: null, metrics: { mae_per_param: [true] } },
+      key: 'invalidPerParameterMetrics',
+    },
+    {
+      payload: { name: '', step: 0, value: null, metrics: { per_param_mae: { x: '1' } } },
+      key: 'invalidPerParameterMetrics',
+    },
+    {
+      payload: { name: '', step: 0, value: null, metrics: { other: Infinity } },
+      key: 'invalidJsonValue',
+    },
   ])('preserves failure diagnostics for $key / $field', ({ payload, key, field }) => {
     const history = new MetricHistory(id);
 
@@ -98,25 +145,68 @@ describe('metric payload boundary schemas', () => {
   it('keeps additive metrics, null defaults, finite values and insertion-order diagnostics', () => {
     const history = new MetricHistory(id);
     history.apply(metricEvent({ name: '', value: -1e100, step: 0, metrics: null }));
-    history.apply(metricEvent({ name: 'loss', value: null, step: 1,
-      metrics: { train_loss: 1e100, epoch: 0, total_epochs: 1, mae_per_param: [null, 2], extra: { allowed: true } } }, 'metric', 1, 1));
+    history.apply(
+      metricEvent(
+        {
+          name: 'loss',
+          value: null,
+          step: 1,
+          metrics: {
+            train_loss: 1e100,
+            epoch: 0,
+            total_epochs: 1,
+            mae_per_param: [null, 2],
+            extra: { allowed: true },
+          },
+        },
+        'metric',
+        1,
+        1,
+      ),
+    );
     expect(history.metrics()[0]?.metrics).toEqual({});
-    expect(history.summary().current?.parameters).toEqual([{ name: 'P1', value: null }, { name: 'P2', value: 2 }]);
-    expect(() => history.apply(metricEvent({ name: '', value: 0, step: 2,
-      metrics: { epoch: -1, lr: 'bad' } }, 'metric', 1, 2))).toThrow();
+    expect(history.summary().current?.parameters).toEqual([
+      { name: 'P1', value: null },
+      { name: 'P2', value: 2 },
+    ]);
+    expect(() =>
+      history.apply(
+        metricEvent(
+          { name: '', value: 0, step: 2, metrics: { epoch: -1, lr: 'bad' } },
+          'metric',
+          1,
+          2,
+        ),
+      ),
+    ).toThrow();
 
     try {
-      history.apply(metricEvent({ name: '', value: 0, step: 2, metrics: { epoch: -1, lr: 'bad' } }, 'metric', 1, 2));
+      history.apply(
+        metricEvent(
+          { name: '', value: 0, step: 2, metrics: { epoch: -1, lr: 'bad' } },
+          'metric',
+          1,
+          2,
+        ),
+      );
     } catch (cause) {
-      expect(cause).toMatchObject({ clientMessageKey: 'invalidIntegerMetric', clientMessageParams: { field: 'epoch' } });
+      expect(cause).toMatchObject({
+        clientMessageKey: 'invalidIntegerMetric',
+        clientMessageParams: { field: 'epoch' },
+      });
     }
   });
 
   it('retires earlier attempt steps from the requeued attempt resume step onward', () => {
     const history = new MetricHistory(id);
+
     const epoch = (attempt: number, seq: number, step: number) =>
-      metricEvent({ name: 'epoch', value: step, step, unit: '', metrics: { epoch: step, val_r2: step } },
-        'metric', attempt, seq);
+      metricEvent(
+        { name: 'epoch', value: step, step, unit: '', metrics: { epoch: step, val_r2: step } },
+        'metric',
+        attempt,
+        seq,
+      );
 
     history.apply(metricEvent({ cause: 'submit', restart_count: null }, 'attempt'));
 
@@ -127,7 +217,13 @@ describe('metric payload boundary schemas', () => {
     history.apply(epoch(2, 2, 7));
 
     expect(history.metrics().map((record) => [record.attempt, record.step])).toEqual([
-      [1, 1], [1, 2], [1, 3], [1, 4], [1, 5], [2, 6], [2, 7],
+      [1, 1],
+      [1, 2],
+      [1, 3],
+      [1, 4],
+      [1, 5],
+      [2, 6],
+      [2, 7],
     ]);
     expect(history.metrics({ activeOnly: false })).toHaveLength(10);
     expect(history.summary().latest?.attempt).toBe(2);
@@ -145,9 +241,15 @@ describe('metric payload boundary schemas', () => {
 
 describe('diagnostic payload boundary', () => {
   it('keeps message precedence, empty strings and non-string fallbacks', () => {
-    expect(eventDiagnostic(metricEvent({ message: '', text: 'fallback' }, 'warning')).text).toBe('2026-10-07T00:00:00Z [1:0] warning: ');
-    expect(eventDiagnostic(metricEvent({ message: false, text: 'fallback' }, 'warning')).text).toContain('warning: fallback');
-    expect(eventDiagnostic(metricEvent({ message: false, text: null }, 'warning')).text).toContain('{"message":false,"text":null}');
+    expect(eventDiagnostic(metricEvent({ message: '', text: 'fallback' }, 'warning')).text).toBe(
+      '2026-10-07T00:00:00Z [1:0] warning: ',
+    );
+    expect(
+      eventDiagnostic(metricEvent({ message: false, text: 'fallback' }, 'warning')).text,
+    ).toContain('warning: fallback');
+    expect(eventDiagnostic(metricEvent({ message: false, text: null }, 'warning')).text).toContain(
+      '{"message":false,"text":null}',
+    );
   });
 });
 
@@ -395,7 +497,10 @@ describe('run monitoring', () => {
       canRequestCancellation(view({ state: 'supervision_lost', uncertainty: true }), 'idle'),
     ).toBe(true);
     expect(
-      canRequestCancellation(view({ attempt: null, state: 'submission_unknown', uncertainty: true }), 'unknown'),
+      canRequestCancellation(
+        view({ attempt: null, state: 'submission_unknown', uncertainty: true }),
+        'unknown',
+      ),
     ).toBe(true);
   });
   it.each(['reject', 'false', 'older-true'] as const)(

@@ -8,8 +8,15 @@ import {
 } from '../../shared/schemas/workstation-controls';
 import { planManifestSchema, planPreviewContextSchema } from '../../shared/schemas/plan-summary';
 import { customIssueParamsSchema } from '../../shared/schemas/client-diagnostic';
-import { configureValidationLocale, translateClientDiagnostic } from '../../app/i18n/client-messages';
-import { trainingConfigBaseSchema, trainingDefaults, trainingFieldMetadata } from '../../shared/schemas/training-request';
+import {
+  configureValidationLocale,
+  translateClientDiagnostic,
+} from '../../app/i18n/client-messages';
+import {
+  trainingConfigBaseSchema,
+  trainingDefaults,
+  trainingFieldMetadata,
+} from '../../shared/schemas/training-request';
 import { inferenceConfigSchema } from '../../shared/schemas/result-request';
 import { trainingCommand } from '../../app/lib/training-export';
 import { loadShellDockSlots } from '../../app/lib/preferences';
@@ -29,13 +36,21 @@ describe('workstation control boundaries', () => {
     expect(segmentedSelectionSchema(['cpu', 'cuda']).safeParse('').success).toBe(false);
     expect(segmentedSelectionSchema(['cpu', 'cuda']).parse('cuda')).toBe('cuda');
     expect(segmentedSelectionSchema([]).safeParse('cpu').success).toBe(false);
-    expect(storedDockSlotsSchema.parse(['project', {}, null, 2, 'results']))
-      .toEqual(['project', null, null, null, 'results']);
+    expect(storedDockSlotsSchema.parse(['project', {}, null, 2, 'results'])).toEqual([
+      'project',
+      null,
+      null,
+      null,
+      'results',
+    ]);
     expect(storedDockSlotsSchema.safeParse(['project']).success).toBe(false);
   });
 
   it('keeps additive locate request behavior', () => {
-    expect(locateRequestSchema.parse({ root: '', path: '', extra: true })).toEqual({ root: '', path: '' });
+    expect(locateRequestSchema.parse({ root: '', path: '', extra: true })).toEqual({
+      root: '',
+      path: '',
+    });
     expect(locateRequestSchema.safeParse({ root: 'data', path: 1 }).success).toBe(false);
   });
 
@@ -47,25 +62,35 @@ describe('workstation control boundaries', () => {
     for (const value of ['interrupted_checkpoint', '', 2, {}, null])
       expect(choices.safeParse(value).success).toBe(false);
 
-    expect(segmentedSelectionSchema(['best_checkpoint']).safeParse('epoch_5_checkpoint').success).toBe(false);
+    expect(
+      segmentedSelectionSchema(['best_checkpoint']).safeParse('epoch_5_checkpoint').success,
+    ).toBe(false);
   });
 
   it('keeps every selectable training default among its declared choices', () => {
     const choices = trainingFieldMetadata.filter((field) => field.choices.length > 0);
 
     expect(choices.map((field) => field.name)).toEqual([
-      'loss', 'optimizer', 'scheduler', 'cache_validate', 'precision', 'constraint_reduction',
+      'loss',
+      'optimizer',
+      'scheduler',
+      'cache_validate',
+      'precision',
+      'constraint_reduction',
     ]);
 
-    for (const field of choices)
-      expect(field.choices).toContain(trainingDefaults[field.name]);
+    for (const field of choices) expect(field.choices).toContain(trainingDefaults[field.name]);
   });
 
   it('retains dock recovery for malformed stored JSON and mixed or duplicate slots', () => {
     const defaults = ['experiments', 'project', 'datasets', 'results', 'settings'];
 
     for (const raw of [null, 'broken', 'null', '{}', '[]', '["project"]']) {
-      const slots = loadShellDockSlots({ getItem: () => raw, setItem: () => {}, removeItem: () => {} });
+      const slots = loadShellDockSlots({
+        getItem: () => raw,
+        setItem: () => {},
+        removeItem: () => {},
+      });
 
       expect(slots).toEqual(defaults);
     }
@@ -74,7 +99,11 @@ describe('workstation control boundaries', () => {
       ['project', {}, null, 2, 'results'],
       ['project', 'project', 'project', 'project', 'project'],
     ]) {
-      const slots = loadShellDockSlots({ getItem: () => JSON.stringify(stored), setItem: () => {}, removeItem: () => {} });
+      const slots = loadShellDockSlots({
+        getItem: () => JSON.stringify(stored),
+        setItem: () => {},
+        removeItem: () => {},
+      });
 
       expect(slots).toEqual(['project', 'experiments', 'datasets', 'results', 'settings']);
     }
@@ -85,24 +114,40 @@ describe('workstation control boundaries', () => {
     const parsed = planManifestSchema.parse(manifest);
 
     expect(parsed.manifest).toEqual(manifest);
-    expect(parsed.review).toEqual({ operation: undefined, resolved_config: {}, runtime: { device: undefined } });
+    expect(parsed.review).toEqual({
+      operation: undefined,
+      resolved_config: {},
+      runtime: { device: undefined },
+    });
     expect(planManifestSchema.safeParse([]).success).toBe(false);
-    expect(planPreviewContextSchema.parse({ target: null, topology: false }))
-      .toEqual({ target: undefined, topology: {} });
-    expect(planManifestSchema.parse({ runtime: { device: 'cuda' }, resolved_config: { epochs: 4 } }).review)
-      .toMatchObject({ runtime: { device: 'cuda' }, resolved_config: { epochs: 4 } });
+    expect(planPreviewContextSchema.parse({ target: null, topology: false })).toEqual({
+      target: undefined,
+      topology: {},
+    });
+    expect(
+      planManifestSchema.parse({ runtime: { device: 'cuda' }, resolved_config: { epochs: 4 } })
+        .review,
+    ).toMatchObject({ runtime: { device: 'cuda' }, resolved_config: { epochs: 4 } });
   });
 
   it('uses catalog keys and only string/number interpolation params', () => {
-    const params = customIssueParamsSchema.parse({ clientMessageKey: 'nulNotAllowed', count: 2, ignored: true });
+    const params = customIssueParamsSchema.parse({
+      clientMessageKey: 'nulNotAllowed',
+      count: 2,
+      ignored: true,
+    });
 
     expect(params).toEqual({ clientMessageKey: 'nulNotAllowed', count: 2 });
-    expect(customIssueParamsSchema.safeParse({ clientMessageKey: 'not-a-key' }).success).toBe(false);
+    expect(customIssueParamsSchema.safeParse({ clientMessageKey: 'not-a-key' }).success).toBe(
+      false,
+    );
     expect(translateClientDiagnostic('en', 'ordinary text')).toBe('ordinary text');
     expect(translateClientDiagnostic('en', new Error('ordinary error'))).toBe('ordinary error');
     expect(trainingPresetMessageKeysFor('__proto__')).toBeNull();
     expect(trainingChoiceLabel('unknown', 'unknown', (key) => key)).toBe('unknown');
-    expect(trainingChoiceLabel('loss', 'weighted_mse', (key) => key)).toBe('builder.choiceWeightedMse');
+    expect(trainingChoiceLabel('loss', 'weighted_mse', (key) => key)).toBe(
+      'builder.choiceWeightedMse',
+    );
 
     configureValidationLocale('en');
     const result = trainingConfigBaseSchema.shape.model.safeParse('\0');

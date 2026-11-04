@@ -68,8 +68,10 @@ function approved(cv = 0): PlanView {
 
 describe('approved training manifest schema parity', () => {
   it.each([
-    { operation: 'plot' }, { resolved_config: [] },
-    { runtime: { container: 'image' } }, { runtime: {} },
+    { operation: 'plot' },
+    { resolved_config: [] },
+    { runtime: { container: 'image' } },
+    { runtime: {} },
   ])('rejects unsupported manifest records %j with the existing diagnostic', (patch) => {
     const plan = approved();
     const parsed = approvedTrainingManifestSchema.parse(plan.preview.spec ?? null);
@@ -87,12 +89,24 @@ describe('approved training manifest schema parity', () => {
   it('keeps additive manifest fields but rejects unknown resolved config keys', () => {
     const plan = approved();
     const manifest = approvedTrainingManifestSchema.parse(plan.preview.spec ?? null);
-    const additive = { ...plan, preview: { ...plan.preview, spec: { ...manifest, additive: true } } };
+
+    const additive = {
+      ...plan,
+      preview: { ...plan.preview, spec: { ...manifest, additive: true } },
+    };
 
     expect(automaticPlotRequest(train, additive).config.model).toBe('cnn');
 
-    const unknown = { ...plan, preview: { ...plan.preview, spec: { ...manifest,
-      resolved_config: { ...manifest.resolved_config, unknown_option: true } } } };
+    const unknown = {
+      ...plan,
+      preview: {
+        ...plan.preview,
+        spec: {
+          ...manifest,
+          resolved_config: { ...manifest.resolved_config, unknown_option: true },
+        },
+      },
+    };
 
     try {
       automaticPlotRequest(train, unknown);
@@ -202,7 +216,8 @@ async function setup(
         if (alteredPlot === 'map')
           manifest.storage_map = [{ host_root: '/approved', execution_root: '/changed' }];
 
-        if (alteredPlot === 'checkpoint') manifest.checkpoint_source.checkpoint = 'epoch_5_checkpoint';
+        if (alteredPlot === 'checkpoint')
+          manifest.checkpoint_source.checkpoint = 'epoch_5_checkpoint';
 
         if (alteredPlot === 'imports')
           manifest.resolved_config.import_modules = ['unapproved.module'];
@@ -615,7 +630,9 @@ describe('actual captured automatic plot coordinator', () => {
       await owner.controller.observeFresh(train);
       expect(owner.controller.state.value.status).toBe('submitted');
       expect(owner.routes.filter((route) => route === 'POST /api/runs')).toHaveLength(1);
-      expect(resultRequestSchema.parse(parseJson(owner.bodies[0] ?? '{}')).config.import_modules).toEqual(imports);
+      expect(
+        resultRequestSchema.parse(parseJson(owner.bodies[0] ?? '{}')).config.import_modules,
+      ).toEqual(imports);
       await owner.controller.observeFresh(train);
       expect(owner.bodies).toHaveLength(1);
     } finally {
@@ -699,7 +716,10 @@ describe('actual captured automatic plot coordinator', () => {
     expect(controller.state.value.status).toBe('submitted');
     expect(controller.state.value.plotRunId).toBe(plot.run_id);
     const request = resultRequestSchema.parse(parseJson(bodies[0] ?? '{}'));
-    expect(request.checkpoint_source).toEqual({ run_id: train.run_id, checkpoint: 'best_checkpoint' });
+    expect(request.checkpoint_source).toEqual({
+      run_id: train.run_id,
+      checkpoint: 'best_checkpoint',
+    });
     expect(request.config.data_path).toBe('/approved/train.npz');
     expect(request.runtime.python).toBe('/approved/python');
     await controller.observeFresh(train);
@@ -730,31 +750,29 @@ describe('actual captured automatic plot coordinator', () => {
       }
     },
   );
+
   const faults: Array<'authentication' | 'identity' | 'protocol'> = [
     'authentication',
     'identity',
     'protocol',
   ];
 
-  it.each(faults)(
-    'revokes automatic plotting after an inventory %s fault',
-    async (fault) => {
-      const owner = await setup();
+  it.each(faults)('revokes automatic plotting after an inventory %s fault', async (fault) => {
+    const owner = await setup();
 
-      try {
-        owner.controller.capture(train, await owner.approve());
-        owner.faultInventory(fault);
-        await owner.controller.observeFresh(train);
-        expect(owner.controller.state.value.status).toBe('stopped');
-        expect(owner.session.api).toBeNull();
-        expect(owner.bodies).toHaveLength(0);
-        expect(owner.routes).not.toContain('POST /api/runs');
-      } finally {
-        owner.controller.dispose();
-        owner.session.detach();
-      }
-    },
-  );
+    try {
+      owner.controller.capture(train, await owner.approve());
+      owner.faultInventory(fault);
+      await owner.controller.observeFresh(train);
+      expect(owner.controller.state.value.status).toBe('stopped');
+      expect(owner.session.api).toBeNull();
+      expect(owner.bodies).toHaveLength(0);
+      expect(owner.routes).not.toContain('POST /api/runs');
+    } finally {
+      owner.controller.dispose();
+      owner.session.detach();
+    }
+  });
   it('recovers lost submit acknowledgment by GET without a second submission', async () => {
     const { controller, session, routes, loseSubmit, approve } = await setup();
     loseSubmit();

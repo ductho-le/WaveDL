@@ -65,7 +65,10 @@ export const trainingPresets = [
   },
 ];
 
-export function applyTrainingPreset(current: TrainingConfig, preset: Partial<TrainingConfig>): TrainingConfig {
+export function applyTrainingPreset(
+  current: TrainingConfig,
+  preset: Partial<TrainingConfig>,
+): TrainingConfig {
   // Presets edit a draft; the full request schema validates CV compatibility
   // before preview, without silently discarding incompatible user choices.
   return trainingConfigBaseSchema.parse({ ...current, ...trainingPresetSchema.parse(preset) });

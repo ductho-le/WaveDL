@@ -50,7 +50,10 @@ export async function pngPreviewBlob(blob: Blob): Promise<Blob> {
   return new Blob([blob], { type: 'image/png' });
 }
 
-const scopes = new WeakMap<Artifact | Checkpoint, { session: ConnectionSession; revision: number }>();
+const scopes = new WeakMap<
+  Artifact | Checkpoint,
+  { session: ConnectionSession; revision: number }
+>();
 
 const fail = (): never => {
   throw DaemonApiError.fromKey('response', 'invalidArtifactInventory');
@@ -140,6 +143,7 @@ export class ArtifactClient {
         // Returned rather than thrown: a failure inside perform ends the session.
         if (size > BLOB_BUDGET) {
           await response.body.cancel();
+
           return null;
         }
 
@@ -167,8 +171,7 @@ export class ArtifactClient {
             offset += value.length;
           }
 
-          if (offset !== size)
-            throw DaemonApiError.fromKey('response', 'artifactIsTruncated');
+          if (offset !== size) throw DaemonApiError.fromKey('response', 'artifactIsTruncated');
           scoped.throwIfAborted();
           api.assertResponseCurrent(response);
           this.assertSelection(artifact);

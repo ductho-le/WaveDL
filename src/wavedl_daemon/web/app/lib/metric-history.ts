@@ -5,8 +5,11 @@ import {
 } from '../i18n/client-messages';
 import { DaemonApiError, type JsonObject, type RunView } from './daemon-api';
 import {
-  metricPayloadSchema, metricEventScopeSchema,
-  type MetricDetails, type RuntimeMetricField, type NumericMetrics,
+  metricPayloadSchema,
+  metricEventScopeSchema,
+  type MetricDetails,
+  type RuntimeMetricField,
+  type NumericMetrics,
 } from '../../shared/schemas/metric-history';
 import type { RunEvent } from './event-stream';
 
@@ -178,7 +181,10 @@ function runtimeSummary(record: StoredMetricRecord, bestR2: number | null): Runt
     best !== null &&
     validationLoss !== null &&
     validationLoss > 0 &&
-    epoch !== undefined && epoch > 0 && total !== undefined && total > 0
+    epoch !== undefined &&
+    epoch > 0 &&
+    total !== undefined &&
+    total > 0
   ) {
     const distance = ((validationLoss - best) / validationLoss) * 100;
     current.health.push({
@@ -203,9 +209,11 @@ function metric(
 
     if (issue?.path[0] !== 'metrics') fail('invalidMetricPayload');
 
-    if (issue.message === 'invalidNumericMetric') fail('invalidNumericMetric', { field: String(field) });
+    if (issue.message === 'invalidNumericMetric')
+      fail('invalidNumericMetric', { field: String(field) });
 
-    if (issue.message === 'invalidIntegerMetric') fail('invalidIntegerMetric', { field: String(field) });
+    if (issue.message === 'invalidIntegerMetric')
+      fail('invalidIntegerMetric', { field: String(field) });
 
     if (issue.message === 'invalidPerParameterMetrics') fail('invalidPerParameterMetrics');
 
@@ -342,8 +350,10 @@ export class MetricHistory {
       return;
 
     for (const record of this.#records) {
-      if ((!(options.activeOnly ?? true) || record.active) &&
-        (options.attempt === undefined || record.attempt === options.attempt))
+      if (
+        (!(options.activeOnly ?? true) || record.active) &&
+        (options.attempt === undefined || record.attempt === options.attempt)
+      )
         yield record;
     }
   }

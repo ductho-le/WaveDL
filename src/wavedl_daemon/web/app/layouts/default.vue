@@ -117,11 +117,7 @@ onScopeDispose(() => systemTheme?.removeEventListener('change', refreshAppearanc
 </script>
 
 <template>
-  <WorkstationShell
-    v-if="section !== 'connection'"
-    :status="state.status"
-    :section="section"
-  >
+  <WorkstationShell v-if="section !== 'connection'" :status="state.status" :section="section">
     <AutomaticPlotStatus
       :state="automaticPlotState"
       @retry="automaticPlots.retry"

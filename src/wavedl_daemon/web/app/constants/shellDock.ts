@@ -1,6 +1,9 @@
 import { SHELL_ACTION_NAVIGATION, SHELL_PRIMARY_NAVIGATION } from '../shell/sections';
 import type { WorkstationSection, ShellNavigationDescriptor } from '../shell/sections';
-import { storedDockSlotsSchema, type StoredDockSlots } from '../../shared/schemas/workstation-controls';
+import {
+  storedDockSlotsSchema,
+  type StoredDockSlots,
+} from '../../shared/schemas/workstation-controls';
 import type { Json } from '../../shared/schemas/json';
 
 export type ShellDockDestinationId = WorkstationSection;

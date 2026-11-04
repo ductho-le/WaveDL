@@ -18,7 +18,9 @@ describe('bounded JSON schema parity', () => {
     expect(jsonSchema.safeParse({ metric: undefined }).success).toBe(false);
     expect(jsonObjectSchema.safeParse({ nested: { value: undefined } }).success).toBe(false);
     expect(jsonObjectSchema.safeParse({ nested: { value: Infinity } }).success).toBe(false);
-    expect(jsonObjectSchema.safeParse(parseJson('{"__proto__":{"value":null}}')).success).toBe(true);
+    expect(jsonObjectSchema.safeParse(parseJson('{"__proto__":{"value":null}}')).success).toBe(
+      true,
+    );
   });
 });
 
@@ -68,7 +70,9 @@ const matrixPlan = { plan_id: matrixId, run_id: matrixId, request_id: matrixId, 
 describe('plan preview boundary', () => {
   it('keeps additive preview fields but requires a present spec to be an object', () => {
     expect(planSchema.safeParse(matrixPlan).success).toBe(true);
-    expect(planSchema.parse({ ...matrixPlan, preview: { spec: {}, additive: 1 } }).preview).toEqual({ spec: {}, additive: 1 });
+    expect(planSchema.parse({ ...matrixPlan, preview: { spec: {}, additive: 1 } }).preview).toEqual(
+      { spec: {}, additive: 1 },
+    );
 
     for (const spec of [null, false, 1, [], '']) {
       expect(planSchema.safeParse({ ...matrixPlan, preview: { spec } }).success).toBe(false);

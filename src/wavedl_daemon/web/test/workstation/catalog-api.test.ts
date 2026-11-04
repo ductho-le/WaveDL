@@ -6,12 +6,26 @@ import { parseDatasetInspection } from '../../app/lib/dataset-inspection';
 import { previewValuesSchema } from '../../shared/schemas/dataset-preview';
 
 describe('dataset boundary parity', () => {
-  const variable = { name: 'X', dtype: 'float32', shape: [2, 3], sample_count: 2, declared_bytes: 24 };
+  const variable = {
+    name: 'X',
+    dtype: 'float32',
+    shape: [2, 3],
+    sample_count: 2,
+    declared_bytes: 24,
+  };
 
-  const header = { schema_version: 1, format: 'npz', variables: [variable, { ...variable, name: 'Y', shape: [2], declared_bytes: 8 }] };
+  const header = {
+    schema_version: 1,
+    format: 'npz',
+    variables: [variable, { ...variable, name: 'Y', shape: [2], declared_bytes: 8 }],
+  };
 
   it('keeps exact metadata bounds, selected extension, sample counts and unique variable names', () => {
-    expect(parseDatasetInspection(header, { relativePath: 'train.npz' })).toMatchObject({ numSamples: 2, inputShape: [3], outputShape: [1] });
+    expect(parseDatasetInspection(header, { relativePath: 'train.npz' })).toMatchObject({
+      numSamples: 2,
+      inputShape: [3],
+      outputShape: [1],
+    });
 
     for (const value of [
       { ...header, extra: true },
@@ -26,7 +40,15 @@ describe('dataset boundary parity', () => {
   });
 
   it('retains finite nullable nested preview values without coercion', () => {
-    expect(previewValuesSchema.parse([[null, -1e100], [0, 1e100]])).toEqual([[null, -1e100], [0, 1e100]]);
+    expect(
+      previewValuesSchema.parse([
+        [null, -1e100],
+        [0, 1e100],
+      ]),
+    ).toEqual([
+      [null, -1e100],
+      [0, 1e100],
+    ]);
 
     for (const value of [[[true]], [['1']], [[Infinity]], [[NaN]], {}]) {
       expect(previewValuesSchema.safeParse(value).success).toBe(false);
@@ -75,12 +97,22 @@ describe('catalog record schema parity', () => {
   });
 
   it.each([
-    { year_published: 1799 }, { year_published: 3001 }, { year_published: 2000.5 },
-    { architecture_family: 'Other' }, { compute_tier: 'Huge' },
-    { tags: ['same', 'same'] }, { tags: [' '] }, { tags: ['x\0y'] },
+    { year_published: 1799 },
+    { year_published: 3001 },
+    { year_published: 2000.5 },
+    { architecture_family: 'Other' },
+    { compute_tier: 'Huge' },
+    { tags: ['same', 'same'] },
+    { tags: [' '] },
+    { tags: ['x\0y'] },
     { pros: Array.from({ length: 33 }, (_, index) => String(index)) },
-    { supported_dims: [] }, { supported_dims: [1, 1] }, { supported_dims: [4] },
-    { display_name: '' }, { params_m: -1 }, { is_pretrained: 1 }, { extra: true },
+    { supported_dims: [] },
+    { supported_dims: [1, 1] },
+    { supported_dims: [4] },
+    { display_name: '' },
+    { params_m: -1 },
+    { is_pretrained: 1 },
+    { extra: true },
   ])('rejects invalid model fields %j', async (patch) => {
     const { api } = await setup({ ...catalogue, models: [{ ...catalogue.models[0], ...patch }] });
 
@@ -88,13 +120,31 @@ describe('catalog record schema parity', () => {
   });
 
   it('accepts category additions, bound endpoints and empty lists while freezing mapped values', async () => {
-    const { api } = await setup({ ...catalogue,
+    const { api } = await setup({
+      ...catalogue,
       categories: { '': { short_description: '', models: ['cnn'], additive: true } },
-      models: [{ ...catalogue.models[0], year_published: 1800, params_m: 1_000_000, size_mb: 0, pros: [], cons: [], tags: [], supported_dims: [3] }],
+      models: [
+        {
+          ...catalogue.models[0],
+          year_published: 1800,
+          params_m: 1_000_000,
+          size_mb: 0,
+          pros: [],
+          cons: [],
+          tags: [],
+          supported_dims: [3],
+        },
+      ],
     });
+
     const models = await api.models();
 
-    expect(models[0]).toMatchObject({ yearPublished: 1800, paramsM: 1_000_000, supportedDims: [3], category: '' });
+    expect(models[0]).toMatchObject({
+      yearPublished: 1800,
+      paramsM: 1_000_000,
+      supportedDims: [3],
+      category: '',
+    });
     expect(Object.isFrozen(models[0])).toBe(true);
     expect(Object.isFrozen(models[0]?.tags)).toBe(true);
   });
@@ -102,7 +152,12 @@ describe('catalog record schema parity', () => {
   it.each([
     { categories: { x: { short_description: '', models: ['cnn', 'cnn'] } } },
     { categories: { x: { short_description: '', models: [] } } },
-    { categories: { x: { short_description: '', models: ['cnn'] }, y: { short_description: '', models: ['cnn'] } } },
+    {
+      categories: {
+        x: { short_description: '', models: ['cnn'] },
+        y: { short_description: '', models: ['cnn'] },
+      },
+    },
     { models: [catalogue.models[0], catalogue.models[0]] },
   ])('retains cross-record membership and duplicate checks %j', async (patch) => {
     const { api } = await setup({ ...catalogue, ...patch });

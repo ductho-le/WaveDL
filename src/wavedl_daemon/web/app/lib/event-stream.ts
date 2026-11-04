@@ -1,10 +1,4 @@
-import {
-  DaemonApi,
-  DaemonApiError,
-  object,
-  parseJson,
-  type Json,
-} from './daemon-api';
+import { DaemonApi, DaemonApiError, object, parseJson, type Json } from './daemon-api';
 
 import { cursorSchema, runEventSchema } from '../../shared/schemas/event-stream';
 import type { z } from 'zod';
@@ -91,7 +85,11 @@ function envelope(data: string, runId: string, id: string): RunEvent {
 
   const parsed = runEventSchema.safeParse(value);
 
-  if (!parsed.success || parsed.data.run_id !== runId || id !== `${parsed.data.attempt}:${parsed.data.seq}`) {
+  if (
+    !parsed.success ||
+    parsed.data.run_id !== runId ||
+    id !== `${parsed.data.attempt}:${parsed.data.seq}`
+  ) {
     throw DaemonApiError.fromKey('protocol', 'invalidEventScope');
   }
 

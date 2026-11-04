@@ -1,9 +1,6 @@
 import { clientError, type ClientMessage } from '../i18n/client-messages';
 import { shallowRef, toRaw } from 'vue';
-import {
-  trainingRequestSchema,
-  type TrainingRequest,
-} from '../../shared/schemas/training-request';
+import { trainingRequestSchema, type TrainingRequest } from '../../shared/schemas/training-request';
 import {
   inferenceDefaults,
   resultRequestSchema,
@@ -25,8 +22,11 @@ import {
 import type { ConnectionSession } from './connection-session';
 import { ArtifactClient, type Checkpoint } from './artifact-client';
 import {
-  approvedTrainingManifestSchema, trainingPlanPreviewSchema, approvedTrainingConfigSchema,
-  sourcePlotManifestSchema, approvedPlotManifestSchema,
+  approvedTrainingManifestSchema,
+  trainingPlanPreviewSchema,
+  approvedTrainingConfigSchema,
+  sourcePlotManifestSchema,
+  approvedPlotManifestSchema,
 } from '../../shared/schemas/autoplot';
 
 interface AutoPlotIntent {
@@ -44,14 +44,18 @@ export function automaticPlotRequest(
   const parsed = approvedTrainingManifestSchema.safeParse(plan.preview.spec);
   const preview = trainingPlanPreviewSchema.safeParse(plan.preview);
 
-  if (!parsed.success || !preview.success || parsed.data.run_id !== run.run_id || preview.data.target !== run.backend)
+  if (
+    !parsed.success ||
+    !preview.success ||
+    parsed.data.run_id !== run.run_id ||
+    preview.data.target !== run.backend
+  )
     throw clientError('unsupportedTrainingManifest', {});
   const manifest = parsed.data;
   const mappings = storageMapSchema.parse(manifest.storage_map ?? []);
   const parsedConfig = approvedTrainingConfigSchema.safeParse(manifest.resolved_config);
 
-  if (!parsedConfig.success)
-    throw clientError('unsupportedTrainingConfig', {});
+  if (!parsedConfig.success) throw clientError('unsupportedTrainingConfig', {});
   const config = parsedConfig.data;
 
   const runtime = manifest.runtime;

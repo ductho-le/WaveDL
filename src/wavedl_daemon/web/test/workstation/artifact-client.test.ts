@@ -66,7 +66,12 @@ describe('published artifact authority', () => {
     );
 
     expect(inventory.files).toEqual([
-      { runId: run, path: 'best_checkpoint/model.safetensors', size: Number.MAX_SAFE_INTEGER, modified },
+      {
+        runId: run,
+        path: 'best_checkpoint/model.safetensors',
+        size: Number.MAX_SAFE_INTEGER,
+        modified,
+      },
       { runId: run, path: 'fold_1/model.pth', size: 0, modified: '2026-11-03T10:00:00Z' },
     ]);
     expect(inventory.checkpoints).toEqual([
@@ -112,7 +117,9 @@ describe('published artifact authority', () => {
     }));
 
     expect(() => parseInventory({ files, checkpoints: [] }, run)).toThrow();
-    expect(parseInventory({ files: files.slice(1), checkpoints: [] }, run).files).toHaveLength(16384);
+    expect(parseInventory({ files: files.slice(1), checkpoints: [] }, run).files).toHaveLength(
+      16384,
+    );
   });
 
   it('limits raster preview dimensions before handing bytes to the decoder', async () => {

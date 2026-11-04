@@ -16,20 +16,17 @@ describe('artifact download provenance', () => {
       await expect(artifactDownloadName({ ...artifact, runId })).rejects.toThrow('run identity');
     },
   );
-  it.each(['metrics.csv', 'model.onnx'])(
-    'keeps full run identity for %s',
-    async (path) => {
-      const names = await Promise.all([
-        artifactDownloadName({ ...artifact, path }),
-        artifactDownloadName({ ...artifact, path, runId: '33333333-3333-4333-8333-333333333333' }),
-      ]);
+  it.each(['metrics.csv', 'model.onnx'])('keeps full run identity for %s', async (path) => {
+    const names = await Promise.all([
+      artifactDownloadName({ ...artifact, path }),
+      artifactDownloadName({ ...artifact, path, runId: '33333333-3333-4333-8333-333333333333' }),
+    ]);
 
-      expect(new Set(names).size).toBe(2);
-      expect(names[0]).toBe(`${artifact.runId}_${path}`);
-      expect(names.every((name) => name.endsWith(path))).toBe(true);
-      expect(await artifactDownloadName({ ...artifact, path })).toBe(names[0]);
-    },
-  );
+    expect(new Set(names).size).toBe(2);
+    expect(names[0]).toBe(`${artifact.runId}_${path}`);
+    expect(names.every((name) => name.endsWith(path))).toBe(true);
+    expect(await artifactDownloadName({ ...artifact, path })).toBe(names[0]);
+  });
   it('sanitizes native separators, controls, bidi markers, Windows characters and reserved names', async () => {
     for (const path of [
       'dir/CON.csv',
