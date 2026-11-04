@@ -411,6 +411,30 @@ class RunController:
                 watch = self._watches[run_id]
                 watch.pending = watch.pending or done.observation
 
+    def record_local_exits(self) -> None:
+        """Settle every Live Local run whose process has exited, without the pool.
+
+        Call once ticks have stopped and LocalExecution.close() has stopped and
+        reaped its processes, before the run log closes. A restart could only
+        call these runs lost.
+        """
+        self._guard()
+        self._harvest()
+        if self._local is None:
+            return
+        heads: list[RunHead] = []
+        while page := self._log.heads(active=True, limit=PAGE_SIZE, offset=len(heads)):
+            heads += page
+        for head in heads:
+            try:
+                while (cause := self._poll(head)) is not None:
+                    done = _settle(head, cause)
+                    head = self._log.append(head.ref.run_id, done.events, expect=done.expect)
+                    if done.release is not None:
+                        self._local.release(done.release)
+            except Exception as error:
+                self._error(head, error)
+
     def _forget(self, run_id: RunId) -> None:
         self._next_tail.pop(run_id, None)
         self._retry_at.pop(run_id, None)

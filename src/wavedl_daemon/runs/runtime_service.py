@@ -108,9 +108,6 @@ class ServiceSession:
                 if self.backend_factory
                 else {"local": LocalBackend(dispatch_lock=lock)}
             )
-            for backend in self.backends.values():
-                if hasattr(backend, "close"):
-                    stack.callback(backend.close)
             self.controller = RunController(
                 self.log,
                 plans,
@@ -118,6 +115,11 @@ class ServiceSession:
                 local=self.backends.get("local"),
                 slurm=self.backends.get("slurm"),
             )
+            # Runs after the backends close, once Local processes are reaped.
+            stack.callback(self.controller.record_local_exits)
+            for backend in self.backends.values():
+                if hasattr(backend, "close"):
+                    stack.callback(backend.close)
             self.runs = RunService(self.settings, plans, self.log, self.backends)
             self.catalog = CatalogService(
                 self.browse_roots

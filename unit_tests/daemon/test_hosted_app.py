@@ -297,3 +297,49 @@ def test_hosted_local_run_streams_metrics_completes_and_cancels(tmp_path):
     asyncio.run(run())
     assert services.host.outstanding == 0
     assert not services.host._thread.is_alive()
+
+
+def test_stopping_the_daemon_records_the_exits_of_its_local_runs(tmp_path):
+    settings = Settings(tmp_path / "state", tmp_path / "runs")
+    supervisor = StubSupervisor()
+    services = HostedServices(settings, backend_factory=stub_backends(supervisor))
+    app = create_app(
+        settings, token=TOKEN, daemon_id="host", build_id="test", services=services
+    )
+
+    async def run():
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+                base_url="http://localhost:8420",
+                headers=AUTH,
+            ) as client,
+        ):
+            planned = await client.post(
+                "/api/runs/plan", json=train_payload(), headers={"Idempotency-Key": "one"}
+            )
+            run_id = planned.json()["run_id"]
+            await client.post("/api/runs", json={"plan_id": planned.json()["plan_id"]})
+
+            async def running():
+                view = (await client.get(f"/api/runs/{run_id}")).json()
+                return view["state"] == "running"
+
+            await until(running)
+            # Written after the last tick could read it, as a run's final epoch is.
+            metrics = settings.run_root / run_id / "attempts" / "1" / "metrics.jsonl"
+            metrics.write_text(json.dumps({"epoch": 1, "val_loss": 0.5}) + "\n")
+        return run_id
+
+    run_id = asyncio.run(run())
+    assert supervisor.launches[0].cancels == [(45.0, True)]
+    with sqlite3.connect(settings.state_root / "registry.db") as connection:
+        rows = connection.execute(
+            "SELECT type, payload_json FROM run_events WHERE run_id = ? ORDER BY attempt, seq",
+            (run_id,),
+        ).fetchall()
+    connection.close()
+    assert [kind for kind, _ in rows][-2:] == ["metric", "exited"]
+    ending = json.loads(rows[-1][1])
+    assert (ending["outcome"], ending["confirmed"], ending["exit_code"]) == ("failed", True, 130)
