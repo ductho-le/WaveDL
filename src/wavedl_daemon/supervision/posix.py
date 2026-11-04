@@ -272,8 +272,11 @@ class POSIXProcess:
                     leader_exited = self._observe_exit(queue)
                     with self._condition:
                         # A leader exiting is not evidence its group has exited.
-                        if leader_exited and self._deadline is None:
-                            self._deadline = time.monotonic() + 0.2
+                        # Cap cleanup grace without extending an earlier deadline.
+                        if leader_exited:
+                            exit_deadline = time.monotonic() + 0.2
+                            if self._deadline is None or self._deadline > exit_deadline:
+                                self._deadline = exit_deadline
                         deadline, stop_signal = self._deadline, self._stop_signal
                     if deadline is not None and not terminated:
                         terminated = True

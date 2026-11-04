@@ -152,6 +152,31 @@ def test_ignoring_leader_requires_forceful_phase(tmp_path):
     assert_not_live(process.pid)
 
 
+def test_interrupt_exited_leader_publishes_result_before_long_grace(tmp_path):
+    pid_file = tmp_path / "ready.pid"
+    process = start(
+        tmp_path,
+        "import signal,os,sys,time; "
+        "signal.signal(signal.SIGINT,lambda *_: sys.exit(42)); "
+        f"open({str(pid_file)!r},'w').write(str(os.getpid())); time.sleep(60)",
+    )
+    try:
+        assert wait_pid(pid_file) == process.pid
+        process.cancel(45, interrupt=True)
+        deadline = time.monotonic() + 3
+        while process._result is None and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert process._result is not None, "exited launcher waited for cancel grace"
+        result = process.wait()
+        assert result.returncode == 42
+        assert result.cancelled and not result.timed_out
+        with pytest.raises(ChildProcessError):
+            os.waitpid(process.pid, os.WNOHANG)
+    finally:
+        # Only accelerate cleanup after the passive completion assertion.
+        process.wait(0)
+
+
 def test_repeated_cancel_and_concurrent_wait_share_result(tmp_path):
     pid_file = tmp_path / "child.pid"
     process = start(tmp_path, tree_code(pid_file))
