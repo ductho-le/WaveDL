@@ -147,23 +147,29 @@ def test_bf16_applies_to_training_and_evaluation():
 
 
 @pytest.mark.parametrize(
-    "device,precision,accumulation,error",
+    "precision,accumulation,error",
     [
-        ("cpu", "fp16", 1, "unsupported"),
-        ("cpu", "invalid", 1, "Unknown"),
-        ("cpu", "no", 0, "grad_accum_steps"),
+        ("invalid", 1, "Unknown"),
+        ("no", 0, "grad_accum_steps"),
+        ("no", True, "grad_accum_steps"),
+        ("no", 1.5, "grad_accum_steps"),
     ],
 )
 def test_invalid_execution_options_fail_before_training(
-    device, precision, accumulation, error
+    tmp_path, monkeypatch, precision, accumulation, error
 ):
-    inputs = fold_inputs()
-    inputs["device"] = torch.device(device)
+    import wavedl.models
+
+    def unexpected_model(*_args, **_kwargs):
+        pytest.fail("Invalid execution options must be rejected before model creation")
+
+    monkeypatch.setattr(wavedl.models, "build_model", unexpected_model)
     with pytest.raises(ValueError, match=error):
-        cross_validation.train_fold(
-            **inputs, precision=precision, grad_accum_steps=accumulation
+        cross_validation.run_cross_validation(
+            **direct_options(tmp_path),
+            precision=precision,
+            grad_accum_steps=accumulation,
         )
-    assert inputs["optimizer"].updates == 0
 
 
 def test_fp16_overflow_skip_does_not_advance_onecycle(monkeypatch):
@@ -198,8 +204,6 @@ def test_fp16_overflow_skip_does_not_advance_onecycle(monkeypatch):
                 self.scale_value /= 2
             self.updates += 1
 
-    # CPU fp16 is refused in production; bypass only that guard.
-    monkeypatch.setattr(cross_validation, "_validate_training_options", lambda *a: None)
     monkeypatch.setattr(torch.amp, "GradScaler", lambda _device: OverflowOnceScaler())
     monkeypatch.setattr(torch, "autocast", lambda **_kwargs: nullcontext())
     cross_validation.train_fold(**inputs, grad_accum_steps=3, precision="fp16")
@@ -301,13 +305,17 @@ def rng_state():
     return random.getstate(), np.random.get_state(), torch.get_rng_state()
 
 
-def assert_rng_state(before):
-    python_state, numpy_state, torch_state = before
-    assert random.getstate() == python_state
-    current = np.random.get_state()
-    np.testing.assert_array_equal(current[1], numpy_state[1])
-    assert current[2:] == numpy_state[2:]
-    assert torch.equal(torch.get_rng_state(), torch_state)
+@pytest.fixture
+def restore_backend_flags():
+    flags = backend_flags()
+    try:
+        yield
+    finally:
+        torch.use_deterministic_algorithms(flags[0], warn_only=flags[1])
+        torch.backends.cudnn.benchmark = flags[2]
+        torch.backends.cudnn.deterministic = flags[3]
+        torch.backends.cuda.matmul.allow_tf32 = flags[4]
+        torch.backends.cudnn.allow_tf32 = flags[5]
 
 
 def direct_options(output):
@@ -329,13 +337,10 @@ def direct_options(output):
     }
 
 
-def test_deterministic_cv_is_repeatable_and_restores_caller_state(
-    tmp_path, monkeypatch
-):
+def test_deterministic_cv_is_repeatable(tmp_path, monkeypatch, restore_backend_flags):
     from wavedl.models.registry import MODEL_REGISTRY
 
     monkeypatch.setitem(MODEL_REGISTRY, "cnn", StochasticModel)
-    initial_flags = backend_flags()
     observed = []
     original = cross_validation.train_fold
 
@@ -350,14 +355,11 @@ def test_deterministic_cv_is_repeatable_and_restores_caller_state(
         random.random()
         np.random.random()
         torch.rand(3)
-        before = rng_state()
         summaries.append(
             cross_validation.run_cross_validation(
                 **direct_options(tmp_path / run), deterministic=True
             )
         )
-        assert backend_flags() == initial_flags
-        assert_rng_state(before)
     assert observed == [(True, True, False, True, False, False)] * 4
     assert summaries[0]["fold_results"] == summaries[1]["fold_results"]
     for fold in (1, 2):
@@ -367,25 +369,6 @@ def test_deterministic_cv_is_repeatable_and_restores_caller_state(
         )
         for key in first:
             assert torch.equal(first[key], second[key])
-
-
-def test_deterministic_failure_restores_caller_state(tmp_path, monkeypatch):
-    import wavedl.models
-
-    initial_flags, initial_rng = backend_flags(), rng_state()
-
-    def fail(*_args, **_kwargs):
-        assert backend_flags() == (True, True, False, True, False, False)
-        torch.rand(3)
-        raise RuntimeError("injected fold failure")
-
-    monkeypatch.setattr(wavedl.models, "build_model", fail)
-    with pytest.raises(RuntimeError, match="injected fold failure"):
-        cross_validation.run_cross_validation(
-            **direct_options(tmp_path), deterministic=True
-        )
-    assert backend_flags() == initial_flags
-    assert_rng_state(initial_rng)
 
 
 def test_worker_seed_derives_from_torch_worker_seed(monkeypatch):
@@ -497,20 +480,22 @@ def test_cli_constraints_use_each_folds_training_scaler(cli_cv):
     assert not torch.equal(means[0], means[1])
 
 
-def test_cli_deterministic_reaches_scoped_policy(cli_cv, monkeypatch):
+def test_cli_deterministic_applies_shared_policy(
+    cli_cv, monkeypatch, restore_backend_flags
+):
     seeds = []
-    original = cross_validation._deterministic_cv
+    original = cross_validation.enable_deterministic_mode
 
-    def observe(seed):
-        seeds.append(seed)
-        return original(seed)
+    def observe():
+        seeds.append(torch.initial_seed())
+        original()
 
-    monkeypatch.setattr(cross_validation, "_deterministic_cv", observe)
-    with original(13):  # Keep the CLI's own global seeding scoped to this test
-        cli_cv("--seed", "47")
-        assert seeds == []
-        cli_cv("--seed", "47", "--deterministic")
-        assert seeds == [47]
+    monkeypatch.setattr(cross_validation, "enable_deterministic_mode", observe)
+    cli_cv("--seed", "47")
+    assert seeds == []
+    cli_cv("--seed", "47", "--deterministic")
+    assert seeds == [47]
+    assert backend_flags() == (True, True, False, True, False, False)
 
 
 def test_cli_fold_outputs_load_with_inference_loader(cli_cv):

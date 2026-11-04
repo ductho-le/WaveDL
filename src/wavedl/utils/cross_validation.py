@@ -20,16 +20,15 @@ import math
 import os
 import pickle
 import random
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 from datetime import datetime
-from functools import wraps
-from inspect import signature
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+from accelerate.utils import set_seed
 from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.model_selection import KFold, StratifiedKFold
 from torch.utils.data import DataLoader
@@ -40,6 +39,7 @@ from .targets import (
     create_target_scaler,
     flatten_targets_by_channel,
 )
+from .training import enable_deterministic_mode, rescale_accumulated_gradients
 
 
 # ==============================================================================
@@ -132,10 +132,8 @@ def _take_samples(values: Any, indices: np.ndarray) -> np.ndarray:
 # ==============================================================================
 # SINGLE FOLD TRAINING
 # ==============================================================================
-def _validate_training_options(
-    device: torch.device, grad_accum_steps: int, precision: str
-) -> None:
-    """Reject unsupported execution modes before allocating fold models."""
+def _validate_training_options(grad_accum_steps: int, precision: str) -> None:
+    """Reject invalid options from direct callers before allocating fold models."""
     if (
         isinstance(grad_accum_steps, bool)
         or not isinstance(grad_accum_steps, int)
@@ -144,22 +142,6 @@ def _validate_training_options(
         raise ValueError("grad_accum_steps must be an integer >= 1")
     if precision not in {"no", "bf16", "fp16"}:
         raise ValueError(f"Unknown CV precision: {precision!r}")
-    if precision == "no":
-        return
-    # Accelerate disables fp16 autocast on CPU; make that explicit for direct
-    # callers instead of silently training in full precision.
-    if device.type not in {"cpu", "cuda", "mps"} or (
-        device.type == "cpu" and precision == "fp16"
-    ):
-        raise ValueError(f"CV precision={precision!r} is unsupported on {device.type}")
-    if not torch.amp.autocast_mode.is_autocast_available(device.type):
-        raise ValueError(f"Autocast is unavailable on {device.type}")
-    if device.type == "cuda":
-        if not torch.cuda.is_available():
-            raise ValueError("CUDA mixed precision requested but CUDA is unavailable")
-        with torch.cuda.device(device):
-            if precision == "bf16" and not torch.cuda.is_bf16_supported():
-                raise ValueError("CV bf16 precision is unsupported on this CUDA device")
 
 
 def train_fold(
@@ -210,7 +192,6 @@ def train_fold(
         Dictionary with fold results and metrics
     """
     device = torch.device(device)
-    _validate_training_options(device, grad_accum_steps, precision)
     amp_dtype = torch.bfloat16 if precision == "bf16" else torch.float16
     grad_scaler = torch.amp.GradScaler(device.type) if precision == "fp16" else None
 
@@ -276,11 +257,7 @@ def train_fold(
             # A partial final window still produces an update (as in Accelerate)
             last_batch = batch_index + 1 == len(train_loader)
             if (batch_index + 1) % grad_accum_steps == 0 or last_batch:
-                if window_samples != window_capacity:
-                    factor = window_capacity / window_samples
-                    for parameter in model.parameters():
-                        if parameter.grad is not None:
-                            parameter.grad.mul_(factor)
+                rescale_accumulated_gradients(model, window_samples, window_capacity)
                 window_samples = 0
                 if grad_scaler is not None:
                     grad_scaler.unscale_(optimizer)
@@ -441,66 +418,6 @@ def train_fold(
 # ==============================================================================
 # MAIN CV ORCHESTRATION
 # ==============================================================================
-@contextmanager
-def _deterministic_cv(seed: int):
-    """Apply standard training's deterministic policy, then restore caller state."""
-    python_state, numpy_state = random.getstate(), np.random.get_state()
-    cpu_state = torch.get_rng_state()
-    cuda_states = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
-    mps_state = torch.mps.get_rng_state() if torch.backends.mps.is_available() else None
-    flags = (
-        torch.are_deterministic_algorithms_enabled(),
-        torch.is_deterministic_algorithms_warn_only_enabled(),
-        torch.backends.cudnn.benchmark,
-        torch.backends.cudnn.deterministic,
-        torch.backends.cuda.matmul.allow_tf32,
-        torch.backends.cudnn.allow_tf32,
-    )
-    try:
-        random.seed(seed)
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        if cuda_states is not None:
-            torch.cuda.manual_seed_all(seed)
-        torch.use_deterministic_algorithms(True, warn_only=True)
-        torch.backends.cudnn.benchmark = False
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
-        yield
-    finally:
-        torch.use_deterministic_algorithms(flags[0], warn_only=flags[1])
-        torch.backends.cudnn.benchmark = flags[2]
-        torch.backends.cudnn.deterministic = flags[3]
-        torch.backends.cuda.matmul.allow_tf32 = flags[4]
-        torch.backends.cudnn.allow_tf32 = flags[5]
-        random.setstate(python_state)
-        np.random.set_state(numpy_state)
-        torch.set_rng_state(cpu_state)
-        if cuda_states is not None:
-            torch.cuda.set_rng_state_all(cuda_states)
-        if mps_state is not None:
-            torch.mps.set_rng_state(mps_state)
-
-
-def _with_cv_determinism(function):
-    """Run ``function`` inside ``_deterministic_cv`` when ``deterministic=True``."""
-    parameters = signature(function)
-
-    @wraps(function)
-    def scoped(*args, **kwargs):
-        bound = parameters.bind_partial(*args, **kwargs).arguments
-        context = (
-            _deterministic_cv(bound.get("seed", parameters.parameters["seed"].default))
-            if bound.get("deterministic", False)
-            else nullcontext()
-        )
-        with context:
-            return function(*args, **kwargs)
-
-    return scoped
-
-
 def _seed_cv_worker(_worker_id: int) -> None:
     """Seed Python/NumPy in DataLoader workers from their per-worker Torch seed."""
     seed = torch.initial_seed() % (2**32)
@@ -540,7 +457,6 @@ def _build_fold_criterion(
     return criterion
 
 
-@_with_cv_determinism
 def run_cross_validation(
     # Data
     X: np.ndarray,
@@ -628,13 +544,13 @@ def run_cross_validation(
         constraint_file: Python file defining ``constraint(pred, inputs)``
         constraint_weight: Weight(s) for the soft constraints
         constraint_reduction: Constraint penalty reduction (``"mse"``/``"mae"``)
-        deterministic: Apply standard training's deterministic mode; caller RNG
-            and backend settings are restored afterwards
+        deterministic: Seed all RNGs and apply standard training's deterministic mode
 
     Returns:
         Summary dictionary with aggregated results
     """
     # Setup
+    _validate_training_options(grad_accum_steps, precision)
     if epochs < 1 or patience < 1 or batch_size < 1:
         raise ValueError("epochs, patience, and batch_size must be positive.")
     if len(X) != len(y):
@@ -669,13 +585,13 @@ def run_cross_validation(
         )
         logger = logging.getLogger("CV-Trainer")
 
-    # Set seeds for reproducibility
-    # Note: sklearn KFold uses random_state parameter directly, not global numpy RNG
-    rng = np.random.default_rng(seed)  # Local RNG for any numpy operations
-    _ = rng  # Silence unused variable warning (available for future use)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+    if deterministic:
+        set_seed(seed)
+        enable_deterministic_mode()
+    else:
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
 
     if device is not None:
         device = torch.device(device)
@@ -685,7 +601,6 @@ def run_cross_validation(
         device = torch.device("mps")
     else:
         device = torch.device("cpu")
-    _validate_training_options(device, grad_accum_steps, precision)
 
     # Auto-detect optimal DataLoader workers if not specified (matches train.py behavior)
     if workers < 0:

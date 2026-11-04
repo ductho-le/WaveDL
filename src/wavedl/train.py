@@ -147,6 +147,10 @@ from wavedl.utils import (
     wait_for_everyone,
 )
 from wavedl.utils.stdio import configure_utf8_stdio
+from wavedl.utils.training import (
+    enable_deterministic_mode,
+    rescale_accumulated_gradients,
+)
 
 
 try:
@@ -362,11 +366,7 @@ def _finalize_accumulation_window(
         * accelerator.gradient_accumulation_steps
         * nominal_batch_size
     )
-    if total != expected:
-        factor = expected / total
-        for parameter in model.parameters():
-            if parameter.grad is not None:
-                parameter.grad.mul_(factor)
+    rescale_accumulated_gradients(model, total, expected)
 
 
 def _archive_previous_run(output_dir):
@@ -1317,11 +1317,7 @@ def _run_training(args, accelerator):
     # Deterministic mode for scientific reproducibility
     # Disables TF32 and cuDNN benchmark for exact reproducibility (slower)
     if args.deterministic:
-        torch.backends.cudnn.benchmark = False
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
-        torch.use_deterministic_algorithms(True, warn_only=True)
+        enable_deterministic_mode()
         accelerator.print("🔒 Deterministic mode enabled (slower but reproducible)")
 
     # Configure logging (rank 0 only prints to console)
