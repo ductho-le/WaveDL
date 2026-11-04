@@ -1290,58 +1290,24 @@ def main():
 
 
 def _run_training_and_cleanup(args, accelerator):
-    """Run training, then release prepared models before destroying the backend.
+    """Release models before backend teardown to avoid DDP/Gloo deadlocks.
 
-    A DDP reducer holds a reference to its process group. Destroying the default
-    group first can leave the reducer as its last owner during interpreter
-    teardown, where Gloo worker threads may need the GIL held by the reducer's
-    destructor and deadlock. A raised exception's traceback also keeps the
-    training frame (and its model) alive, so clear those locals first. The
-    training exception is preserved; cleanup failures are added as a group.
+    Exception traceback locals can retain the model, so clear them before
+    releasing Accelerate's references and collecting remaining cycles.
     """
-    primary_error = None
-    cleanup_errors = []
     try:
         _run_training(args, accelerator)
     except BaseException as error:
         traceback.clear_frames(error.__traceback__)
-        primary_error = error
-    try:
+        raise
+    finally:
         accelerator.free_memory()
-        # Collect remaining cycles while the default group still owns its backend.
         gc.collect()
-    except BaseException as error:
-        traceback.clear_frames(error.__traceback__)
-        cleanup_errors.append(("prepared-model release", error))
-    else:
         try:
             accelerator.end_training()
-        except BaseException as error:
-            traceback.clear_frames(error.__traceback__)
-            cleanup_errors.append(("tracker/backend shutdown", error))
-        # Tracker finalization can fail before end_training destroys the group.
-        try:
+        finally:
             if dist.is_initialized():
                 dist.destroy_process_group()
-        except BaseException as error:
-            traceback.clear_frames(error.__traceback__)
-            cleanup_errors.append(("distributed backend shutdown", error))
-
-    if cleanup_errors:
-        failures = cleanup_errors
-        if primary_error is not None:
-            failures = [("training", primary_error), *cleanup_errors]
-        details = "; ".join(
-            f"{phase}: {type(error).__name__}: {str(error)[:256]}"
-            for phase, error in failures
-        )
-        if cleanup_errors[0][0] == "prepared-model release":
-            details += "; backend shutdown skipped: prepared-model release failed"
-        raise BaseExceptionGroup(
-            f"Training cleanup failed: {details}", [error for _, error in failures]
-        )
-    if primary_error is not None:
-        raise primary_error
 
 
 def _run_training(args, accelerator):

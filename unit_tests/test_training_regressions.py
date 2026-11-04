@@ -443,38 +443,50 @@ def test_training_cleanup_failure_keeps_training_error(monkeypatch):
 
     accelerator = MagicMock()
     accelerator.end_training.side_effect = OSError("tracker")
-    monkeypatch.setattr(train.dist, "is_initialized", lambda: False)
-
-    def fail(*args):
-        raise RuntimeError("training")
-
-    monkeypatch.setattr(train, "_run_training", fail)
-    with pytest.raises(BaseExceptionGroup) as raised:
-        train._run_training_and_cleanup(None, accelerator)
-    assert [type(error) for error in raised.value.exceptions] == [
-        RuntimeError,
-        OSError,
-    ]
-    assert "training: RuntimeError: training" in str(raised.value)
-
-
-def test_failed_model_release_skips_backend_shutdown(monkeypatch):
-    from unittest.mock import MagicMock
-
-    from wavedl import train
-
-    accelerator = MagicMock()
-    accelerator.free_memory.side_effect = RuntimeError("release")
     destroyed = []
     monkeypatch.setattr(train.dist, "is_initialized", lambda: True)
     monkeypatch.setattr(
         train.dist, "destroy_process_group", lambda: destroyed.append(True)
     )
-    monkeypatch.setattr(train, "_run_training", lambda *args: None)
-    with pytest.raises(BaseExceptionGroup, match="backend shutdown skipped"):
+    training_error = RuntimeError("training")
+
+    def fail(*args):
+        raise training_error
+
+    monkeypatch.setattr(train, "_run_training", fail)
+    with pytest.raises(OSError, match="tracker") as raised:
         train._run_training_and_cleanup(None, accelerator)
-    accelerator.end_training.assert_not_called()
-    assert destroyed == []
+    assert raised.value.__context__ is training_error
+    assert destroyed == [True]
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt])
+def test_training_cleanup_clears_failed_training_frame(monkeypatch, error_type):
+    import weakref
+    from unittest.mock import MagicMock
+
+    from wavedl import train
+
+    accelerator = MagicMock()
+    model_refs = []
+    training_error = error_type("training")
+
+    def fail(*args):
+        model = torch.nn.Linear(1, 1)
+        model_refs.append(weakref.ref(model))
+        raise training_error
+
+    def end_training():
+        assert model_refs[0]() is None
+
+    accelerator.end_training.side_effect = end_training
+    monkeypatch.setattr(train.dist, "is_initialized", lambda: False)
+    monkeypatch.setattr(train, "_run_training", fail)
+    with pytest.raises(error_type, match="training") as raised:
+        train._run_training_and_cleanup(None, accelerator)
+    assert raised.value is training_error
+    accelerator.free_memory.assert_called_once()
+    accelerator.end_training.assert_called_once()
 
 
 @pytest.mark.parametrize("loss_name", ["mae", "huber"])
