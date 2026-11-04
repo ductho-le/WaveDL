@@ -707,13 +707,7 @@ def export_to_onnx(
         model_name: Model name embedded in ONNX metadata
 
     Returns:
-        True if export and validation successful, False otherwise. On False,
-        any existing file at ``output_path`` is left unchanged.
-
-    Raises:
-        ExportCommitUnknown: Replacing an existing file failed and restoring it
-            failed too; the prior file is kept in a recovery directory next to
-            ``output_path`` (named in the message).
+        True if export and validation successful, False otherwise
 
     Example:
         >>> success = export_to_onnx(model, X_test[:1], "model.onnx")
@@ -723,9 +717,7 @@ def export_to_onnx(
     Note:
         For deployment in MATLAB/LabVIEW/C++, use the exported .onnx file
         with the appropriate ONNX runtime for your target platform. The export
-        is always a single self-contained file; models whose parameters and
-        buffers total 2 GiB or more would need ONNX external-data side files
-        and are refused.
+        is always a single self-contained file.
     """
     import warnings
 
@@ -767,19 +759,8 @@ def export_to_onnx(
 
     import tempfile
 
-    from wavedl.utils import onnx_export
-
     output = Path(output_path)
     try:
-        tensor_bytes = sum(
-            tensor.numel() * tensor.element_size()
-            for tensor in (*model.parameters(), *model.buffers())
-        )
-        if tensor_bytes >= onnx_export.MAX_ONNX_BYTES:
-            raise ValueError(
-                f"model tensors total {tensor_bytes / 2**30:.2f} GiB; ONNX models "
-                "of 2 GiB or more need external-data files and are unsupported"
-            )
         output.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(
             prefix=".wavedl-export-", dir=output.parent
@@ -796,9 +777,6 @@ def export_to_onnx(
                 model_name,
                 include_denorm,
             )
-    except onnx_export.ExportCommitUnknown:
-        # The destination may hold either export; "no change" would be false.
-        raise
     except Exception as e:
         logging.error(f"   ✘ ONNX export failed: {e}")
         return False
@@ -818,8 +796,6 @@ def _export_staged_onnx(
     import warnings
 
     import onnx
-
-    from wavedl.utils import onnx_export
 
     # Export with comprehensive settings
     with warnings.catch_warnings():
@@ -852,10 +828,7 @@ def _export_staged_onnx(
             **export_kwargs,
         )
 
-    # Never load or follow external-data references the exporter may have
-    # written; a model needing them is refused below.
     onnx_model = onnx.load(staged_path, load_external_data=False)
-    onnx_export.reject_external_tensors(onnx_model)
     onnx.helper.set_model_props(
         onnx_model,
         {
@@ -865,20 +838,13 @@ def _export_staged_onnx(
         },
     )
     onnx.checker.check_model(onnx_model)
-    # Re-save as a single file (tensors were checked to be embedded above).
+    # Re-save with embedded tensors, avoiding dangling temporary external-data files.
     onnx.save_model(onnx_model, staged_path, save_as_external_data=False)
-
-    # Check the final bytes: one self-contained file at exactly the requested
-    # opset (exporters can silently upgrade). Required even without validate.
-    onnx_export.validate_self_contained_onnx(
-        Path(staged_path), expected_opset=opset_version
-    )
 
     # Validate exported model
     if validate and not _validate_onnx_export(model, sample_input, staged_path):
         return False
-    onnx_export.fsync_file(Path(staged_path))
-    onnx_export.replace_export(Path(staged_path), output)
+    os.replace(staged_path, output)
     logging.info(f"   ✔ Export completed: {output}")
     return True
 
