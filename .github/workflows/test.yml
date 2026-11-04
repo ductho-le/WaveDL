@@ -131,6 +131,8 @@ jobs:
       # The supported suite covers core ML, daemon, cleanup and native CPU DDP.
       # Retained historical Qt tests are excluded by unit_tests/conftest.py.
       - name: Run unit tests (skip slow architecture and GPU tests)
+        # Report the whole suite even when the wheel acceptance above failed.
+        if: ${{ !cancelled() }}
         run: python -m pytest unit_tests/ -v --tb=short -m "not slow and not gpu" --junitxml=unit-tests.xml
 
       - name: Upload unit test evidence

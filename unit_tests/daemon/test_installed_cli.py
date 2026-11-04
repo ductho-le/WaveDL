@@ -58,6 +58,22 @@ class _InstalledWindowsAPI(_Win32):
 
     def terminate_job(self, job):
         self.forced_kills += 1
+        # Name the survivors a forced kill would otherwise erase.
+        snapshot = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_Process | "
+                "Select-Object ProcessId,ParentProcessId,Name,CommandLine | "
+                "Format-List",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        print(f"Process snapshot before forced job kill:\n{snapshot.stdout}")
         super().terminate_job(job)
 
     def active(self, job):
@@ -150,12 +166,20 @@ class _WindowsInstalledDaemon:
             # A nonzero process-group ID targets only this owned daemon and
             # descendants. Unlike production best-effort cancellation, errors
             # 6/87 are acceptance failures, not graceful-shutdown evidence.
+            signalled_at = time.monotonic()
             if not self.api.kernel.GenerateConsoleCtrlEvent(1, self.process.pid):
                 import ctypes
 
                 error = ctypes.get_last_error()
                 raise OSError(f"Targeted native CTRL_BREAK failed: winerror={error}")
             result = await asyncio.to_thread(self.process.wait, 15)
+            print(
+                "Native installed daemon shutdown seconds: "
+                f"{time.monotonic() - signalled_at:.2f}"
+            )
+            print(
+                f"Native installed daemon stderr tail:\n{result.stderr[-1500:].decode(errors='replace')}"
+            )
             print(f"Native installed daemon exit code: {result.returncode}")
             print(
                 "Native installed daemon cleanup: "
