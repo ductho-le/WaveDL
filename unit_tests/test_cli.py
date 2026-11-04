@@ -751,6 +751,22 @@ class TestHPOIntegration:
 class TestHPCDetectGPUs:
     """Tests for GPU auto-detection functionality."""
 
+    @pytest.fixture(autouse=True)
+    def unset_cuda_visibility(self, monkeypatch):
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+
+    @pytest.mark.parametrize(
+        "visible,expected",
+        [("", 1), ("-1", 1), ("0", 1), ("3,GPU-unique-id", 2)],
+    )
+    def test_explicit_visibility_takes_precedence(self, monkeypatch, visible, expected):
+        from wavedl.launcher import detect_gpus
+
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", visible)
+        with patch("subprocess.run") as run:
+            assert detect_gpus() == expected
+        run.assert_not_called()
+
     def test_no_nvidia_smi(self):
         """Test fallback when nvidia-smi is not available."""
         from wavedl.launcher import detect_gpus
