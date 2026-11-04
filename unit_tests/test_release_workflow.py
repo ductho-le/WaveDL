@@ -1,5 +1,6 @@
 """Release publication must depend on gates and reuse one exact artifact."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -374,6 +375,17 @@ def test_release_hash_manifest_accepts_exact_bytes(release_artifacts):
     )
 
 
+def test_release_hash_manifest_works_without_posix_open_flags(
+    release_artifacts, monkeypatch
+):
+    monkeypatch.delattr(os, "O_NONBLOCK", raising=False)
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    assert (
+        verify_artifacts(release_artifacts, commit="abc", tag="v1.0.0")["prerelease"]
+        is False
+    )
+
+
 def test_manifest_anchor_rejects_joint_distribution_and_manifest_tampering(
     release_artifacts,
 ):
@@ -409,8 +421,27 @@ def test_cli_requires_the_trusted_manifest_anchor(release_artifacts, monkeypatch
         main()
 
 
-@pytest.mark.parametrize("fault", ["symlink", "oversized", "directory", "fifo"])
-def test_manifest_requires_a_bounded_regular_file(release_artifacts, fault):
+@pytest.mark.parametrize("posix_open_flags", [True, False])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "symlink",
+        "oversized",
+        "directory",
+        pytest.param(
+            "fifo",
+            marks=pytest.mark.skipif(
+                os.name == "nt", reason="Windows has no os.mkfifo"
+            ),
+        ),
+    ],
+)
+def test_manifest_requires_a_bounded_regular_file(
+    release_artifacts, fault, posix_open_flags, monkeypatch
+):
+    if not posix_open_flags:
+        monkeypatch.delattr(os, "O_NONBLOCK", raising=False)
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
     path = release_artifacts / "release-artifacts.json"
     if fault == "oversized":
         path.write_bytes(b" " * 65537)
@@ -422,8 +453,6 @@ def test_manifest_requires_a_bounded_regular_file(release_artifacts, fault):
         elif fault == "directory":
             path.mkdir()
         elif fault == "fifo":
-            import os
-
             os.mkfifo(path)
     with pytest.raises((ValueError, OSError)):
         verify_artifacts(release_artifacts, commit="abc", tag="v1.0.0")

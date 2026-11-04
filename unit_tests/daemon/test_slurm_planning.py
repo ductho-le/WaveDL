@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -454,6 +455,10 @@ def wait_for(predicate, *, timeout=10.0):
 
 
 @posix
+@pytest.mark.skipif(
+    shutil.which("timeout") is None,
+    reason="needs GNU coreutils timeout (absent on macOS)",
+)
 def test_a_cancel_sends_each_launcher_exactly_one_sigint(tmp_path):
     plan = planner(gpus_per_node=1).plan(
         spec(tmp_path, device="cuda", python=stub(tmp_path)), topology=Topology(2, 1)

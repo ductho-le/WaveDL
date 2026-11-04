@@ -83,8 +83,7 @@ def test_missing_file(authority):
 
 def test_directory_is_not_a_dataset(authority):
     (authority.roots["datasets"] / "directory.npz").mkdir()
-    expected = PreviewForbidden if os.name == "nt" else PreviewChanged
-    with pytest.raises(expected):
+    with pytest.raises(PreviewChanged):
         authority.resolve_selection("datasets", "directory.npz")
 
 
