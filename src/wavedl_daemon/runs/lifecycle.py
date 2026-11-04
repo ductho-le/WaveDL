@@ -276,8 +276,19 @@ _SLURM_FAILURES = frozenset(
 )
 
 
-def slurm_outcome(native_state: str | None, record: ExitRecord | None) -> tuple[Outcome, bool]:
-    """Outcome and whether it is confirmed, for a job Slurm reports terminal."""
+def slurm_outcome(
+    native_state: str | None,
+    record: ExitRecord | None,
+    *,
+    exit_code: int | None = None,
+    signal: int | None = None,
+) -> tuple[Outcome, bool]:
+    """Outcome and whether it is confirmed, for a job Slurm reports terminal.
+
+    The batch script exits 0 only when every code in its exit record is 0, so
+    COMPLETED with exit 0 proves success even when the record cannot be read
+    (a write that failed, or a shared file system that has not shown it yet).
+    """
     words = (native_state or "").split()
     state = words[0].rstrip("+").upper() if words else ""
     if state == "CANCELLED":
@@ -286,6 +297,8 @@ def slurm_outcome(native_state: str | None, record: ExitRecord | None) -> tuple[
         return Outcome.FAILED, True
     if state == "COMPLETED" and record is not None:
         return (Outcome.COMPLETED if record.succeeded else Outcome.FAILED), True
+    if state == "COMPLETED" and (exit_code, signal) == (0, None):
+        return Outcome.COMPLETED, True
     return Outcome.UNKNOWN, False
 
 
@@ -442,15 +455,23 @@ def _ending(
                 return (ending, opened)
             return (ending, opened, Observed(cause.phase, cause.native_state, cause.reason))
         case SlurmObservation():
-            outcome, confirmed = slurm_outcome(cause.native_state, record)
+            outcome, confirmed = slurm_outcome(
+                cause.native_state, record, exit_code=cause.exit_code, signal=cause.signal
+            )
+            exit_code = cause.exit_code
             if outcome is Outcome.FAILED and head.cancel_requested:
                 # SIGINT ends the batch script nonzero, which Slurm calls FAILED.
                 outcome = Outcome.CANCELLED
+            if outcome is Outcome.CANCELLED:
+                # Like a Local cancel, report how the launchers stopped. Only the
+                # exit record knows; Slurm's code may be the batch shell's own.
+                ran = record is not None and record.batch == 0
+                exit_code = record.training if ran else None
             return (
                 Exited(
                     outcome,
                     confirmed,
-                    exit_code=cause.exit_code,
+                    exit_code=exit_code,
                     signal=cause.signal,
                     native_state=cause.native_state,
                     attempt_exit=record,

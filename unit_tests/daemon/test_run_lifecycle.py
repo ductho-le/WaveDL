@@ -266,6 +266,9 @@ def test_status_is_a_projection_of_the_stage(history, expected):
         ("COMPLETED", ExitRecord(0, 1, 0), (Outcome.FAILED, True)),
         ("COMPLETED", ExitRecord(0, 0, 2), (Outcome.FAILED, True)),
         ("COMPLETED", None, (Outcome.UNKNOWN, False)),
+        (("COMPLETED", 0, None), None, (Outcome.COMPLETED, True)),
+        (("COMPLETED", 0, 9), None, (Outcome.UNKNOWN, False)),
+        (("COMPLETED", 0, None), ExitRecord(0, 1, 0), (Outcome.FAILED, True)),
         ("CANCELLED by 1000", None, (Outcome.CANCELLED, True)),
         ("CANCELLED+", ExitRecord(0, 0, 0), (Outcome.CANCELLED, True)),
         ("FAILED", None, (Outcome.FAILED, True)),
@@ -278,7 +281,8 @@ def test_status_is_a_projection_of_the_stage(history, expected):
     ],
 )
 def test_slurm_outcome(native, record, expected):
-    assert slurm_outcome(native, record) == expected
+    state, code, signal = native if isinstance(native, tuple) else (native, None, None)
+    assert slurm_outcome(state, record, exit_code=code, signal=signal) == expected
 
 
 def test_next_work_claims_before_submitting_and_ends_a_cancelled_request():
@@ -382,3 +386,26 @@ def test_settle_a_terminal_slurm_job_uses_its_exit_record():
         True,
         ExitRecord(0, 0, 0),
     )
+
+
+@pytest.mark.parametrize(
+    ("native", "code", "signal", "record", "evidence"),
+    [
+        # The launchers stopped on the SIGINT: the evidence a Local cancel gives.
+        ("FAILED", 130, None, ExitRecord(0, 130, 0), (130, None)),
+        # Slurm's code without a record could be the batch shell's own.
+        ("FAILED", 130, None, None, (None, None)),
+        ("FAILED", 6, None, ExitRecord(6, 125, 0), (None, None)),
+        # Ended by the plain scancel after the grace.
+        ("CANCELLED", 0, 15, None, (None, 15)),
+        ("CANCELLED", 0, 9, ExitRecord(0, 130, 0), (130, 9)),
+    ],
+)
+def test_a_slurm_cancel_reports_how_its_launchers_stopped(native, code, signal, record, evidence):
+    cancelled = fold([*LIVE, CancelRequested()])
+    seen = observation(
+        terminal=True, phase=None, native_state=native, exit_code=code, signal=signal
+    )
+    (ending,) = settle(cancelled, seen, AttemptFiles(None, record))
+    assert (ending.outcome, ending.confirmed) == (Outcome.CANCELLED, True)
+    assert (ending.exit_code, ending.signal) == evidence

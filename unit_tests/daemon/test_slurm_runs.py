@@ -375,8 +375,20 @@ def test_cancel_interrupts_the_steps_then_ends_the_job_after_the_grace(environme
     head = tick_until(environment, run_id, lambda head: isinstance(head.stage, Ended))
     assert head.stage.exit.outcome is Outcome.CANCELLED and head.stage.exit.confirmed
     assert head.stage.exit.attempt_exit == ExitRecord(0, 130, 0)
+    assert (head.stage.exit.exit_code, head.stage.exit.signal) == (130, None)
     interrupts = [call for call in scheduler.commands("scancel") if "--signal=INT" in call]
     assert len(interrupts) == 1
+
+
+def test_a_completed_job_whose_exit_record_is_not_visible_completes(environment):
+    scheduler = environment.scheduler
+    run_id, _ = submitted(environment)
+    tick_until(environment, run_id, lambda head: isinstance(head.stage, Live))
+    scheduler.controller = controller(target(run_id), "COMPLETED", code="0:0")
+    head = tick_until(environment, run_id, lambda head: isinstance(head.stage, Ended))
+    assert head.stage.exit == Exited(
+        Outcome.COMPLETED, True, exit_code=0, native_state="COMPLETED"
+    )
 
 
 def test_cancelling_a_queued_job_ends_it_without_a_signal(environment):
