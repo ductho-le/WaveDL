@@ -1,11 +1,12 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""The Slurm backend: submit a planned batch script, find, observe and cancel it.
+"""
+The Slurm backend: submit a planned batch script, then find, observe and cancel
+the job.
 
-A job is named ``wavedl-<run_id>``, so its owner, name and cluster identify it
-in every scheduler source. The run ID is also its comment, which corroborates
-the name where it is stored: accounting keeps comments only with
-``AccountingStoreFlags=job_comment``. Submission is never retried: an unknown
-sbatch outcome is recovered with ``find``.
+A job is named ``wavedl-<run_id>`` and carries the run ID as its comment, so
+every scheduler source can identify it. Submission is never retried; an unknown
+sbatch outcome is resolved with ``find``.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations
@@ -93,15 +94,29 @@ class SlurmBackend:
         """Write ``submission.sh`` once and sbatch it. Blocking: call from a worker."""
         require_dispatch(self.dispatch_lock)
         cluster = dict(plan.resources).get("cluster")
-        if plan.target != self.name or plan.script is None or not isinstance(cluster, str):
+        if (
+            plan.target != self.name
+            or plan.script is None
+            or not isinstance(cluster, str)
+        ):
             raise UnsupportedPlan("A Slurm script plan with a cluster is required")
         paths = plan.spec.paths
-        for directory in (paths.run_dir, paths.output, paths.attempt(1).parent, paths.logs):
+        for directory in (
+            paths.run_dir,
+            paths.output,
+            paths.attempt(1).parent,
+            paths.logs,
+        ):
             directory.mkdir(mode=0o700, exist_ok=True)
         with paths.submission_script.open("x", encoding="utf-8") as stream:
             stream.write(plan.script)
         require_dispatch(self.dispatch_lock)
-        argv = ("sbatch", "--parsable", f"--clusters={cluster}", str(paths.submission_script))
+        argv = (
+            "sbatch",
+            "--parsable",
+            f"--clusters={cluster}",
+            str(paths.submission_script),
+        )
         try:
             result = self.runner.run(argv)
         except Exception as error:
@@ -204,7 +219,11 @@ class SlurmBackend:
         for cluster, jobs in clusters.items():
             try:
                 observed = observe_cluster(
-                    self._query, owner=self.owner, cluster=cluster, jobs=jobs, since=start
+                    self._query,
+                    owner=self.owner,
+                    cluster=cluster,
+                    jobs=jobs,
+                    since=start,
                 )
             except (ValueError, UnicodeError) as error:
                 failed = ObservationFailed(str(error)[:512])

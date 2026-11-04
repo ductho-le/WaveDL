@@ -39,7 +39,9 @@ def started(tmp_path):
             lock = stack.enter_context(
                 acquire_dispatch_lock(settings.state_root / "dispatch.lock")
             )
-            connection = open_database(settings.state_root / "registry.db", dispatch_lock=lock)
+            connection = open_database(
+                settings.state_root / "registry.db", dispatch_lock=lock
+            )
             stack.callback(connection.close)
             pool = BoundedThreadPool(budget)
             stack.callback(pool.shutdown)
@@ -90,7 +92,10 @@ def test_a_spawn_that_outlasts_the_work_deadline_is_recorded(started, monkeypatc
     assert view.state == "running" and not view.uncertainty
     assert len(supervisor.launches) == 1
     supervisor.launches[0].finish(0)
-    assert tick_until(controller, service, run_id, {"completed"}).evidence["exit_code"] == 0
+    assert (
+        tick_until(controller, service, run_id, {"completed"}).evidence["exit_code"]
+        == 0
+    )
 
 
 def test_recovery_adopts_the_process_this_daemon_started(started, monkeypatch):
@@ -119,7 +124,9 @@ def test_recovery_adopts_the_process_this_daemon_started(started, monkeypatch):
 
 
 def test_a_claim_waits_for_worker_capacity_instead_of_being_lost(started):
-    service, controller, pool, supervisor, _ = started(WorkBudget(max_workers=1, max_pending=0))
+    service, controller, pool, supervisor, _ = started(
+        WorkBudget(max_workers=1, max_pending=0)
+    )
     release = threading.Event()
     blocker = pool.control_lane.submit(lambda token: release.wait(10))
     try:

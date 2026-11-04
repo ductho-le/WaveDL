@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Plain checks for names a request sends and for files only the user may read."""
+"""
+Checks for request-supplied names and for files only the user may read.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

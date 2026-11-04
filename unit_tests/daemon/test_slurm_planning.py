@@ -9,7 +9,6 @@ import subprocess
 import sys
 import time
 from dataclasses import replace
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -49,7 +48,9 @@ def spec(tmp_path, *, device="cpu", operation=Operation.TRAIN, python=None, **co
 
 
 def planner(**kwargs):
-    return SlurmPlanner(SlurmSite(partition="compute", cluster="test-cluster", **kwargs))
+    return SlurmPlanner(
+        SlurmSite(partition="compute", cluster="test-cluster", **kwargs)
+    )
 
 
 def test_plan_is_pure_and_round_trips(tmp_path):
@@ -405,7 +406,9 @@ def test_a_cancel_sends_each_launcher_exactly_one_sigint(tmp_path):
     )
     assert "--kill-on-bad-exit=0 --wait=120" in plan.script
     paths, ints = plan.spec.paths, tmp_path / "ints"
-    job = batch(tmp_path, plan, start=True, FAKE_NODES="2", FAKE_CONCURRENT="1", INTS=str(ints))
+    job = batch(
+        tmp_path, plan, start=True, FAKE_NODES="2", FAKE_CONCURRENT="1", INTS=str(ints)
+    )
     try:
         wait_for(lambda: ints.exists() and ints.read_text().count("ready") == 2)
         pids = {
@@ -420,12 +423,18 @@ def test_a_cancel_sends_each_launcher_exactly_one_sigint(tmp_path):
         assert job.wait(timeout=20) == 130
     finally:
         job.kill()
-    assert sorted(line for line in ints.read_text().splitlines() if line.startswith("INT")) == [
+    assert sorted(
+        line for line in ints.read_text().splitlines() if line.startswith("INT")
+    ) == [
         "INT 0",
         "INT 1",
     ]
     assert exit_record(plan, 1) == ExitRecord(0, 130, 0)
-    overlap = [line for line in (tmp_path / "srun.log").read_text().splitlines() if "--overlap" in line]
+    overlap = [
+        line
+        for line in (tmp_path / "srun.log").read_text().splitlines()
+        if "--overlap" in line
+    ]
     assert overlap == [
         "--overlap --nodes=2 --ntasks=2 --ntasks-per-node=1 bash -c "
         'kill -INT "$(cat -- "$WAVEDL_ATTEMPT/launcher.$SLURM_NODEID")"'
@@ -435,9 +444,9 @@ def test_a_cancel_sends_each_launcher_exactly_one_sigint(tmp_path):
 @posix
 def test_a_cancel_before_training_starts_never_launches_it(tmp_path):
     started = tmp_path / "setup started"
-    plan = planner(setup_commands=(f"touch {shlex.quote(str(started))} && sleep 0.5",)).plan(
-        spec(tmp_path, python=stub(tmp_path))
-    )
+    plan = planner(
+        setup_commands=(f"touch {shlex.quote(str(started))} && sleep 0.5",)
+    ).plan(spec(tmp_path, python=stub(tmp_path)))
     job = batch(tmp_path, plan, start=True)
     try:
         wait_for(started.exists)

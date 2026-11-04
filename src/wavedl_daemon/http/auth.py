@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Header-only credentials and strict same-origin request validation."""
+"""
+Header-only credentials and strict same-origin request validation.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

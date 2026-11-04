@@ -69,7 +69,11 @@ class Runner:
         if isinstance(result, ProcessResult):
             return result
         control = self.responses.get("scontrol", "")
-        if argv[0] == "squeue" and "squeue" not in self.responses and isinstance(control, str):
+        if (
+            argv[0] == "squeue"
+            and "squeue" not in self.responses
+            and isinstance(control, str)
+        ):
             result = listed(control)
         if argv[0] == "scontrol":
             result = shown(result, argv[-1])
@@ -114,7 +118,9 @@ def controller(target, state="RUNNING", restart=0, code="0:0", **changes):
 
 def queue(target, state="PENDING", reason="None", comment=None):
     run_id, handle = target
-    return f"{handle.job_id}|alice|wavedl-{run_id}|{state}|{reason}|{comment or run_id}\n"
+    return (
+        f"{handle.job_id}|alice|wavedl-{run_id}|{state}|{reason}|{comment or run_id}\n"
+    )
 
 
 SINCE = datetime(2026, 10, 1, 9, 0, tzinfo=UTC)
@@ -224,7 +230,12 @@ def test_accounting_rows_of_a_reused_job_id_are_dropped(change):
 
 @pytest.mark.parametrize(
     "change",
-    [{"UserId": "bob(1001)"}, {"Cluster": "other"}, {"Comment": "foreign"}, {"JobName": "x"}],
+    [
+        {"UserId": "bob(1001)"},
+        {"Cluster": "other"},
+        {"Comment": "foreign"},
+        {"JobName": "x"},
+    ],
 )
 def test_a_live_job_of_another_identity_is_rejected(change):
     target = run()
@@ -299,7 +310,9 @@ def test_a_queued_job_needs_the_controller_for_its_restart_count():
 )
 def test_malformed_fields_of_this_job_fail_closed(change):
     target = run()
-    assert isinstance(observe(Runner(sacct=account(target, **change)), target), ObservationFailed)
+    assert isinstance(
+        observe(Runner(sacct=account(target, **change)), target), ObservationFailed
+    )
 
 
 def test_rows_of_other_jobs_never_fail_this_one():
@@ -308,7 +321,9 @@ def test_rows_of_other_jobs_never_fail_this_one():
     observation = observe(Runner(sacct=noise + account(target)), target)
     assert observation.native_state == "COMPLETED"
     other = "77|alice|my|job|RUNNING|None|x\n"
-    runner = Runner(squeue=other + queue(target, "RUNNING"), scontrol=controller(target))
+    runner = Runner(
+        squeue=other + queue(target, "RUNNING"), scontrol=controller(target)
+    )
     assert observe(runner, target).phase is Phase.RUNNING
 
 

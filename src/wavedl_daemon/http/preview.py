@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Authenticated dataset preview endpoint."""
+"""
+Authenticated dataset preview endpoint.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

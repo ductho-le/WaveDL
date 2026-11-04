@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Bounded blocking execution for daemon consumers."""
+"""
+Bounded blocking execution for daemon consumers.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from .budget import BudgetExhausted, StorageWorkError, WorkBudget
 from .commands import run_command, submit_command

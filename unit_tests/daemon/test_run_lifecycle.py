@@ -57,7 +57,9 @@ SLURM = SlurmHandle("4242", "c1", "alice")
 
 
 def ref(backend=BackendKind.SLURM, operation=Operation.TRAIN):
-    return RunRef(RunId("run-1"), PlanId("plan-1"), backend, operation, Path("/runs/run-1"))
+    return RunRef(
+        RunId("run-1"), PlanId("plan-1"), backend, operation, Path("/runs/run-1")
+    )
 
 
 def fold(events, run=None):
@@ -187,7 +189,10 @@ def test_metric_rows_move_the_bookmark_but_not_the_revision():
     live = fold(LIVE)
     after = evolve(live, metric(1, 10))
     assert (after.revision, after.metrics_offset) == (live.revision, 10)
-    assert evolve(after, Observed(Phase.RUNNING, "RUNNING", None)).revision == live.revision + 1
+    assert (
+        evolve(after, Observed(Phase.RUNNING, "RUNNING", None)).revision
+        == live.revision + 1
+    )
 
 
 @pytest.mark.parametrize(
@@ -236,21 +241,40 @@ def test_requeue_must_name_the_restart_that_ended_the_attempt():
         ([SUBMIT], (RunState.PENDING, True, "")),
         ([SUBMIT, Submitting()], (RunState.SUBMISSION_UNKNOWN, False, "")),
         (LIVE, (RunState.SUBMITTED, True, "")),
-        ([*LIVE, Observed(Phase.QUEUED, "PENDING", "Priority")], (RunState.QUEUED, True, "Priority")),
-        ([*LIVE, Observed(Phase.HELD, "PENDING", "JobHeldUser")], (RunState.HELD, True, "JobHeldUser")),
-        ([*LIVE, Observed(Phase.RUNNING, "RUNNING", None)], (RunState.RUNNING, True, "")),
+        (
+            [*LIVE, Observed(Phase.QUEUED, "PENDING", "Priority")],
+            (RunState.QUEUED, True, "Priority"),
+        ),
+        (
+            [*LIVE, Observed(Phase.HELD, "PENDING", "JobHeldUser")],
+            (RunState.HELD, True, "JobHeldUser"),
+        ),
+        (
+            [*LIVE, Observed(Phase.RUNNING, "RUNNING", None)],
+            (RunState.RUNNING, True, ""),
+        ),
         (
             [*LIVE, Observed(Phase.RUNNING, "RUNNING", None), CancelRequested()],
             (RunState.STOPPING, True, ""),
         ),
         (
-            [*LIVE, Observed(Phase.RUNNING, "RUNNING", None), ObservationLost("squeue failed")],
+            [
+                *LIVE,
+                Observed(Phase.RUNNING, "RUNNING", None),
+                ObservationLost("squeue failed"),
+            ],
             (RunState.OBSERVATION_UNAVAILABLE, False, "squeue failed"),
         ),
         ([*LIVE, Exited(Outcome.COMPLETED, True)], (RunState.COMPLETED, True, "")),
-        ([*LIVE, Exited(Outcome.FAILED, True, detail="x")], (RunState.FAILED, True, "x")),
+        (
+            [*LIVE, Exited(Outcome.FAILED, True, detail="x")],
+            (RunState.FAILED, True, "x"),
+        ),
         ([*LIVE, Exited(Outcome.CANCELLED, True)], (RunState.CANCELLED, True, "")),
-        ([*LIVE, Exited(Outcome.UNKNOWN, False)], (RunState.TERMINAL_UNKNOWN, False, "")),
+        (
+            [*LIVE, Exited(Outcome.UNKNOWN, False)],
+            (RunState.TERMINAL_UNKNOWN, False, ""),
+        ),
         ([*LIVE, Exited(Outcome.LOST, False)], (RunState.SUPERVISION_LOST, False, "")),
     ],
 )
@@ -290,7 +314,9 @@ def test_next_work_claims_before_submitting_and_ends_a_cancelled_request():
         (Submitting(),), then=WorkKind.SBATCH
     )
     local = fold([SUBMIT], ref(BackendKind.LOCAL))
-    assert next_work(local, local_poll=None) == Append((Submitting(),), then=WorkKind.SPAWN)
+    assert next_work(local, local_poll=None) == Append(
+        (Submitting(),), then=WorkKind.SPAWN
+    )
     cancelled = next_work(fold(STAGES["requested+cancel"]), local_poll=None)
     assert [event.outcome for event in cancelled.events] == [Outcome.CANCELLED]
     assert cancelled.then is None
@@ -308,7 +334,9 @@ def test_next_work_for_submitted_runs():
     assert kind(evolve(local, CancelRequested())) is WorkKind.CANCEL
     assert kind(local) is WorkKind.TAIL
     assert kind(fold(STAGES["live+delivered"])) is WorkKind.TAIL
-    tested = fold([SUBMIT, Submitting(), Submitted(LOCAL)], ref(BackendKind.LOCAL, Operation.TEST))
+    tested = fold(
+        [SUBMIT, Submitting(), Submitted(LOCAL)], ref(BackendKind.LOCAL, Operation.TEST)
+    )
     assert kind(tested) is None
     assert kind(fold(STAGES["ended"])) is None
     work = next_work(evolve(local, metric(1, 10)), local_poll=None)
@@ -319,14 +347,16 @@ def test_react_appends_only_changes():
     running = fold([*LIVE, Observed(Phase.RUNNING, "RUNNING", None)])
     assert react(running, observation()) is None
     assert react(running, observation(phase=None, native_state=None)) is None
-    assert react(running, observation(phase=Phase.HELD, native_state="SUSPENDED")) == Append(
-        (Observed(Phase.HELD, "SUSPENDED", None),)
-    )
+    assert react(
+        running, observation(phase=Phase.HELD, native_state="SUSPENDED")
+    ) == Append((Observed(Phase.HELD, "SUSPENDED", None),))
     lost = react(running, ObservationFailed("squeue timed out"))
     assert lost == Append((ObservationLost("squeue timed out"),))
     unobserved = evolve(running, ObservationLost("squeue timed out"))
     assert react(unobserved, ObservationFailed("again")) is None
-    assert react(unobserved, observation()) == Append((Observed(Phase.RUNNING, "RUNNING", None),))
+    assert react(unobserved, observation()) == Append(
+        (Observed(Phase.RUNNING, "RUNNING", None),)
+    )
     assert react(fold(STAGES["ended"]), observation()) is None
 
 
@@ -337,7 +367,9 @@ def test_react_settles_terminal_and_restarted_jobs():
 
 
 def test_settle_local_exit_outcomes():
-    local = fold([SUBMIT, Submitting(), Submitted(LOCAL)], ref(BackendKind.LOCAL, Operation.TEST))
+    local = fold(
+        [SUBMIT, Submitting(), Submitted(LOCAL)], ref(BackendKind.LOCAL, Operation.TEST)
+    )
     nothing = AttemptFiles(None, None)
 
     def ending(head, cause):
@@ -346,7 +378,10 @@ def test_settle_local_exit_outcomes():
 
     assert ending(local, LocalExit(0, None)) == (Outcome.COMPLETED, True)
     assert ending(local, LocalExit(1, None)) == (Outcome.FAILED, True)
-    assert ending(evolve(local, CancelRequested()), LocalExit(None, 15)) == (Outcome.CANCELLED, True)
+    assert ending(evolve(local, CancelRequested()), LocalExit(None, 15)) == (
+        Outcome.CANCELLED,
+        True,
+    )
     assert ending(local, NotOwned()) == (Outcome.LOST, False)
     assert ending(local, SupervisionFailed("pipes open")) == (Outcome.UNKNOWN, False)
 
@@ -354,7 +389,9 @@ def test_settle_local_exit_outcomes():
 def test_settle_drains_the_file_and_records_a_torn_last_line():
     local = fold([SUBMIT, Submitting(), Submitted(LOCAL)], ref(BackendKind.LOCAL))
     unread = TailChunk(0, (metric(1, 10),), 4, 100)
-    assert settle(local, LocalExit(0, None), AttemptFiles(unread, None)) == (metric(1, 10),)
+    assert settle(local, LocalExit(0, None), AttemptFiles(unread, None)) == (
+        metric(1, 10),
+    )
     torn = TailChunk(0, (metric(1, 10),), 4, 14)
     rows = settle(local, LocalExit(1, None), AttemptFiles(torn, None))
     assert rows[0] == metric(1, 10)
@@ -365,10 +402,20 @@ def test_settle_drains_the_file_and_records_a_torn_last_line():
 
 def test_settle_a_requeue_ends_one_attempt_and_opens_the_next():
     running = fold([*LIVE, Observed(Phase.RUNNING, "RUNNING", None)])
-    seen = observation(phase=Phase.QUEUED, native_state="PENDING", earlier={0: "NODE_FAIL"}, restart_count=1)
+    seen = observation(
+        phase=Phase.QUEUED,
+        native_state="PENDING",
+        earlier={0: "NODE_FAIL"},
+        restart_count=1,
+    )
     rows = settle(running, seen, AttemptFiles(TailChunk(0, (), 0, 0), None))
     assert rows == (
-        Exited(Outcome.REQUEUED, False, native_state="NODE_FAIL", detail="Requeued by Slurm"),
+        Exited(
+            Outcome.REQUEUED,
+            False,
+            native_state="NODE_FAIL",
+            detail="Requeued by Slurm",
+        ),
         AttemptOpened("requeue", 1),
         Observed(Phase.QUEUED, "PENDING", None),
     )
@@ -401,7 +448,9 @@ def test_settle_a_terminal_slurm_job_uses_its_exit_record():
         ("CANCELLED", 0, 9, ExitRecord(0, 130, 0), (130, 9)),
     ],
 )
-def test_a_slurm_cancel_reports_how_its_launchers_stopped(native, code, signal, record, evidence):
+def test_a_slurm_cancel_reports_how_its_launchers_stopped(
+    native, code, signal, record, evidence
+):
     cancelled = fold([*LIVE, CancelRequested()])
     seen = observation(
         terminal=True, phase=None, native_state=native, exit_code=code, signal=signal

@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Bounded same-origin static client reads; construction never touches disk."""
+"""
+Bounded same-origin static client reads; construction never touches disk.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

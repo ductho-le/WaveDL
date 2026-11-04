@@ -1,9 +1,11 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Bounded Local process ownership; saved PIDs never authorize signalling.
+"""
+Bounded ownership of live Local processes.
 
-Supervisors own pipe draining and tree cleanup, and live only in this daemon
-process. A handle whose supervisor is gone, after a restart or a fork, is
-``NotOwned``: its PID is never adopted or signalled.
+A supervisor drains pipes and cleans up the process tree. It lives only in this
+daemon process, so after a restart or fork its handle is ``NotOwned`` and the
+saved PID is never signalled.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations
@@ -14,7 +16,6 @@ import secrets
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from wavedl_daemon.execution.budget import BudgetExhausted
@@ -38,6 +39,8 @@ from .contracts import UnsupportedPlan
 
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from wavedl_daemon.runs.model import LocalPoll
     from wavedl_daemon.storage.ownership import DispatchLock
     from wavedl_daemon.supervision.base import SupervisedProcess, Supervisor
@@ -151,7 +154,11 @@ def _probed(python: str, stdout: bytes) -> Probed:
     value = json.loads(stdout)
     if type(value) is not dict or set(value) != {"interpreter", "prefix", "devices"}:
         raise ValueError("Invalid probe fields")
-    interpreter, prefix, devices = value["interpreter"], value["prefix"], value["devices"]
+    interpreter, prefix, devices = (
+        value["interpreter"],
+        value["prefix"],
+        value["devices"],
+    )
     if not all(
         type(item) is str and os.path.isabs(item) for item in (interpreter, prefix)
     ) or not (type(devices) is list and all(type(item) is str for item in devices)):
@@ -358,5 +365,7 @@ class LocalExecution:
             self._closed = True
             for record in self._records.values():
                 if not record.result.done():
-                    record.process.cancel(grace_seconds=self._cancel_grace, interrupt=True)
+                    record.process.cancel(
+                        grace_seconds=self._cancel_grace, interrupt=True
+                    )
         self._waiters.shutdown(wait=True)

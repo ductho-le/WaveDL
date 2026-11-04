@@ -24,7 +24,9 @@ def test_complete_lines_become_metrics_and_a_line_in_progress_waits(tmp_path):
     with path.open("ab") as stream:
         stream.write(b'loss": 0.125}\n')
     resumed = read_tail(path, start=chunk.end)
-    assert resumed.rows == (Metric(3, {"epoch": 3, "val_loss": 0.125}, path.stat().st_size),)
+    assert resumed.rows == (
+        Metric(3, {"epoch": 3, "val_loss": 0.125}, path.stat().st_size),
+    )
     assert resumed.pending == 0
 
 
@@ -97,7 +99,9 @@ def test_a_shrunken_file_is_reported_at_the_bookmark(tmp_path):
     path = tmp_path / "metrics.jsonl"
     path.write_bytes(line(epoch=1, val_loss=1.0))
     chunk = read_tail(path, start=500)
-    assert chunk.rows == (SourceWarning(WarningCode.TRUNCATED, chunk.rows[0].message, 500),)
+    assert chunk.rows == (
+        SourceWarning(WarningCode.TRUNCATED, chunk.rows[0].message, 500),
+    )
     assert chunk.sealed
 
 

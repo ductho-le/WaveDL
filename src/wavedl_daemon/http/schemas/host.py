@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Host capability information, retaining unknown probe states."""
+"""
+Host capability information; unknown probe states are retained.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

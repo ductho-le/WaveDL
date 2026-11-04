@@ -1,18 +1,15 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Pure Slurm plans: site validation and the frozen batch script.
+"""
+Pure Slurm planning: site validation and the frozen batch script.
 
-The script claims its own attempt. Slurm sets ``SLURM_RESTART_COUNT`` on a
-requeue, so attempt N is ``1 + SLURM_RESTART_COUNT`` and ``mkdir`` makes the
-claim exclusive. Scheduler directives are literal Slurm tokens, not shell
-expansions.
+The script claims its own attempt: attempt N is ``1 + SLURM_RESTART_COUNT`` and
+``mkdir`` makes the claim exclusive.
 
-A cancel interrupts training with exactly one SIGINT per node, to that node's
-launcher, which forwards it to its trainers once. A step-wide signal would
-reach every trainer as well as its launcher, and the second copy would abort
-the emergency checkpoint the first one started. So the daemon sends USR1 to
-the batch shell alone (``scancel --batch``), which runs training in the
-background to stay able to trap it, and signals each launcher by the PID the
-launcher's task wrote to its attempt directory.
+A cancel sends SIGINT exactly once to each node's launcher, never step-wide,
+because a second copy would abort the emergency checkpoint. The daemon signals
+the batch shell alone (``scancel --batch``, USR1) and each launcher by the PID
+its task wrote to the attempt directory.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations
@@ -294,7 +291,9 @@ class SlurmPlanner:
                 else '[ "$WAVEDL_ATTEMPT_NUMBER" -eq 1 ] || exit 125',
                 attempts=shlex.quote(str(execution / "attempts")),
                 working_directory=shlex.quote(working),
-                setup=" && ".join(f"{{ {command}; }}" for command in site.setup_commands)
+                setup=" && ".join(
+                    f"{{ {command}; }}" for command in site.setup_commands
+                )
                 or ":",
                 rendezvous=(
                     'WAVEDL_MAIN_HOST=$(scontrol show hostnames "$SLURM_JOB_NODELIST") && '

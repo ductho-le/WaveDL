@@ -1,8 +1,10 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Describe the daemon host so the client can prefill a runnable Local runtime.
+"""
+Describes the daemon host so the client can prefill a Local runtime.
 
-The daemon never imports numerical packages: accelerators are probed in a reaped
-child of the daemon interpreter, the same interpreter dataset inspection uses.
+The daemon never imports numerical packages. Accelerators are probed in a
+reaped child of the daemon interpreter, the same one dataset inspection uses.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations

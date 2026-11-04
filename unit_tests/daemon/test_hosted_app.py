@@ -3,7 +3,6 @@
 import asyncio
 import itertools
 import json
-import os
 import sqlite3
 import sys
 import threading
@@ -80,11 +79,17 @@ class StubSupervisor:
         pid = next(self._pids)
         if spec.argv[1] == "-c":
             self.probes.append(spec)
-            identity = {"interpreter": sys.executable, "prefix": sys.prefix, "devices": ["cpu"]}
+            identity = {
+                "interpreter": sys.executable,
+                "prefix": sys.prefix,
+                "devices": ["cpu"],
+            }
             return StubProcess(
                 pid,
                 spec,
-                ProcessResult(self.probe_returncode, json.dumps(identity).encode(), b""),
+                ProcessResult(
+                    self.probe_returncode, json.dumps(identity).encode(), b""
+                ),
             )
         process = StubProcess(pid, spec)
         self.launches.append(process)
@@ -92,7 +97,9 @@ class StubSupervisor:
 
 
 def stub_backends(supervisor):
-    return lambda lock: {"local": LocalBackend(dispatch_lock=lock, supervisor=supervisor)}
+    return lambda lock: {
+        "local": LocalBackend(dispatch_lock=lock, supervisor=supervisor)
+    }
 
 
 def train_payload(**config):
@@ -176,7 +183,9 @@ def test_hosted_local_run_streams_metrics_completes_and_cancels(tmp_path):
             } in health.json()["monitoring_errors"]
 
             preview = await client.post(
-                "/api/runs/plan", json=train_payload(), headers={"Idempotency-Key": "one"}
+                "/api/runs/plan",
+                json=train_payload(),
+                headers={"Idempotency-Key": "one"},
             )
             assert preview.status_code == 200, preview.text
             planned = preview.json()
@@ -184,12 +193,19 @@ def test_hosted_local_run_streams_metrics_completes_and_cancels(tmp_path):
             run_dir = settings.run_root / run_id
             assert "allocation_mode" not in planned["preview"]
             assert planned["preview"]["spec"]["run_directory"] == str(run_dir)
-            assert planned["preview"]["argv"][-2:] == ["--output_dir", str(run_dir / "output")]
+            assert planned["preview"]["argv"][-2:] == [
+                "--output_dir",
+                str(run_dir / "output"),
+            ]
             assert not run_dir.exists()
-            assert (await client.get(f"/api/runs/{run_id}")).json()["state"] == "planned"
+            assert (await client.get(f"/api/runs/{run_id}")).json()[
+                "state"
+            ] == "planned"
 
             for _ in range(2):
-                submitted = await client.post("/api/runs", json={"plan_id": planned["plan_id"]})
+                submitted = await client.post(
+                    "/api/runs", json={"plan_id": planned["plan_id"]}
+                )
                 assert submitted.status_code == 202, submitted.text
             assert submitted.json()["submission_requested"] is True
 
@@ -216,7 +232,8 @@ def test_hosted_local_run_streams_metrics_completes_and_cancels(tmp_path):
             assert run_dir.stat().st_mode & 0o777 == 0o700
 
             metrics.write_text(
-                json.dumps({"epoch": 1, "train_loss": 1.5, "val_loss": float("nan")}) + "\n"
+                json.dumps({"epoch": 1, "train_loss": 1.5, "val_loss": float("nan")})
+                + "\n"
             )
 
             async def metric():
@@ -251,7 +268,9 @@ def test_hosted_local_run_streams_metrics_completes_and_cancels(tmp_path):
 
             second = (
                 await client.post(
-                    "/api/runs/plan", json=train_payload(), headers={"Idempotency-Key": "two"}
+                    "/api/runs/plan",
+                    json=train_payload(),
+                    headers={"Idempotency-Key": "two"},
                 )
             ).json()
             await client.post("/api/runs", json={"plan_id": second["plan_id"]})
@@ -299,7 +318,9 @@ def test_stopping_the_daemon_records_the_exits_of_its_local_runs(tmp_path):
             ) as client,
         ):
             planned = await client.post(
-                "/api/runs/plan", json=train_payload(), headers={"Idempotency-Key": "one"}
+                "/api/runs/plan",
+                json=train_payload(),
+                headers={"Idempotency-Key": "one"},
             )
             run_id = planned.json()["run_id"]
             await client.post("/api/runs", json={"plan_id": planned.json()["plan_id"]})
@@ -324,4 +345,8 @@ def test_stopping_the_daemon_records_the_exits_of_its_local_runs(tmp_path):
     connection.close()
     assert [kind for kind, _ in rows][-2:] == ["metric", "exited"]
     ending = json.loads(rows[-1][1])
-    assert (ending["outcome"], ending["confirmed"], ending["exit_code"]) == ("failed", True, 130)
+    assert (ending["outcome"], ending["confirmed"], ending["exit_code"]) == (
+        "failed",
+        True,
+        130,
+    )

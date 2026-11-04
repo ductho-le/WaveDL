@@ -1,8 +1,10 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Open the daemon database at schema 1, created fresh.
+"""
+Opens the daemon database at schema 1, created fresh.
 
-Databases from earlier daemons are refused, never imported: their runs were
-written by a trainer protocol that no longer exists.
+Databases from earlier daemons are refused, not imported, because their runs
+came from a trainer protocol that no longer exists.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations
@@ -43,11 +45,13 @@ def _check(connection: sqlite3.Connection, path: Path) -> bool:
     version = connection.execute("PRAGMA user_version").fetchone()[0]
     tables = {
         row[0]
-        for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
     }
     if version == 0 and not tables:
         return True
-    if version != SCHEMA_VERSION or not _TABLES <= tables:
+    if version != SCHEMA_VERSION or not tables >= _TABLES:
         raise UnsupportedDatabase(
             f"{path} is not a schema {SCHEMA_VERSION} daemon database; "
             "move it aside to start fresh"

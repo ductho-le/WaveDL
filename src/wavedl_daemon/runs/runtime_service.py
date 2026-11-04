@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Owned service sessions and async facades for the HTTP control plane."""
+"""
+Owned service sessions and async facades for the HTTP control plane.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

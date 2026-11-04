@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Bounded daemon-owned dataset preview execution; no numerical imports."""
+"""
+Bounded daemon-owned dataset preview execution; no numerical imports.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

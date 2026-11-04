@@ -1,10 +1,12 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Daemon-authored run events, and the handles and observations they carry.
+"""
+Daemon-authored run events and the handles and observations they carry.
 
-The daemon is the only author of a run's history. Each event class names its
-wire ``kind``, and ``payload``/``parse_event`` are the only translation to and
-from JSON, shared by the run log's rows and the SSE frames that replay them.
-``source_end`` is a column, not payload, so byte offsets never reach a browser.
+The daemon is the only author of run history. ``payload`` and ``parse_event``
+are the sole translation to and from JSON, shared by run log rows and SSE
+frames. ``source_end`` is a column, not payload, so byte offsets never reach a
+browser.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations
@@ -318,7 +320,9 @@ _EVENTS: dict[str, type[RunEvent]] = {
 }
 
 
-def parse_event(kind: str, payload: dict[str, object], source_end: int | None) -> RunEvent:
+def parse_event(
+    kind: str, payload: dict[str, object], source_end: int | None
+) -> RunEvent:
     if kind == Evaluation.kind and payload.get("name") == Evaluation.name:
         return Evaluation.from_payload(payload, source_end)
     return _EVENTS[kind].from_payload(payload, source_end)

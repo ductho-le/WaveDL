@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Health, launch capability exchange, and session wire contracts."""
+"""
+Wire contracts for health, launch-capability exchange and sessions.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

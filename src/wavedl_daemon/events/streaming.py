@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Gap-free replay/live handoff with periodic durable fallback."""
+"""
+Gap-free replay-to-live handoff with a periodic durable fallback.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

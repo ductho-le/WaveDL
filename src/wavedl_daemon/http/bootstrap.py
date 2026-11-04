@@ -1,10 +1,12 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Ephemeral browser credentials and credential-safe access logging.
+"""
+Ephemeral browser credentials and credential-safe access logging.
 
-Bootstrap codes and session tokens are 256-bit random capabilities retained
-only as digests. Short-lived bootstrap codes are single-use; the process launch
-code is reusable until shutdown. Sessions have sliding and
-absolute expirations. Access-log filtering is explicit opt-in.
+Bootstrap codes and session tokens are 256-bit random capabilities kept only as
+digests. Bootstrap codes are single-use, except the launch code, which is
+reusable until shutdown. Sessions expire on a sliding and an absolute deadline.
+Access-log filtering is opt-in.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations

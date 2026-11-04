@@ -1,5 +1,8 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Construct an inert, authenticated ASGI app from explicitly owned services."""
+"""
+Builds the authenticated ASGI app from explicitly owned services, with no side
+effects.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

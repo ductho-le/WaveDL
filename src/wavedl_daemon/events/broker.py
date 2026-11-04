@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Bounded wakeups only: SQLite remains the event delivery authority."""
+"""
+Bounded wakeups for event delivery; SQLite remains the delivery authority.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

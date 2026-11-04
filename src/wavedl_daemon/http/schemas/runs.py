@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Pydantic wire schemas for the run lifecycle endpoints."""
+"""
+Pydantic wire schemas for the run lifecycle endpoints.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 
@@ -89,7 +91,8 @@ class RunEvidence(WireModel):
     phase: Literal["queued", "held", "running"] | None
     native_state: str | None
     outcome: (
-        Literal["completed", "failed", "cancelled", "requeued", "unknown", "lost"] | None
+        Literal["completed", "failed", "cancelled", "requeued", "unknown", "lost"]
+        | None
     )
     exit_code: int | None
     signal: int | None

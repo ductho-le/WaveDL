@@ -1,8 +1,11 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Dependency-light bundled model descriptions and explicitly scoped browsing.
+"""
+Bundled model descriptions and scoped directory browsing, with few
+dependencies.
 
-Bundled descriptions are not runtime capability evidence. Browsing never reads
-file payloads, leaves its root, or expands an unbounded directory into memory.
+Descriptions are not evidence of runtime capability. Browsing never reads file
+contents, leaves its root, or loads an unbounded directory into memory.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations

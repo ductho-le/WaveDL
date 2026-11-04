@@ -55,13 +55,28 @@ def app_for(paths, pool):
 
 
 def client(app):
-    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    )
 
 
 @pytest.mark.parametrize(
     "path",
-    ["", ".", "../secret", "/secret", "a/../b", "a//b", "a/", "a\\b", "C:/file",
-     "a\0b", "a\nb", "a\x7fb", "a%2fb"],
+    [
+        "",
+        ".",
+        "../secret",
+        "/secret",
+        "a/../b",
+        "a//b",
+        "a/",
+        "a\\b",
+        "C:/file",
+        "a\0b",
+        "a\nb",
+        "a\x7fb",
+        "a%2fb",
+    ],
 )
 def test_names_are_plain_relative_segments(path):
     with pytest.raises(UnsafeArtifactPath):
@@ -204,10 +219,16 @@ def test_listing_and_download_over_http_run_off_the_loop(paths, monkeypatch):
                 for item in body["files"]:
                     response = await http.get(f"{prefix}/{item['path']}")
                     assert response.status_code == 200, item
-                    assert response.content == (paths.output / item["path"]).read_bytes()
+                    assert (
+                        response.content == (paths.output / item["path"]).read_bytes()
+                    )
                     assert response.headers["content-length"] == str(item["size"])
-                    assert response.headers["content-type"] == "application/octet-stream"
-                    assert response.headers["content-disposition"].startswith("attachment;")
+                    assert (
+                        response.headers["content-type"] == "application/octet-stream"
+                    )
+                    assert response.headers["content-disposition"].startswith(
+                        "attachment;"
+                    )
                     assert "sandbox" in response.headers["content-security-policy"]
                     assert response.headers["x-content-type-options"] == "nosniff"
 
@@ -234,8 +255,12 @@ def test_http_refuses_traversal_and_unknown_names(paths):
                     assert str(paths.run_dir) not in response.text
                 for name in ("missing.csv", "best_checkpoint", "best_checkpoint/x"):
                     assert (await http.get(f"{prefix}/{name}")).status_code == 404
-                assert (await http.get(f"/api/runs/{uuid4()}/artifacts")).status_code == 404
-                assert (await http.get("/api/runs/not-a-run/artifacts")).status_code == 400
+                assert (
+                    await http.get(f"/api/runs/{uuid4()}/artifacts")
+                ).status_code == 404
+                assert (
+                    await http.get("/api/runs/not-a-run/artifacts")
+                ).status_code == 400
 
     asyncio.run(check())
 

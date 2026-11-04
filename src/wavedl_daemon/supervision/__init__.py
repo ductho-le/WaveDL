@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Platform process supervision without training or GUI dependencies."""
+"""
+Platform process supervision without training or GUI dependencies.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from .base import ProcessResult, ProcessSpec, SupervisedProcess, Supervisor
 

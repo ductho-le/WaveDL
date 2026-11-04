@@ -1,17 +1,12 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Single-writer dispatch ownership, released by the kernel on process death.
+"""
+Single-writer dispatch ownership, released by the kernel when the process dies.
 
-Exactly one daemon may mutate run state at a time. The obvious implementation --
-a row recording the owning pid -- is not ownership: a pid is not liveness,
-because the kernel reuses pids, so a table cannot distinguish "the owner is
-still running" from "an unrelated process now has that number". A daemon killed
-with SIGKILL runs no cleanup, so any scheme requiring the owner to tidy up
-strands every future daemon.
+Only one daemon may mutate run state at a time. A recorded pid does not prove
+liveness (pids are reused, and SIGKILL runs no cleanup), so ownership is an
+advisory file lock, which the kernel drops however the holder dies. The pid is
+recorded for operators and never trusted.
 
-An advisory file lock has the property that matters: the kernel drops it when
-the holding process dies, however it dies. The lock is therefore the only
-authority, and no pid is consulted for liveness. A pid is still *recorded*, for
-operators reading logs, and is explicitly not trusted by this module.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations

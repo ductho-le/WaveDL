@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Dispatch-lock liveness and private, credential-free serving metadata."""
+"""
+Dispatch-lock liveness and private, credential-free serving metadata.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

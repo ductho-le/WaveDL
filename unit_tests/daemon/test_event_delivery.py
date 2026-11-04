@@ -67,7 +67,11 @@ def test_cursor_orders_by_attempt_then_seq_across_requeues(log):
     metrics(log, 1)
     requeue(log)
     assert positions(log.read_after(RunId(RUN_ID), (1, 2))) == [
-        (1, 3), (2, 0), (2, 1), (2, 2), (3, 0),
+        (1, 3),
+        (2, 0),
+        (2, 1),
+        (2, 2),
+        (3, 0),
     ]
     assert positions(log.read_after(RunId(RUN_ID), (2, -1), limit=1)) == [(2, 0)]
     assert log.read_after(RunId(RUN_ID), (3, 0)) == []
@@ -108,7 +112,9 @@ def test_register_before_replay_closes_handover_race(log):
         assert await anext(stream) == b": heartbeat\n\n"
         frames = [await anext(stream) for _ in range(3)]
         assert [frame.split(b"\n")[0] for frame in frames] == [
-            b"id: 1:0", b"id: 1:1", b"id: 1:2",
+            b"id: 1:0",
+            b"id: 1:1",
+            b"id: 1:2",
         ]
         await stream.aclose()
 
@@ -129,9 +135,7 @@ def test_replay_then_live_handoff_has_no_gap_or_duplicate(log):
         await stream.aclose()
         return [frame.split(b"\n")[0] for frame in received]
 
-    assert asyncio.run(scenario()) == [
-        f"id: 1:{seq}".encode() for seq in range(6)
-    ]
+    assert asyncio.run(scenario()) == [f"id: 1:{seq}".encode() for seq in range(6)]
 
 
 def test_overflow_disconnects_with_last_delivered_position(log):
@@ -167,7 +171,10 @@ def test_replay_pages_are_byte_bounded_but_never_empty(log):
     log.append(RunId(RUN_ID), rows, expect=Expect())
     page = log.read_after(RunId(RUN_ID), (1, 2), limit=1024)
     assert 0 < len(page) < len(rows)
-    assert sum(len(canonical_json(item.event.payload())) for item in page) <= MAX_PAGE_BYTES
+    assert (
+        sum(len(canonical_json(item.event.payload())) for item in page)
+        <= MAX_PAGE_BYTES
+    )
     single = log.read_after(RunId(RUN_ID), (1, 2), limit=1)
     assert positions(single) == [(1, 3)]
     assert len(encode(single[0])) > 0

@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Shared strict request and response models for the daemon HTTP boundary."""
+"""
+Shared strict request and response models for the HTTP boundary.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

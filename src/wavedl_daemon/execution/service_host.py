@@ -1,9 +1,11 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""An inert, bounded bridge to one SQLite-owning thread and asyncio loop.
+"""
+Bridge to the single thread that owns SQLite and the asyncio loop.
 
-A caller deadline requests cooperative asynchronous cancellation and limits
-waiting, never forcibly terminating a thread. Noncooperative synchronous work
-retains admission until it actually finishes; shutdown drains it honestly.
+A caller deadline requests cooperative cancellation and limits waiting; it
+never terminates a thread. Synchronous work that ignores cancellation keeps its
+admission until it finishes, and shutdown waits for it.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations

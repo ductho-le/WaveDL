@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Pure Local planning with bounded live process ownership for execution."""
+"""
+Local backend: pure planning and bounded ownership of live processes.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 
@@ -92,10 +94,7 @@ class LocalBackend(LocalExecution):
             raise UnsupportedPlan(
                 "Local working directory must be the owned run directory"
             )
-        if (
-            spec.operation != Operation.TRAIN
-            and topology.processes_per_machine != 1
-        ):
+        if spec.operation != Operation.TRAIN and topology.processes_per_machine != 1:
             raise UnsupportedPlan("Only training supports multiprocess Local plans")
         if topology.processes_per_machine > 1 and runtime.device not in {"cpu", "cuda"}:
             raise UnsupportedPlan("Multiprocess Local training requires CPU or CUDA")

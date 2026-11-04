@@ -53,11 +53,16 @@ def environment(tmp_path):
     settings.validate()
     supervisor = StubSupervisor()
     with acquire_dispatch_lock(settings.state_root / "dispatch.lock") as lock:
-        connection = open_database(settings.state_root / "registry.db", dispatch_lock=lock)
+        connection = open_database(
+            settings.state_root / "registry.db", dispatch_lock=lock
+        )
         log, plans = RunLog(connection), PlanStore(connection)
         local = LocalBackend(dispatch_lock=lock, supervisor=supervisor)
         slurm = SlurmBackend(
-            SlurmSite("debug", cluster="alpha"), None, owner="tester", dispatch_lock=lock
+            SlurmSite("debug", cluster="alpha"),
+            None,
+            owner="tester",
+            dispatch_lock=lock,
         )
         service = RunService(settings, plans, log, {"local": local, "slurm": slurm})
         pool = BoundedThreadPool(WorkBudget())
@@ -115,7 +120,9 @@ def planned_and_submitted(environment, key):
     plan = request(environment.app, "POST", "/api/runs/plan", body=payload(), key=key)
     assert plan.status_code == 200, plan.text
     plan = plan.json()
-    submitted = request(environment.app, "POST", "/api/runs", body={"plan_id": plan["plan_id"]})
+    submitted = request(
+        environment.app, "POST", "/api/runs", body={"plan_id": plan["plan_id"]}
+    )
     assert submitted.status_code == 202, submitted.text
     return plan
 
@@ -246,8 +253,12 @@ def test_cv_plan_preserves_supported_options_and_inapplicable_cache(
 
 
 def test_slurm_plans_preview_their_batch_script(environment):
-    body = train_payload(epochs=2, model="cnn", data_path="data.npz") | {"backend": "slurm"}
-    response = request(environment.app, "POST", "/api/runs/plan", body=body, key="slurm")
+    body = train_payload(epochs=2, model="cnn", data_path="data.npz") | {
+        "backend": "slurm"
+    }
+    response = request(
+        environment.app, "POST", "/api/runs/plan", body=body, key="slurm"
+    )
     assert response.status_code == 200, response.text
     preview = response.json()["preview"]
     assert preview["target"] == "slurm" and preview["argv"] == []
@@ -264,19 +275,29 @@ def ended_train_run(environment, key, *, returncode=0):
 
 
 def from_checkpoint(source, tmp_path, checkpoint="best_checkpoint", **fields):
-    return payload() | {
-        "operation": "test",
-        "config": {"data_path": str(tmp_path / "data.npz"), "model": "cnn"},
-        "checkpoint_source": {"run_id": source, "checkpoint": checkpoint},
-    } | fields
+    return (
+        payload()
+        | {
+            "operation": "test",
+            "config": {"data_path": str(tmp_path / "data.npz"), "model": "cnn"},
+            "checkpoint_source": {"run_id": source, "checkpoint": checkpoint},
+        }
+        | fields
+    )
 
 
 def test_a_test_reads_an_ended_runs_checkpoint_in_place(environment, tmp_path):
     source = ended_train_run(environment, "source")
-    checkpoint = environment.service.settings.run_root / source / "output" / "best_checkpoint"
+    checkpoint = (
+        environment.service.settings.run_root / source / "output" / "best_checkpoint"
+    )
     checkpoint.mkdir(parents=True)
     response = request(
-        environment.app, "POST", "/api/runs/plan", body=from_checkpoint(source, tmp_path), key="test"
+        environment.app,
+        "POST",
+        "/api/runs/plan",
+        body=from_checkpoint(source, tmp_path),
+        key="test",
     )
     assert response.status_code == 200, response.text
     plan = environment.plans.get(response.json()["plan_id"]).plan
@@ -288,14 +309,24 @@ def test_a_test_reads_an_ended_runs_checkpoint_in_place(environment, tmp_path):
     assert environment.service.get(run_id).summary["source_run_id"] == source
 
     checkpoint.rmdir()
-    submitted = request(environment.app, "POST", "/api/runs", body={"plan_id": response.json()["plan_id"]})
+    submitted = request(
+        environment.app,
+        "POST",
+        "/api/runs",
+        body={"plan_id": response.json()["plan_id"]},
+    )
     assert submitted.status_code == 202
     view = tick_until(environment, run_id, lambda view: view.state == "failed")
-    assert view.evidence["reason"] == f"The checkpoint best_checkpoint of run {source} is gone"
+    assert (
+        view.evidence["reason"]
+        == f"The checkpoint best_checkpoint of run {source} is gone"
+    )
     assert len(environment.supervisor.launches) == 1
 
 
-def test_a_slurm_test_gets_the_checkpoint_through_the_storage_map(environment, tmp_path):
+def test_a_slurm_test_gets_the_checkpoint_through_the_storage_map(
+    environment, tmp_path
+):
     source = ended_train_run(environment, "source")
     run_root = environment.service.settings.run_root
     (run_root / source / "output" / "epoch_3_checkpoint").mkdir(parents=True)
@@ -306,7 +337,9 @@ def test_a_slurm_test_gets_the_checkpoint_through_the_storage_map(environment, t
         backend="slurm",
         storage_map=[{"host_root": str(run_root), "execution_root": "/cluster/runs"}],
     )
-    response = request(environment.app, "POST", "/api/runs/plan", body=body, key="slurm")
+    response = request(
+        environment.app, "POST", "/api/runs/plan", body=body, key="slurm"
+    )
     assert response.status_code == 200, response.text
     spec = response.json()["preview"]["spec"]
     executed = f"/cluster/runs/{source}/output/epoch_3_checkpoint"
@@ -316,19 +349,24 @@ def test_a_slurm_test_gets_the_checkpoint_through_the_storage_map(environment, t
 
 def test_checkpoint_sources_are_refused_unless_ended_and_present(environment, tmp_path):
     completed = ended_train_run(environment, "completed")
-    (environment.service.settings.run_root / completed / "output" / "best_checkpoint").mkdir(
-        parents=True
-    )
-    (environment.service.settings.run_root / completed / "output" / "epoch_1_checkpoint").symlink_to(
-        "best_checkpoint", target_is_directory=True
-    )
+    (
+        environment.service.settings.run_root / completed / "output" / "best_checkpoint"
+    ).mkdir(parents=True)
+    (
+        environment.service.settings.run_root
+        / completed
+        / "output"
+        / "epoch_1_checkpoint"
+    ).symlink_to("best_checkpoint", target_is_directory=True)
     failed = ended_train_run(environment, "failed", returncode=1)
-    (environment.service.settings.run_root / failed / "output" / "best_checkpoint").mkdir(
-        parents=True
-    )
+    (
+        environment.service.settings.run_root / failed / "output" / "best_checkpoint"
+    ).mkdir(parents=True)
     running = planned_and_submitted(environment, "running")["run_id"]
     tick_until(environment, running, lambda view: view.state == "running")
-    planned = request(environment.app, "POST", "/api/runs/plan", body=payload(), key="planned")
+    planned = request(
+        environment.app, "POST", "/api/runs/plan", body=payload(), key="planned"
+    )
     count = len(all_plans(environment.plans))
     refused = [
         from_checkpoint(running, tmp_path),
@@ -344,7 +382,9 @@ def test_checkpoint_sources_are_refused_unless_ended_and_present(environment, tm
         | {"config": {"data_path": str(tmp_path / "d.npz"), "checkpoint": "/x"}},
     ]
     for index, body in enumerate(refused):
-        response = request(environment.app, "POST", "/api/runs/plan", body=body, key=f"r{index}")
+        response = request(
+            environment.app, "POST", "/api/runs/plan", body=body, key=f"r{index}"
+        )
         assert response.status_code == 400, (index, response.text)
     assert len(all_plans(environment.plans)) == count
 
@@ -360,7 +400,11 @@ def cancelled_train_run(environment, key, ending):
     if ending == "crashed":
         launch.finish(1)
     if ending == "killed":
-        tick_until(environment, run_id, lambda view: "cancel_delivered" in kinds(environment, run_id))
+        tick_until(
+            environment,
+            run_id,
+            lambda view: "cancel_delivered" in kinds(environment, run_id),
+        )
         launch.finish(-9)
     view = tick_until(environment, run_id, lambda view: view.state == "cancelled")
     output = environment.service.settings.run_root / run_id / "output"
@@ -377,7 +421,9 @@ def test_a_cancelled_run_supplies_only_an_interrupted_checkpoint_it_finished(
         key = f"{source}-{checkpoint}"
         return request(environment.app, "POST", "/api/runs/plan", body=body, key=key)
 
-    interrupted, evidence = cancelled_train_run(environment, "interrupted", "interrupted")
+    interrupted, evidence = cancelled_train_run(
+        environment, "interrupted", "interrupted"
+    )
     assert (evidence["exit_code"], evidence["signal"]) == (130, None)
     assert plan(interrupted, "interrupted_checkpoint").status_code == 200
     assert plan(interrupted, "best_checkpoint").status_code == 400
@@ -425,18 +471,27 @@ def test_preview_uuid_owned_pure_and_idempotent(environment, monkeypatch):
     assert value["preview"] == plan.to_dict()
     assert not run_dir.exists()
     monkeypatch.setattr(
-        environment.local, "plan", lambda *args, **kwargs: pytest.fail("Retry replanned")
+        environment.local,
+        "plan",
+        lambda *args, **kwargs: pytest.fail("Retry replanned"),
     )
-    assert request(app, "POST", "/api/runs/plan", body=body, key="first").json() == value
+    assert (
+        request(app, "POST", "/api/runs/plan", body=body, key="first").json() == value
+    )
     body["config"]["epochs"] = 3
-    assert request(app, "POST", "/api/runs/plan", body=body, key="first").status_code == 409
+    assert (
+        request(app, "POST", "/api/runs/plan", body=body, key="first").status_code
+        == 409
+    )
 
 
 def test_repeated_submit_starts_one_attempt_and_one_process(environment):
     plan = planned_and_submitted(environment, "repeat")
     run_id = plan["run_id"]
     for _ in range(3):
-        again = request(environment.app, "POST", "/api/runs", body={"plan_id": plan["plan_id"]})
+        again = request(
+            environment.app, "POST", "/api/runs", body={"plan_id": plan["plan_id"]}
+        )
         assert again.status_code == 202
         assert again.json()["state"] == "pending"
     assert kinds(environment, run_id) == ["attempt"]
@@ -486,7 +541,9 @@ def test_cancel_before_spawn_ends_without_a_process(environment):
     assert view.uncertainty is False
     assert kinds(environment, run_id) == ["attempt", "cancel_requested", "exited"]
     # A submit arriving after the cancel cannot start anything.
-    late = request(environment.app, "POST", "/api/runs", body={"plan_id": plan["plan_id"]})
+    late = request(
+        environment.app, "POST", "/api/runs", body={"plan_id": plan["plan_id"]}
+    )
     assert late.status_code == 202 and late.json()["state"] == "cancelled"
     for _ in range(3):
         environment.controller.tick()
@@ -513,18 +570,24 @@ def test_cancel_of_a_running_process_interrupts_and_ends_cancelled(environment):
 def test_a_supervision_failure_is_an_unconfirmed_ending(environment, tmp_path):
     run_id = planned_and_submitted(environment, "escaped")["run_id"]
     tick_until(environment, run_id, lambda view: view.state == "running")
-    (environment.service.settings.run_root / run_id / "output" / "best_checkpoint").mkdir(
-        parents=True
-    )
+    (
+        environment.service.settings.run_root / run_id / "output" / "best_checkpoint"
+    ).mkdir(parents=True)
     environment.supervisor.launches[0].fail(
         TimeoutError("an escaped descendant may still be alive")
     )
-    view = tick_until(environment, run_id, lambda view: view.state == "terminal_unknown")
+    view = tick_until(
+        environment, run_id, lambda view: view.state == "terminal_unknown"
+    )
     assert view.uncertainty is True
     assert "an escaped descendant may still be alive" in view.evidence["reason"]
     assert (view.evidence["exit_code"], view.evidence["signal"]) == (None, None)
     response = request(
-        environment.app, "POST", "/api/runs/plan", body=from_checkpoint(run_id, tmp_path), key="t"
+        environment.app,
+        "POST",
+        "/api/runs/plan",
+        body=from_checkpoint(run_id, tmp_path),
+        key="t",
     )
     assert response.status_code == 400, response.text
 
@@ -603,15 +666,21 @@ def test_service_rejects_sql_thread_handoff(environment):
 
 
 def test_local_plan_uses_effective_shared_defaults(environment):
-    response = request(environment.app, "POST", "/api/runs/plan", body=payload(), key="local")
+    response = request(
+        environment.app, "POST", "/api/runs/plan", body=payload(), key="local"
+    )
     assert response.status_code == 200
     assert "--list_models" not in response.json()["preview"]["argv"]
     assert "allocation_mode" not in response.json()["preview"]
 
 
 def test_the_attempts_route_is_gone(environment):
-    plan = request(environment.app, "POST", "/api/runs/plan", body=payload(), key="gone")
-    response = request(environment.app, "GET", f"/api/runs/{plan.json()['run_id']}/attempts")
+    plan = request(
+        environment.app, "POST", "/api/runs/plan", body=payload(), key="gone"
+    )
+    response = request(
+        environment.app, "GET", f"/api/runs/{plan.json()['run_id']}/attempts"
+    )
     assert response.status_code == 404
 
 
@@ -784,8 +853,7 @@ async def _gather_raw(*requests_to_run):
 
 def test_runs_queries_reject_unknown_and_repeated_keys(environment):
     app = environment.app
-    planned = request(app, "POST", "/api/runs/plan", body=payload(), key="queries")
-    run_id = planned.json()["run_id"]
+    request(app, "POST", "/api/runs/plan", body=payload(), key="queries")
 
     responses = [
         request(app, "GET", "/api/runs?limit=1&limit=2"),

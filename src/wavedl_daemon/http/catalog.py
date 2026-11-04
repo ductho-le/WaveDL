@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Authenticated bounded model/browse routes assembled from explicit services."""
+"""
+Authenticated, bounded model and browse routes built from explicit services.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

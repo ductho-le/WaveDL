@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Authenticated session routes and the explicit launch-capability exception."""
+"""
+Authenticated session routes and the launch-capability exception.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

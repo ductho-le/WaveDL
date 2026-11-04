@@ -1,8 +1,10 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Immutable plans, the request identity that replays them, and nothing else.
+"""
+Immutable plans and the request identity that replays them.
 
-What happened to a run after its plan is in the run log. Submit and cancel
-intent are events there, so this table never changes after an insert.
+Everything after the plan, including submit and cancel intent, lives in the run
+log, so this table never changes after an insert.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations
@@ -99,7 +101,9 @@ class PlanStore:
 
     def get(self, plan_id: str) -> PlanRecord | None:
         return _record(
-            self._connection.execute(_SELECT + "WHERE plan_id = ?", (plan_id,)).fetchone()
+            self._connection.execute(
+                _SELECT + "WHERE plan_id = ?", (plan_id,)
+            ).fetchone()
         )
 
     def get_by_key(self, idempotency_key: str) -> PlanRecord | None:

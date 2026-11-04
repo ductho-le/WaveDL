@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Shell-free scheduler commands with bounded output and real deadlines."""
+"""
+Shell-free scheduler commands with bounded output and hard deadlines.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

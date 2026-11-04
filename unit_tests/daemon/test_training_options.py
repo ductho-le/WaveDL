@@ -120,7 +120,9 @@ def test_resolution_fills_defaults_and_accepts_null_or_empty_only_as_defaults():
     assert set(resolved) == set(TEST)
     assert resolved["plot_format"] == ["png"]
     assert resolve(Operation.TRAIN, {"constraint": [], "run_name": None})["lr"] == 1e-3
-    assert resolve(Operation.TRAIN, {"project_name": "", "run_name": ""})["run_name"] == ""
+    assert (
+        resolve(Operation.TRAIN, {"project_name": "", "run_name": ""})["run_name"] == ""
+    )
     assert resolve(Operation.TRAIN, {"model": "--fresh"})["model"] == "--fresh"
     for config in (
         {"lr": None},
@@ -200,7 +202,9 @@ def upstream_parse(spec):
         ),
     ],
 )
-def test_upstream_parses_every_rendered_value_back(upstream, tmp_path, operation, config):
+def test_upstream_parses_every_rendered_value_back(
+    upstream, tmp_path, operation, config
+):
     """Negative numbers and leading-dash text reach upstream as values, not flags."""
     spec = build_spec(
         tmp_path / "run",
@@ -217,7 +221,9 @@ def test_upstream_parses_every_rendered_value_back(upstream, tmp_path, operation
 def test_list_items_that_argparse_would_read_as_flags_are_refused():
     with pytest.raises(ValueError, match="Unsafe"):
         cli_args(Operation.TRAIN, {"constraint": ["-y0"]})
-    assert cli_args(Operation.TRAIN, {"run_name": "-x", "constraint_weight": [-1e-07]}) == [
+    assert cli_args(
+        Operation.TRAIN, {"run_name": "-x", "constraint_weight": [-1e-07]}
+    ) == [
         "--constraint_weight",
         "-0.0000001",
         "--run_name=-x",

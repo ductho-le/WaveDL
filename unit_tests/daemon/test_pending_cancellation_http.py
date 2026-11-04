@@ -92,11 +92,17 @@ def test_cancel_at_each_stage_of_a_real_local_run(tmp_path, monkeypatch):
         settings,
         budget=WorkBudget(max_workers=1, max_pending=0),
         backend_factory=lambda lock: {
-            "local": LocalBackend(dispatch_lock=lock, max_processes=1, cancel_grace=0.05)
+            "local": LocalBackend(
+                dispatch_lock=lock, max_processes=1, cancel_grace=0.05
+            )
         },
     )
     app = create_app(
-        settings, token="cancel-test", daemon_id="test", build_id="test", services=services
+        settings,
+        token="cancel-test",
+        daemon_id="test",
+        build_id="test",
+        services=services,
     )
     payload = {
         "backend": "local",
@@ -148,7 +154,9 @@ def test_cancel_at_each_stage_of_a_real_local_run(tmp_path, monkeypatch):
                 assert response.status_code == 202, response.text
                 assert response.json()["cancellation_requested"]
             view = wait_for(client, pending, "cancelled")
-            assert not view["uncertainty"] and view["evidence"]["outcome"] == "cancelled"
+            assert (
+                not view["uncertainty"] and view["evidence"]["outcome"] == "cancelled"
+            )
             assert [kind for kind, _ in events(settings, plans[1]["run_id"])] == [
                 "attempt",
                 "cancel_requested",

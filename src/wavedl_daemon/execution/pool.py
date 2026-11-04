@@ -1,13 +1,15 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Bounded cooperative threads; hard deadlines belong in supervised processes.
+"""
+Bounded cooperative thread pool; hard deadlines belong in supervised processes.
 
-A deadline requests cancellation. A callback must check its token during work.
-No Python thread can be forcibly stopped: admission remains occupied until the
-callback actually returns, including when it ignores cancellation. A timeout on
-result() only bounds that caller's wait, and does not cancel any work.
+A deadline only requests cancellation, so the callback must check its token. A
+thread cannot be forcibly stopped: admission stays occupied until the callback
+returns. A timeout on ``result()`` bounds the caller's wait and cancels
+nothing.
 
-Work submitted without a deadline may have effects its caller must record, such
-as a started process, so once it starts its result is always returned.
+Work submitted without a deadline always returns its result once started, so
+the caller can record its effects.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations

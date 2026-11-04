@@ -1,11 +1,13 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""The run log: the only writer of ``run_events`` and ``run_heads``.
+"""
+The run log: the only writer of ``run_events`` and ``run_heads``.
 
-``run_events`` is the whole history of every run. ``run_heads`` caches the
-fold of each run's events and is written in the same transaction, by the same
-``evolve`` that validated the rows, so the two cannot disagree. Triggers repeat
-the ordering rule in SQL, so no other writer can commit a row out of order and
-slip one behind a replay cursor.
+``run_events`` is the full history of every run. ``run_heads`` caches the fold
+of those events and is written in the same transaction by the same ``evolve``
+that validated them, so the two cannot disagree. SQL triggers repeat the
+ordering rule, so no writer can commit a row out of order behind a replay
+cursor.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations
@@ -187,11 +189,18 @@ class RunLog:
                         event.kind,
                         ts,
                         canonical_json(event.payload()),
-                        event.source_end if isinstance(event, Metric | SourceWarning) else None,
+                        event.source_end
+                        if isinstance(event, Metric | SourceWarning)
+                        else None,
                     )
                 )
-            if isinstance(head.stage, Ended) and head.stage.exit.outcome is Outcome.REQUEUED:
-                raise IllegalTransition("A requeue must open the next attempt in the same append")
+            if (
+                isinstance(head.stage, Ended)
+                and head.stage.exit.outcome is Outcome.REQUEUED
+            ):
+                raise IllegalTransition(
+                    "A requeue must open the next attempt in the same append"
+                )
             self._connection.executemany(
                 "INSERT INTO run_events (run_id, attempt, seq, type, ts, payload_json, "
                 "source_end) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -242,7 +251,9 @@ class RunLog:
                     row["attempt"],
                     row["seq"],
                     row["ts"],
-                    parse_event(row["type"], json.loads(row["payload_json"]), row["source_end"]),
+                    parse_event(
+                        row["type"], json.loads(row["payload_json"]), row["source_end"]
+                    ),
                 )
             )
         return events
@@ -259,7 +270,9 @@ class RunLog:
             raise
 
 
-def _start(run_id: RunId, current: RunHead | None, expect: New | Expect) -> RunHead | RunRef:
+def _start(
+    run_id: RunId, current: RunHead | None, expect: New | Expect
+) -> RunHead | RunRef:
     match expect:
         case New(ref=ref) if current is None and ref.run_id == run_id:
             return ref

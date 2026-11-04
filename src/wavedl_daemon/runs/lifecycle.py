@@ -1,14 +1,15 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""The run head, its one transition table, and the pure control law.
+"""
+The run head, its transition table, and the pure control law.
 
-``evolve`` is the only place a position ``(attempt, seq)`` is assigned. An
-AttemptOpened starts the next attempt at seq 0 and every other event takes the
-next seq of the current attempt, so nothing is ever appended to an older
-attempt and commit order equals ``(attempt, seq)`` order.
+``evolve`` is the only place a position ``(attempt, seq)`` is assigned.
+``AttemptOpened`` starts the next attempt at seq 0; every other event takes the
+current attempt's next seq.
 
-Two independent tokens guard concurrent work. ``revision`` moves only with
-lifecycle events and ``metrics_offset`` only with rows read from the metrics
-file, so a tail append never makes a backend result stale, or the reverse.
+Two tokens guard concurrent work: ``revision`` moves with lifecycle events and
+``metrics_offset`` with metrics rows. A tail append therefore never makes a
+backend result stale, or the reverse.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations
@@ -129,7 +130,9 @@ def evolve(head: RunHead | RunRef, event: RunEvent) -> RunHead:
         return RunHead(head, 1, 0, 1, Requested(), None, False, 0, False)
     after = _transition(head, event)
     if isinstance(event, AttemptOpened):
-        return replace(after, attempt=head.attempt + 1, seq=0, revision=head.revision + 1)
+        return replace(
+            after, attempt=head.attempt + 1, seq=0, revision=head.revision + 1
+        )
     revision = (
         head.revision
         if isinstance(event, Metric | Evaluation | SourceWarning)
@@ -167,23 +170,30 @@ def _transition(head: RunHead, event: RunEvent) -> RunHead:
             return replace(head, stage=stage)
         case Live() as live, ObservationLost():
             return replace(head, stage=replace(live, lost=event.detail))
-        case Requested() | Claimed() | Live(), CancelRequested() if not head.cancel_requested:
+        case Requested() | Claimed() | Live(), CancelRequested() if (
+            not head.cancel_requested
+        ):
             return replace(head, cancel_requested=True)
-        case Live(cancel_delivered=False) as live, CancelDelivered() if head.cancel_requested:
+        case Live(cancel_delivered=False) as live, CancelDelivered() if (
+            head.cancel_requested
+        ):
             return replace(head, stage=replace(live, cancel_delivered=True))
         case Requested(), Exited(outcome=Outcome.CANCELLED) if head.cancel_requested:
             return _end(head, event, None)
         case Claimed(), Exited(outcome=Outcome.FAILED | Outcome.UNKNOWN | Outcome.LOST):
             return _end(head, event, None)
         case Live(handle=handle), Exited() if (
-            event.outcome is not Outcome.REQUEUED or head.ref.backend is BackendKind.SLURM
+            event.outcome is not Outcome.REQUEUED
+            or head.ref.backend is BackendKind.SLURM
         ):
             return _end(head, event, handle)
         case Live(), Evaluation() | SourceWarning(source_end=None) if (
             head.ref.operation is Operation.TEST
         ):
             return head
-        case Claimed() | Live(), Metric() | SourceWarning() if _reads_forward(head, event):
+        case Claimed() | Live(), Metric() | SourceWarning() if _reads_forward(
+            head, event
+        ):
             sealed = isinstance(event, SourceWarning) and event.seals
             return replace(head, metrics_offset=event.source_end, metrics_sealed=sealed)
     raise IllegalTransition(
@@ -258,7 +268,9 @@ def status(head: RunHead) -> RunStatus:
         case Live(phase=phase, reason=reason):
             return RunStatus(_PHASE_STATES[phase], True, reason or "")
         case Ended(exit=ending):
-            return RunStatus(_OUTCOME_STATES[ending.outcome], ending.confirmed, ending.detail)
+            return RunStatus(
+                _OUTCOME_STATES[ending.outcome], ending.confirmed, ending.detail
+            )
     raise AssertionError(head.stage)
 
 
@@ -353,7 +365,9 @@ def next_work(head: RunHead, *, local_poll: LocalPoll | None) -> Step:
     """
     match head.stage:
         case Requested() if head.cancel_requested:
-            ending = Exited(Outcome.CANCELLED, True, detail="Cancelled before submission")
+            ending = Exited(
+                Outcome.CANCELLED, True, detail="Cancelled before submission"
+            )
             return Append((ending,))
         case Requested():
             return Append((Submitting(),), then=_SUBMIT[head.ref.backend])
@@ -363,7 +377,9 @@ def next_work(head: RunHead, *, local_poll: LocalPoll | None) -> Step:
             return _work(head, WorkKind.SETTLE)
         case Live(cancel_delivered=False) if head.cancel_requested:
             return _work(head, WorkKind.CANCEL)
-        case Live() if head.ref.operation is Operation.TRAIN and not head.metrics_sealed:
+        case Live() if (
+            head.ref.operation is Operation.TRAIN and not head.metrics_sealed
+        ):
             return _work(head, WorkKind.TAIL)
     return None
 
@@ -386,7 +402,9 @@ def react(head: RunHead, observation: SlurmObservation | ObservationFailed) -> S
             live.lost is None and (phase, native) == (live.phase, live.native_state)
         ):
             return None
-    return Append((Observed(observation.phase, observation.native_state, observation.reason),))
+    return Append(
+        (Observed(observation.phase, observation.native_state, observation.reason),)
+    )
 
 
 @dataclass(frozen=True)
@@ -453,10 +471,17 @@ def _ending(
             opened = AttemptOpened("requeue", head.attempt)
             if restarts > head.attempt or cause.phase is None:
                 return (ending, opened)
-            return (ending, opened, Observed(cause.phase, cause.native_state, cause.reason))
+            return (
+                ending,
+                opened,
+                Observed(cause.phase, cause.native_state, cause.reason),
+            )
         case SlurmObservation():
             outcome, confirmed = slurm_outcome(
-                cause.native_state, record, exit_code=cause.exit_code, signal=cause.signal
+                cause.native_state,
+                record,
+                exit_code=cause.exit_code,
+                signal=cause.signal,
             )
             exit_code = cause.exit_code
             if outcome is Outcome.FAILED and head.cancel_requested:

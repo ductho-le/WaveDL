@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Authenticated lifecycle route assembly; no stores, threads, or listeners."""
+"""
+Authenticated run lifecycle routes; creates no stores, threads or listeners.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

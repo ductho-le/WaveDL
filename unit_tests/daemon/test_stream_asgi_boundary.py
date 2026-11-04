@@ -85,11 +85,16 @@ def test_real_authenticated_handler_snapshot_and_subsequent_request_cursor(tmp_p
                     pending.clear()
                     disconnected.set()
 
-            async with loopback_app(boundary, on_body=disconnect_after_head) as (url, _):
+            async with loopback_app(boundary, on_body=disconnect_after_head) as (
+                url,
+                _,
+            ):
                 first = [item async for item in read_events(url, TOKEN, RUN)]
                 assert first == frames(log)
                 metrics(log, 1)
-                second = [item async for item in read_events(url, TOKEN, RUN, cursor=(1, 2))]
+                second = [
+                    item async for item in read_events(url, TOKEN, RUN, cursor=(1, 2))
+                ]
                 assert second == frames(log, (1, 2))
             assert b"".join(handler_bytes) == b"".join(forwarded_bytes)
             assert [record["queryCursor"] for record in boundary.records] == [

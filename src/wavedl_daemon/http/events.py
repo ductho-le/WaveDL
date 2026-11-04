@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Attempt-aware event routes; outer app supplies the authentication boundary."""
+"""
+Attempt-aware event routes; the outer app supplies authentication.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

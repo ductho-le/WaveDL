@@ -1,5 +1,8 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""List and download a run's ``output/``, with filesystem work off the loop."""
+"""
+Lists and downloads a run's ``output/``, with filesystem work off the event
+loop.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

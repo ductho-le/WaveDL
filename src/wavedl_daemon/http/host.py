@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Authenticated host profile used to prefill an automatic Local runtime."""
+"""
+Authenticated host profile used to prefill a Local runtime.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

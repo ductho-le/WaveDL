@@ -1,13 +1,13 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Bounded scheduler evidence for one cluster's jobs, never a training verdict.
+"""
+Bounded scheduler evidence about a cluster's jobs, never a training verdict.
 
-Native field semantics follow https://slurm.schedmd.com/{sacct,squeue,scontrol}.html.
-Each job is checked against its owner, name and cluster in every source, and
-against its comment where one is stored. A live row of another job fails the
-observation; an accounting row of another job (a reused ID) is not this job's
-and is dropped. Rows are matched to a job by ID before they are validated, so
-another job's odd row never fails this one. A failed or truncated query cannot
-prove absence.
+Each row is matched to a job by ID, then checked against the job's owner, name
+and cluster. A live row of another job fails the observation; an accounting row
+of another job is dropped. A failed or truncated query cannot prove absence.
+
+Field semantics: https://slurm.schedmd.com/{sacct,squeue,scontrol}.html
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations
@@ -177,7 +177,15 @@ def observe_cluster(
         if job in queue:
             try:
                 control = query(
-                    ("scontrol", "--clusters", cluster, "--oneliner", "show", "job", job)
+                    (
+                        "scontrol",
+                        "--clusters",
+                        cluster,
+                        "--oneliner",
+                        "show",
+                        "job",
+                        job,
+                    )
                 )
             except ValueError as error:
                 controller_failures.append(str(error)[:512])
@@ -188,7 +196,9 @@ def observe_cluster(
                 owner=owner,
                 cluster=cluster,
                 queue=queue.get(job, []),
-                control=[row for row in parse_controller(control) if row["JobId"] == job],
+                control=[
+                    row for row in parse_controller(control) if row["JobId"] == job
+                ],
                 accounting=account.get(job, []),
                 failures=controller_failures + failures,
             )
@@ -224,7 +234,9 @@ def _observe_job(
     a = [
         row
         for row in accounting
-        if len(row) == 9 and row[1:4] == [cluster, owner, name] and corroborates(row[8], run_id)
+        if len(row) == 9
+        and row[1:4] == [cluster, owner, name]
+        and corroborates(row[8], run_id)
     ]
     if any(
         len(row) != 6 or row[1:3] != [owner, name] or not corroborates(row[5], run_id)

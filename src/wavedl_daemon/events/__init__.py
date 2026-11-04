@@ -1,2 +1,4 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Durable runtime ingestion and resumable event delivery."""
+"""
+Durable runtime ingestion and resumable event delivery.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""

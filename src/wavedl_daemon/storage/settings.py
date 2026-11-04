@@ -1,15 +1,14 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Daemon roots and the storage guarantees each one has to provide.
+"""
+Daemon roots and the storage guarantees each must provide.
 
-The daemon owns two roots with opposite requirements. The *state root* holds the
-SQLite registry and the dispatch lock, so it must be local: SQLite's locking is
-unreliable over NFS, and so is ``flock``. The *run root* holds run directories
-that compute nodes read and write, so it is normally on exactly the kind of
-network filesystem the state root forbids.
+The *state root* holds the SQLite registry and dispatch lock, so it must be
+local: SQLite locking and ``flock`` are unreliable over NFS. The *run root*
+holds run directories that compute nodes read and write, so it is normally on
+network storage.
 
-Nothing here inherits the GUI's ``Path("AppData").absolute()`` behaviour, which
-resolves relative to the working directory and therefore puts application data
-wherever the process happened to start.
+Paths resolve to absolute locations and never depend on the working directory.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations

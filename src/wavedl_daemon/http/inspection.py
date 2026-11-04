@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Inspection routes live inside the app's existing authentication boundary."""
+"""
+Inspection routes inside the app's authentication boundary.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

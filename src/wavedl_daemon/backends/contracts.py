@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""What a plan approves: the run spec, its topology, and how a backend runs it."""
+"""
+The run spec, its topology, and the interface a backend implements.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 
@@ -145,9 +147,7 @@ class RunSpec:
 
     def execution_path(self, path: Path) -> str:
         """A path under the run directory, as the execution host sees it."""
-        return str(
-            Path(self.working_directory) / path.relative_to(self.run_directory)
-        )
+        return str(Path(self.working_directory) / path.relative_to(self.run_directory))
 
     def to_dict(self) -> dict:
         return json.loads(canonical_json(asdict(self)))
@@ -203,8 +203,7 @@ class Plan:
             ("environment", self.environment),
         ):
             if not isinstance(pairs, tuple) or not all(
-                isinstance(pair, tuple) and len(pair) == 2 and pair[0]
-                for pair in pairs
+                isinstance(pair, tuple) and len(pair) == 2 and pair[0] for pair in pairs
             ):
                 raise ValueError(f"{name} must contain immutable named pairs")
             if len(dict(pairs)) != len(pairs):

@@ -19,14 +19,25 @@ def test_the_rendered_bash_writes_a_record_the_daemon_parses(tmp_path):
         "WAVEDL_TRAINING_EXIT=137\n"
         "WAVEDL_STAGE_OUT_EXIT=3\n" + render_exit_record("WAVEDL_ATTEMPT")
     )
-    subprocess.run(["bash", "-c", script, "bash", str(paths.attempt(2))], check=True, timeout=10)
+    subprocess.run(
+        ["bash", "-c", script, "bash", str(paths.attempt(2))], check=True, timeout=10
+    )
     assert parse_exit_record(paths.exit_record(2).read_bytes()) == ExitRecord(0, 137, 3)
     assert sorted(path.name for path in paths.attempt(2).iterdir()) == ["exit"]
 
 
 @pytest.mark.parametrize(
     "data",
-    [b"", b"0 0 0", b"0 0\n", b"0 0 0 0\n", b"0  0 0\n", b"0 0 x\n", b"0 0 256\n", b"0 0 0\n0 0 0\n"],
+    [
+        b"",
+        b"0 0 0",
+        b"0 0\n",
+        b"0 0 0 0\n",
+        b"0  0 0\n",
+        b"0 0 x\n",
+        b"0 0 256\n",
+        b"0 0 0\n0 0 0\n",
+    ],
 )
 def test_a_malformed_record_is_refused(data):
     with pytest.raises(ValueError):

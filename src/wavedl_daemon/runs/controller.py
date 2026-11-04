@@ -1,11 +1,11 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Turn active run heads into backend work, one bounded page per tick.
+"""
+Turns active run heads into backend work, one bounded page per tick.
 
-Ticks run on the thread that owns the database and never wait for I/O.
-Blocking work (spawning, sbatch, scheduler queries, reading attempt files)
-runs in the pool and returns the events to append with the head tokens it
-read, so a result that raced another append is dropped as stale and
-recomputed on a later tick.
+Ticks run on the database-owning thread and never wait for I/O. Blocking work
+runs in the pool and returns events with the head tokens it read. A result that
+raced another append is dropped as stale and recomputed on a later tick.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations
@@ -139,9 +139,13 @@ def _recover(
 
     ``unknown`` is why this daemon's sbatch outcome is unknown, if it knows.
     """
-    handle = backend.find(record.plan, created_at=datetime.fromisoformat(record.created_at))
+    handle = backend.find(
+        record.plan, created_at=datetime.fromisoformat(record.created_at)
+    )
     reason = unknown or "The daemon stopped before the submission was recorded"
-    lost = Exited(Outcome.UNKNOWN, False, detail=f"{reason}, and no job was found"[:1000])
+    lost = Exited(
+        Outcome.UNKNOWN, False, detail=f"{reason}, and no job was found"[:1000]
+    )
     events: tuple[RunEvent, ...] = (lost,) if handle is None else (Submitted(handle),)
     return Done(events, Expect(offset=(head.attempt, head.metrics_offset)))
 
@@ -263,10 +267,14 @@ class RunController:
                 if then is not None:
                     self._run(then, head)
             case Work(kind=WorkKind.SETTLE):
-                cause = observation if isinstance(observation, SlurmObservation) else poll
+                cause = (
+                    observation if isinstance(observation, SlurmObservation) else poll
+                )
                 if cause is None:
                     raise UnsupportedPlan("There is no exit to settle")
-                self._submit(WorkKind.SETTLE, head.ref.run_id, lambda: _settle(head, cause))
+                self._submit(
+                    WorkKind.SETTLE, head.ref.run_id, lambda: _settle(head, cause)
+                )
             case Work(kind=kind):
                 self._run(kind, head)
 
@@ -289,7 +297,9 @@ class RunController:
         if kind is WorkKind.SPAWN:
             if self._local is None:
                 return False
-            spawning = sum(kind is WorkKind.SPAWN for kind, _ in self._inflight.values())
+            spawning = sum(
+                kind is WorkKind.SPAWN for kind, _ in self._inflight.values()
+            )
             if self._local.running + spawning >= self._local.max_processes:
                 return False
         return self._pool.control_lane.admits
@@ -320,7 +330,9 @@ class RunController:
             case WorkKind.RECOVER if slurm:
                 record, backend = self._record(head), self._backend()
                 unknown = self._unknown_submissions.get(run_id)
-                self._submit(kind, run_id, lambda: _recover(backend, record, head, unknown))
+                self._submit(
+                    kind, run_id, lambda: _recover(backend, record, head, unknown)
+                )
             case WorkKind.RECOVER:
                 # The claim committed but its spawn result did not. A process
                 # another daemon started may exist, so it is never started again.
@@ -328,7 +340,9 @@ class RunController:
                 handle = None if local is None else local.started(run_id, head.attempt)
                 if handle is None:
                     detail = "The daemon stopped before the launch was recorded"
-                    events: tuple[RunEvent, ...] = (Exited(Outcome.LOST, False, detail=detail),)
+                    events: tuple[RunEvent, ...] = (
+                        Exited(Outcome.LOST, False, detail=detail),
+                    )
                 else:
                     events = (Submitted(handle), Observed(Phase.RUNNING, None, None))
                 self._log.append(run_id, events, expect=Expect(revision=head.revision))
@@ -351,7 +365,9 @@ class RunController:
                     raise UnsupportedPlan("The Local backend is not registered")
                 self._local.cancel(handle)
                 self._log.append(
-                    head.ref.run_id, [CancelDelivered()], expect=Expect(revision=head.revision)
+                    head.ref.run_id,
+                    [CancelDelivered()],
+                    expect=Expect(revision=head.revision),
                 )
             case SlurmHandle() as handle:
                 backend = self._backend()
@@ -381,14 +397,18 @@ class RunController:
             return False
         backend = self._backend()
         watch.kill_at = now + CANCEL_GRACE_SECONDS
-        self._submit(WorkKind.CANCEL, head.ref.run_id, lambda: _kill(backend, head, handle))
+        self._submit(
+            WorkKind.CANCEL, head.ref.run_id, lambda: _kill(backend, head, handle)
+        )
         return True
 
     def _watch(self, head: RunHead) -> _Watch:
         watch = self._watches.get(head.ref.run_id)
         if watch is None:
             created_at = datetime.fromisoformat(self._record(head).created_at)
-            watch = self._watches[head.ref.run_id] = _Watch(head.ref.plan_id, created_at)
+            watch = self._watches[head.ref.run_id] = _Watch(
+                head.ref.plan_id, created_at
+            )
         return watch
 
     def _submit(
@@ -443,7 +463,9 @@ class RunController:
             try:
                 while (cause := self._poll(head)) is not None:
                     done = _settle(head, cause)
-                    head = self._log.append(head.ref.run_id, done.events, expect=done.expect)
+                    head = self._log.append(
+                        head.ref.run_id, done.events, expect=done.expect
+                    )
                     if done.release is not None:
                         self._local.release(done.release)
             except Exception as error:
@@ -469,7 +491,9 @@ class RunController:
             watch = self._watch(head)
             if watch.due <= now and len(batch) < OBSERVE_BATCH:
                 batch.append((head.ref.run_id, stage.handle))
-                since = watch.created_at if since is None else min(since, watch.created_at)
+                since = (
+                    watch.created_at if since is None else min(since, watch.created_at)
+                )
         if since is None:
             return
         backend, start = self._slurm, since
@@ -499,7 +523,9 @@ class RunController:
             watch = self._watches.get(run_id)
             if watch is None:
                 continue
-            observation = results.get(run_id, ObservationFailed("No observation returned"))
+            observation = results.get(
+                run_id, ObservationFailed("No observation returned")
+            )
             watch.pending = observation
             if isinstance(observation, ObservationFailed):
                 watch.failures = min(watch.failures + 1, 16)

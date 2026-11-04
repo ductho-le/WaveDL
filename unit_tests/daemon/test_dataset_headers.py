@@ -361,5 +361,3 @@ def test_expected_identity_is_checked_before_reading_metadata(tmp_path, monkeypa
         inspect_dataset(
             path, expected_identity=expected | {"st_ino": expected["st_ino"] + 1}
         )
-
-

@@ -75,7 +75,10 @@ def test_a_lost_response_replays_the_same_record_after_reopen(state, store, plan
 
 def test_a_request_key_is_bound_to_its_canonical_payload(store, plan):
     original = put(store, plan)
-    assert put(store, plan, payload={"config": {"epochs": 3}, "operation": "train"}) == original
+    assert (
+        put(store, plan, payload={"config": {"epochs": 3}, "operation": "train"})
+        == original
+    )
     with pytest.raises(IdempotencyConflict):
         put(store, plan, payload={"operation": "train", "config": {"epochs": 4}})
     assert store.get_by_key("request-key") == original
@@ -108,13 +111,17 @@ def test_lookups_of_unknown_identities_are_empty(store):
 
 
 def test_pages_are_in_creation_order(store, tmp_path):
-    records = [put(store, make_plan(tmp_path), key=f"key-{index}") for index in range(5)]
+    records = [
+        put(store, make_plan(tmp_path), key=f"key-{index}") for index in range(5)
+    ]
     assert store.page(limit=10, offset=0) == records
     assert store.page(limit=2, offset=1) == records[1:3]
     assert store.page(limit=10, offset=5) == []
 
 
-def test_separate_connections_collapse_concurrent_identical_requests(state, store, plan):
+def test_separate_connections_collapse_concurrent_identical_requests(
+    state, store, plan
+):
     path, lock = state
 
     def write(_):

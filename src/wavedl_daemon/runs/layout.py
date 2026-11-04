@@ -1,19 +1,25 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Where one run's files live.
+"""
+Where one run's files live.
 
-``output/`` is the trainer's ``--output_dir``. It is stable across attempts,
-because upstream resumes from it, and it holds nothing the daemon writes, so
-upstream's archive and resume scans never see daemon files. Each attempt owns
-``attempts/<N>/``, claimed by ``mkdir``: the daemon claims Local attempts and
-the batch script claims Slurm ones.
+``output/`` is the trainer's ``--output_dir``. It is stable across attempts
+because upstream resumes from it, and it holds no daemon files, so upstream's
+archive and resume scans never see them. Each attempt owns ``attempts/<N>/``,
+claimed by ``mkdir``: the daemon claims Local attempts and the batch script
+claims Slurm ones.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from wavedl_daemon.runs.model import Operation
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 METRICS_FILE = "metrics.jsonl"

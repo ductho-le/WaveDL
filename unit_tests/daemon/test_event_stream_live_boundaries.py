@@ -55,16 +55,28 @@ def open_log(root, *, notify=lambda run_id: None):
 def start(log):
     """A submitted Slurm run, which is the backend whose attempts requeue."""
     ref = RunRef(
-        RunId(RUN), PlanId("test-owned-plan"), BackendKind.SLURM, Operation.TRAIN, Path("/r")
+        RunId(RUN),
+        PlanId("test-owned-plan"),
+        BackendKind.SLURM,
+        Operation.TRAIN,
+        Path("/r"),
     )
-    events = [AttemptOpened("submit", None), Submitting(), Submitted(SlurmHandle("7", "c", "u"))]
+    events = [
+        AttemptOpened("submit", None),
+        Submitting(),
+        Submitted(SlurmHandle("7", "c", "u")),
+    ]
     return log.append(RunId(RUN), events, expect=New(ref))
 
 
 def metrics(log, *epochs):
     head = log.head(RunId(RUN))
     rows = [
-        Metric(epoch, {"epoch": epoch, "val_loss": 0.5, "note": "Tiếng Việt 🌊"}, head.metrics_offset + 64 * (index + 1))
+        Metric(
+            epoch,
+            {"epoch": epoch, "val_loss": 0.5, "note": "Tiếng Việt 🌊"},
+            head.metrics_offset + 64 * (index + 1),
+        )
         for index, epoch in enumerate(epochs)
     ]
     return log.append(RunId(RUN), rows, expect=Expect())
@@ -80,7 +92,10 @@ def requeue(log):
 
 def frames(log, cursor=(0, -1)):
     """What a client must receive after ``cursor``: decoded SSE data."""
-    return [json.loads(encode(item)) for item in log.read_after(RunId(RUN), cursor, limit=1000)]
+    return [
+        json.loads(encode(item))
+        for item in log.read_after(RunId(RUN), cursor, limit=1000)
+    ]
 
 
 @dataclass(frozen=True)
@@ -271,7 +286,12 @@ def test_restart_and_requeued_attempt_replay(tmp_path):
             broker = EventBroker()
             expected = frames(log, (1, 3))
             assert [(item["attempt"], item["seq"]) for item in expected] == [
-                (1, 4), (1, 5), (2, 0), (2, 1), (2, 2), (3, 0),
+                (1, 4),
+                (1, 5),
+                (2, 0),
+                (2, 1),
+                (2, 2),
+                (3, 0),
             ]
 
             def finish(payload, disconnected):
@@ -281,7 +301,8 @@ def test_restart_and_requeued_attempt_replay(tmp_path):
             app = authenticated_app(log, broker)
             async with wire_phase(app, on_body=finish) as (url, requests):
                 received = [
-                    item async for item in read_events(url, TOKEN, RUN, last_event_id="1:3")
+                    item
+                    async for item in read_events(url, TOKEN, RUN, last_event_id="1:3")
                 ]
                 assert received == expected
                 assert {item["protocol"] for item in received} == {"wavedl-run"}
@@ -325,7 +346,8 @@ def test_real_overflow_does_not_advance(tmp_path):
 
             async with wire_phase(app, on_body=finish_reconnect) as (url, requests):
                 replayed = [
-                    item async for item in read_events(url, TOKEN, RUN, last_event_id="1:2")
+                    item
+                    async for item in read_events(url, TOKEN, RUN, last_event_id="1:2")
                 ]
                 assert replayed == frames(log, (1, 2))
                 assert replayed[0]["type"] == "metric"

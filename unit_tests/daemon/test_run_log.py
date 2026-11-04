@@ -55,19 +55,25 @@ def log(state):
     root, lock = state
     notified = []
     connection = open_database(root / "daemon.sqlite3", dispatch_lock=lock)
-    yield RunLog(connection, notify=notified.append, clock=lambda: "2026-11-03T00:00:00+00:00")
+    yield RunLog(
+        connection, notify=notified.append, clock=lambda: "2026-11-03T00:00:00+00:00"
+    )
     connection.close()
 
 
 def ref(run_id=RUN, run_dir=Path("/runs/run-1")):
-    return RunRef(run_id, PlanId(f"plan-{run_id}"), BackendKind.SLURM, Operation.TRAIN, run_dir)
+    return RunRef(
+        run_id, PlanId(f"plan-{run_id}"), BackendKind.SLURM, Operation.TRAIN, run_dir
+    )
 
 
 def start(log, run=None):
     run = run or ref()
     log.append(run.run_id, [SUBMIT], expect=New(run))
     head = log.append(run.run_id, [Submitting()], expect=Expect(revision=1))
-    return log.append(run.run_id, [Submitted(SLURM)], expect=Expect(revision=head.revision))
+    return log.append(
+        run.run_id, [Submitted(SLURM)], expect=Expect(revision=head.revision)
+    )
 
 
 def history(log, run_id=RUN):
@@ -106,15 +112,19 @@ def test_a_new_database_reopens_and_old_databases_are_refused(state):
 
 
 def test_opening_requires_dispatch_ownership_of_its_directory(tmp_path):
-    with acquire_dispatch_lock(tmp_path / "elsewhere" / "dispatch.lock") as lock:
-        with pytest.raises(DispatchRequired):
-            open_database(tmp_path / "daemon.sqlite3", dispatch_lock=lock)
+    with (
+        acquire_dispatch_lock(tmp_path / "elsewhere" / "dispatch.lock") as lock,
+        pytest.raises(DispatchRequired),
+    ):
+        open_database(tmp_path / "daemon.sqlite3", dispatch_lock=lock)
 
 
 def test_the_stored_head_equals_the_fold_of_the_stored_events(log, tmp_path):
     paths = RunPaths(tmp_path / "run")
     paths.attempt(1).mkdir(parents=True)
-    paths.metrics(1).write_bytes(b'{"epoch": 1, "val_loss": NaN}\n{"epoch": 2, "val_loss": 0.5}\n')
+    paths.metrics(1).write_bytes(
+        b'{"epoch": 1, "val_loss": NaN}\n{"epoch": 2, "val_loss": 0.5}\n'
+    )
     run = ref(run_dir=paths.run_dir)
     head = start(log, run)
     chunk = read_tail(paths.metrics(1), start=head.metrics_offset)
@@ -131,12 +141,19 @@ def test_a_slurm_requeue_replays_in_attempt_order(log, tmp_path):
     paths.metrics(1).write_bytes(b'{"epoch": 1, "val_loss": 1.0}\n{"epoch": 2, "val_lo')
     run = ref(run_dir=paths.run_dir)
     head = start(log, run)
-    seen = observation(restart_count=1, phase=Phase.QUEUED, native_state="PENDING", earlier={0: "NODE_FAIL"})
+    seen = observation(
+        restart_count=1,
+        phase=Phase.QUEUED,
+        native_state="PENDING",
+        earlier={0: "NODE_FAIL"},
+    )
     files = AttemptFiles(read_tail(paths.metrics(1), start=head.metrics_offset), None)
     head = log.append(
         RUN,
         settle(head, seen, files),
-        expect=Expect(revision=head.revision, offset=(head.attempt, head.metrics_offset)),
+        expect=Expect(
+            revision=head.revision, offset=(head.attempt, head.metrics_offset)
+        ),
     )
     stored = history(log)
     assert [(item.attempt, item.seq, item.event.kind) for item in stored] == [
@@ -156,7 +173,11 @@ def test_a_slurm_requeue_replays_in_attempt_order(log, tmp_path):
 
 def test_encode_is_the_sse_data_of_one_event(log):
     start(log)
-    log.append(RUN, [Metric(1, {"epoch": 1, "val_loss": None}, 30)], expect=Expect(offset=(1, 0)))
+    log.append(
+        RUN,
+        [Metric(1, {"epoch": 1, "val_loss": None}, 30)],
+        expect=Expect(offset=(1, 0)),
+    )
     frame = json.loads(
         encode(history(log)[-1]),
         parse_constant=lambda value: pytest.fail(f"non-finite {value}"),
@@ -216,7 +237,11 @@ def test_an_illegal_event_rolls_back_the_whole_append(log):
             expect=Expect(revision=head.revision),
         )
     with pytest.raises(IllegalTransition):
-        log.append(RUN, [Exited(Outcome.REQUEUED, False)], expect=Expect(revision=head.revision))
+        log.append(
+            RUN,
+            [Exited(Outcome.REQUEUED, False)],
+            expect=Expect(revision=head.revision),
+        )
     assert log.head(RUN) == head
     assert len(history(log)) == 3
 
@@ -224,7 +249,11 @@ def test_an_illegal_event_rolls_back_the_whole_append(log):
 def test_triggers_reject_rows_out_of_commit_order(log, state):
     root, _ = state
     start(log)
-    log.append(RUN, [Exited(Outcome.REQUEUED, False), AttemptOpened("requeue", 1)], expect=Expect())
+    log.append(
+        RUN,
+        [Exited(Outcome.REQUEUED, False), AttemptOpened("requeue", 1)],
+        expect=Expect(),
+    )
     raw = sqlite3.connect(root / "daemon.sqlite3")
 
     def insert(attempt, seq, kind="observed", source_end=None):
@@ -246,7 +275,9 @@ def test_triggers_reject_rows_out_of_commit_order(log, state):
             insert(*row)
     insert(2, 1)
     with pytest.raises(sqlite3.IntegrityError):
-        raw.execute("UPDATE run_events SET payload_json = '{}' WHERE run_id = ?", (RUN,))
+        raw.execute(
+            "UPDATE run_events SET payload_json = '{}' WHERE run_id = ?", (RUN,)
+        )
     with pytest.raises(sqlite3.IntegrityError):
         raw.execute("DELETE FROM run_events WHERE run_id = ?", (RUN,))
     with pytest.raises(sqlite3.IntegrityError):
@@ -275,7 +306,10 @@ def test_a_crash_between_read_and_commit_rereads_the_same_rows(state, tmp_path):
     chunk = read_tail(paths.metrics(1), start=head.metrics_offset)
     assert chunk == lost
     head = reopened.append(RUN, chunk.rows, expect=Expect(offset=(1, 0)))
-    assert [(item.attempt, item.seq) for item in history(reopened)][3:] == [(1, 3), (1, 4)]
+    assert [(item.attempt, item.seq) for item in history(reopened)][3:] == [
+        (1, 3),
+        (1, 4),
+    ]
     assert read_tail(paths.metrics(1), start=head.metrics_offset).rows == ()
     connection.close()
 

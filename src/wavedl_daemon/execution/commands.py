@@ -1,9 +1,11 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Shell-free command execution with real process-tree deadlines.
+"""
+Shell-free command execution with real process-tree deadlines.
 
-run_command is synchronous. Event-loop callers use submit_command and await its
-handle. Output is diagnostic and explicitly truncated, never durable telemetry.
-Each pipe receives half the aggregate output budget (rounding down).
+``run_command`` is synchronous; event-loop callers use ``submit_command`` and
+await its handle. Output is diagnostic and truncated, never durable telemetry.
+Each pipe gets half the aggregate output budget, rounded down.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations

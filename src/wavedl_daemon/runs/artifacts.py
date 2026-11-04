@@ -1,9 +1,11 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""What a run's ``output/`` holds, and one file of it opened for download.
+"""
+What a run's ``output/`` holds, and opening one file for download.
 
-``output/`` is upstream's ``--output_dir``. While a run is live the trainer
-rewrites files there in place, so a listing is a snapshot and a download
-streams the size it saw at open, aborting if the file changes meanwhile.
+``output/`` is upstream's ``--output_dir``. A live trainer rewrites files there
+in place, so a listing is a snapshot. A download streams the size seen at open
+and aborts if the file changes.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations

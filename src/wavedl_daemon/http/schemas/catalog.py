@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Bundled descriptions and explicitly scoped filesystem selections."""
+"""
+Bundled model descriptions and scoped filesystem selections.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

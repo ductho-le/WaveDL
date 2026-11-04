@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""A run's ``output/`` listing; download bytes have no response model."""
+"""
+A run's ``output/`` listing. Downloads are raw bytes with no response model.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

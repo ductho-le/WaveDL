@@ -1,11 +1,14 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""The upstream ``wavedl.train`` and ``wavedl.test`` options a plan may set.
+"""
+The ``wavedl.train`` and ``wavedl.test`` options a plan may set.
 
 The daemon never imports the trainer, so this table restates the part of its
-command line the GUI exposes; ``test_training_options_drift`` checks it against
-the installed ``--help``. Options the daemon owns (``--output_dir``, the metrics
-files, ``--config``, ``--allow_pickle``, ``--selection_metric``) are absent, so a
-request cannot set them. ``web/shared/training-options.json`` mirrors ``TRAIN``.
+command line the GUI exposes. ``test_training_options_drift`` checks it against
+the installed ``--help``. Daemon-owned options (``--output_dir``, the metrics
+files, ``--config``, ``--allow_pickle``, ``--selection_metric``) are absent, so
+a request cannot set them. ``web/shared/training-options.json`` mirrors
+``TRAIN``.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations

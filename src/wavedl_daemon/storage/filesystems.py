@@ -1,12 +1,11 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Filesystem identification, using only the standard library.
+"""
+Filesystem identification using only the standard library.
 
-``psutil`` is not a declared dependency of this project, and ``os.statvfs``
-reports no filesystem type, so each platform needs its own mechanism. Every
-function here answers "what kind of storage is this path on" on a best-effort
-basis and says so honestly: ``filesystem_type`` returns ``None`` when the
-platform cannot tell us, and callers must decide what to do about that rather
-than being handed a confident wrong answer.
+Each platform needs its own mechanism, since ``os.statvfs`` reports no
+filesystem type. Answers are best-effort: ``filesystem_type`` returns ``None``
+when the platform cannot tell, and callers decide how to handle that.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations

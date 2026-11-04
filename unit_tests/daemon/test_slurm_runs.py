@@ -37,8 +37,8 @@ from wavedl_daemon.runs.lifecycle import (
 )
 from wavedl_daemon.runs.model import (
     AttemptOpened,
-    ExitRecord,
     Exited,
+    ExitRecord,
     Metric,
     Observed,
     Outcome,
@@ -131,7 +131,9 @@ def environment(tmp_path):
     scheduler = Scheduler()
     now = [1000.0]
     with acquire_dispatch_lock(settings.state_root / "dispatch.lock") as lock:
-        connection = open_database(settings.state_root / "registry.db", dispatch_lock=lock)
+        connection = open_database(
+            settings.state_root / "registry.db", dispatch_lock=lock
+        )
         log, plans = RunLog(connection), PlanStore(connection)
         backend = SlurmBackend(
             SlurmSite("compute", cluster="alpha", requeue=True),
@@ -160,7 +162,9 @@ def environment(tmp_path):
 
 def submitted(environment):
     """A submitted run whose job the scheduler lists as pending, as after sbatch."""
-    body = train_payload(epochs=4, model="cnn", data_path="data.npz") | {"backend": "slurm"}
+    body = train_payload(epochs=4, model="cnn", data_path="data.npz") | {
+        "backend": "slurm"
+    }
     plan = environment.service.plan(body, str(uuid4()))
     run_id = RunId(plan.run_id)
     environment.scheduler.controller = controller(target(run_id), "PENDING")
@@ -191,7 +195,9 @@ def events(environment, run_id, attempt):
 
 def epochs(environment, run_id, attempt):
     return [
-        event.epoch for event in events(environment, run_id, attempt) if isinstance(event, Metric)
+        event.epoch
+        for event in events(environment, run_id, attempt)
+        if isinstance(event, Metric)
     ]
 
 
@@ -217,7 +223,10 @@ def test_a_requeued_job_resumes_in_a_new_attempt_and_completes(environment):
     assert head.stage.handle == SlurmHandle("4242", "alpha", "alice")
     (sbatch,) = scheduler.commands("sbatch")
     assert sbatch[-1] == str(paths.submission_script)
-    assert paths.submission_script.read_text() == environment.plans.by_run(run_id).plan.script
+    assert (
+        paths.submission_script.read_text()
+        == environment.plans.by_run(run_id).plan.script
+    )
 
     scheduler.controller = controller(target(run_id), "RUNNING")
     scheduler.accounting = account(target(run_id), "RUNNING", "")
@@ -278,7 +287,12 @@ def test_react_and_settle_read_a_requeue_from_scheduler_text(environment, tmp_pa
     )
     files = AttemptFiles(read_tail(tmp_path / "missing", start=0), None)
     assert settle(head, observation, files) == (
-        Exited(Outcome.REQUEUED, False, native_state="PREEMPTED", detail="Requeued by Slurm"),
+        Exited(
+            Outcome.REQUEUED,
+            False,
+            native_state="PREEMPTED",
+            detail="Requeued by Slurm",
+        ),
         AttemptOpened("requeue", 1),
         Observed(Phase.QUEUED, "PENDING", None),
     )
@@ -296,11 +310,17 @@ def test_an_unknown_sbatch_outcome_is_recovered_by_find_never_resubmitted(enviro
     head = tick_until(environment, run_id, lambda head: isinstance(head.stage, Live))
     assert head.stage.handle == SlurmHandle("4242", "alpha", "alice")
     assert len(scheduler.commands("sbatch")) == 1
-    sacct = next(call for call in scheduler.commands("sacct") if "--allocations" in call)
+    sacct = next(
+        call for call in scheduler.commands("sacct") if "--allocations" in call
+    )
     created = datetime.fromisoformat(environment.plans.by_run(run_id).created_at)
     since = (created - timedelta(minutes=5)).astimezone(UTC)
     assert f"--starttime={since:%Y-%m-%dT%H:%M:%S}" in sacct
-    squeue = next(call for call in scheduler.commands("squeue") if "--states=all" in call and any(arg.startswith("--Format") for arg in call))
+    squeue = next(
+        call
+        for call in scheduler.commands("squeue")
+        if "--states=all" in call and any(arg.startswith("--Format") for arg in call)
+    )
     for query in (sacct, squeue):
         assert f"--name={job_name(run_id)}" in query and "--user=alice" in query
 
@@ -310,7 +330,9 @@ def test_a_crash_between_sbatch_and_its_commit_is_recovered(environment, found):
     run_id, _ = submitted(environment)
     head = environment.log.head(run_id)
     # The daemon committed the claim and died before recording sbatch's reply.
-    environment.log.append(run_id, [Submitting()], expect=Expect(revision=head.revision))
+    environment.log.append(
+        run_id, [Submitting()], expect=Expect(revision=head.revision)
+    )
     environment.scheduler.found = recovery_row(run_id) if found else ""
     environment.restart()
     head = tick_until(
@@ -367,7 +389,12 @@ def test_cancel_interrupts_training_then_ends_the_job_after_the_grace(environmen
     assert len(scheduler.commands("scancel")) == 1
 
     environment.now[0] += 45
-    tick_until(environment, run_id, lambda head: len(scheduler.commands("scancel")) == 2, advance=0)
+    tick_until(
+        environment,
+        run_id,
+        lambda head: len(scheduler.commands("scancel")) == 2,
+        advance=0,
+    )
     assert scheduler.commands("scancel")[1] == ("scancel", *filters, "4242")
 
     # Training saved its checkpoint and exited 130, which Slurm calls FAILED.
@@ -400,7 +427,12 @@ def test_a_timed_out_scancel_is_not_a_delivered_cancel(environment):
     tick_until(environment, run_id, live(Phase.RUNNING))
     scheduler.scancel = ProcessResult(0, b"", b"", timed_out=True)
     environment.service.cancel(run_id)
-    tick_until(environment, run_id, lambda head: len(scheduler.commands("scancel")) == 1, advance=1)
+    tick_until(
+        environment,
+        run_id,
+        lambda head: len(scheduler.commands("scancel")) == 1,
+        advance=1,
+    )
     assert not environment.log.head(run_id).stage.cancel_delivered
     scheduler.scancel = ok()
     tick_until(environment, run_id, lambda head: head.stage.cancel_delivered, advance=6)
@@ -416,7 +448,13 @@ def test_cancelling_a_queued_job_ends_it_without_a_signal(environment):
     environment.service.cancel(run_id)
     tick_until(environment, run_id, lambda head: head.stage.cancel_delivered, advance=1)
     (scancel,) = scheduler.commands("scancel")
-    assert scancel == ("scancel", "--clusters=alpha", "--user=alice", f"--name={job_name(run_id)}", "4242")
+    assert scancel == (
+        "scancel",
+        "--clusters=alpha",
+        "--user=alice",
+        f"--name={job_name(run_id)}",
+        "4242",
+    )
     scheduler.controller = controller(target(run_id), "CANCELLED", code="0:15")
     head = tick_until(environment, run_id, lambda head: isinstance(head.stage, Ended))
     assert head.stage.exit.outcome is Outcome.CANCELLED
@@ -451,7 +489,9 @@ def test_submit_writes_the_script_once_and_needs_dispatch(tmp_path, environment)
     with pytest.raises(FileExistsError):
         environment.backend.submit(plan)
     assert len(environment.scheduler.commands("sbatch")) == 1
-    unowned = SlurmBackend(SlurmSite("compute", cluster="alpha"), Scheduler(), owner="alice")
+    unowned = SlurmBackend(
+        SlurmSite("compute", cluster="alpha"), Scheduler(), owner="alice"
+    )
     with pytest.raises(DispatchRequired):
         unowned.submit(plan)
 
@@ -511,4 +551,3 @@ def test_cancel_refuses_another_owners_job(environment):
             RunId(str(uuid4())), SlurmHandle("1", "alpha", "bob"), interrupt=True
         )
     assert environment.scheduler.commands("scancel") == []
-

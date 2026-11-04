@@ -151,9 +151,7 @@ def test_precision_is_given_once_for_launcher_and_training(tmp_path):
     [(Operation.TRAIN, "mps")],
 )
 def test_unexpressible_device_selection_refused(tmp_path, operation, device):
-    request = spec(
-        tmp_path, operation, checkpoint="checkpoint", data_path="data.npz"
-    )
+    request = spec(tmp_path, operation, checkpoint="checkpoint", data_path="data.npz")
     request = replace(request, runtime=replace(request.runtime, device=device))
     with pytest.raises(UnsupportedPlan, match="selection is unsupported"):
         LocalBackend().plan(request)
@@ -168,9 +166,11 @@ def test_inference_argv_has_only_upstream_test_options(tmp_path, operation):
     assert "--operation" not in plan.argv
     for name in ("device", "operation"):
         with pytest.raises(UnsupportedPlan, match="Unsupported resolved"):
-            LocalBackend().plan(replace(request, resolved_config={
-                **request.resolved_config, name: "cpu"
-            }))
+            LocalBackend().plan(
+                replace(
+                    request, resolved_config={**request.resolved_config, name: "cpu"}
+                )
+            )
 
 
 @pytest.mark.parametrize("visible", [None, "", "-1", "0,0", "0, 0"])

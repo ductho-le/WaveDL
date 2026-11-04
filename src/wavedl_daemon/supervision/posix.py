@@ -1,9 +1,11 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""POSIX process-group supervision with bounded, continuously drained pipes.
+"""
+POSIX process-group supervision with bounded, continuously drained pipes.
 
-Only the direct child is waitable on macOS. Orphaned descendants are reaped by
-the OS, not this daemon. Descendants must remain in the inherited process group;
-deliberately escaping sessions requires a stronger OS containment mechanism.
+Only the direct child is waitable on macOS; the OS reaps orphaned descendants,
+not the daemon. Descendants must stay in the inherited process group, since
+escaping sessions needs stronger OS containment.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations

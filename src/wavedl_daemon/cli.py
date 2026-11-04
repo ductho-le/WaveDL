@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Explicit daemon startup; no listener, threads or storage at import time."""
+"""
+Explicit daemon startup; no listener, threads or storage at import time.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

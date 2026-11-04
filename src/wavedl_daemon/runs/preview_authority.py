@@ -1,9 +1,12 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Safe, capability-scoped dataset preview selection.
+"""
+Safe, capability-scoped dataset preview selection.
 
-Only administrator-configured roots may be selected. Paths are slash-separated
-names that must stay inside their root. The selected file stays open until the
-caller's context exits, and its fingerprint and ancestry are checked again then.
+Only administrator-configured roots may be selected, and paths are
+slash-separated names that stay inside their root. The selected file stays open
+until the caller's context exits, when its fingerprint and ancestry are checked
+again.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations

@@ -1,5 +1,7 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""The complete owned service boundary required by the hosted HTTP app."""
+"""
+The service bundle the hosted HTTP app requires.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""
 
 from __future__ import annotations
 

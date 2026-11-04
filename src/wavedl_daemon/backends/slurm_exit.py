@@ -1,9 +1,10 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""The Slurm exit record: one line ``batch training stage_out`` per attempt.
+"""
+The Slurm exit record: one ``batch training stage_out`` line per attempt.
 
-The batch script writes it and the daemon reads it, so both sides live here.
-Bash writes a temporary file and renames it, so a reader sees the whole line
-or no file at all.
+The batch script writes it and the daemon reads it. It is written to a
+temporary file and renamed, so a reader sees a whole line or no file.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations

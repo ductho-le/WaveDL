@@ -1,10 +1,11 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Byte-offset tail of ``attempts/N/metrics.jsonl``. Reads files, never SQLite.
+"""
+Byte-offset tail of ``attempts/N/metrics.jsonl``; reads files, never SQLite.
 
-The trainer's global rank 0 appends one ``json.dumps(epoch_stats)`` line per
-epoch. Python writes non-finite floats as ``NaN``/``Infinity``, which become
-None here so stored payloads stay strict JSON. The bookmark is the
-``source_end`` of the last row, committed with the rows themselves.
+The trainer's rank 0 appends one JSON line per epoch. Non-finite floats
+(``NaN``, ``Infinity``) become None so stored payloads stay strict JSON. The
+bookmark is the last row's ``source_end``, committed with the rows.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations
@@ -166,11 +167,7 @@ def _parse_line(line: bytes, end: int) -> FromFile:
         )
     except (ValueError, RecursionError) as exc:
         return SourceWarning(WarningCode.MALFORMED_LINE, f"Not JSON: {exc}"[:200], end)
-    if (
-        not _numbers(value)
-        or type(value.get("epoch")) is not int
-        or value["epoch"] < 1
-    ):
+    if not _numbers(value) or type(value.get("epoch")) is not int or value["epoch"] < 1:
         return SourceWarning(
             WarningCode.MALFORMED_LINE,
             "Expected an object of numbers with an integer epoch >= 1",

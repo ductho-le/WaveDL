@@ -1,9 +1,11 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Plan, submit, cancel and read runs on the thread that owns the database.
+"""
+Plans, submits, cancels and reads runs on the database-owning thread.
 
-Planning commits an immutable plan and nothing else. Submit and cancel append
-one event to the run log; the controller does the rest. A run's state is
-always ``status`` of its head, never stored separately.
+Planning commits an immutable plan and nothing else. Submit and cancel each
+append one event to the run log, and the controller does the rest. A run's
+state is always the ``status`` of its head, never stored separately.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations
@@ -20,8 +22,8 @@ from uuid import UUID, uuid4
 from wavedl_daemon.backends.contracts import (
     CheckpointSource,
     Plan,
-    Runtime,
     RunSpec,
+    Runtime,
     StorageMapping,
     Topology,
     UnsupportedPlan,
@@ -138,7 +140,8 @@ def _evidence(head: RunHead) -> dict:
         "exit_code": None if ending is None else ending.exit_code,
         "signal": None if ending is None else ending.signal,
         "attempt_exit": (
-            None if ending is None or ending.attempt_exit is None
+            None
+            if ending is None or ending.attempt_exit is None
             else asdict(ending.attempt_exit)
         ),
         "restart_count": head.restart_count,
@@ -424,7 +427,9 @@ class RunService:
 
     @staticmethod
     def _preview(record: PlanRecord) -> PlanResponse:
-        return PlanResponse(record.plan_id, record.run_id, record.request_id, record.plan)
+        return PlanResponse(
+            record.plan_id, record.run_id, record.request_id, record.plan
+        )
 
     def _owned(self, run_id: str) -> PlanRecord:
         _uuid(run_id)
@@ -449,7 +454,9 @@ class RunService:
                 record.plan.spec.paths.run_dir,
             )
             try:
-                self.log.append(run_id, [AttemptOpened("submit", None)], expect=New(ref))
+                self.log.append(
+                    run_id, [AttemptOpened("submit", None)], expect=New(ref)
+                )
             except Stale:
                 pass  # a concurrent submit already started it
         return self._view(record)
@@ -458,11 +465,15 @@ class RunService:
         self._guard()
         record = self._owned(run_id)
         head = self.log.head(RunId(run_id))
-        if head is not None and not head.cancel_requested and not isinstance(
-            head.stage, Ended
+        if (
+            head is not None
+            and not head.cancel_requested
+            and not isinstance(head.stage, Ended)
         ):
             self.log.append(
-                head.ref.run_id, [CancelRequested()], expect=Expect(revision=head.revision)
+                head.ref.run_id,
+                [CancelRequested()],
+                expect=Expect(revision=head.revision),
             )
         return self._view(record)
 

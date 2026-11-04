@@ -1,2 +1,4 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Run backends: Local process supervision and the Slurm scheduler."""
+"""
+Run backends: Local process supervision and the Slurm scheduler.
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
+"""

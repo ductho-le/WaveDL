@@ -1,10 +1,12 @@
-# Author: Ngo Duc Manh Le (manh@nnsvn.me)
-"""Windows Job Object supervision, with assignment before first execution.
+"""
+Windows Job Object supervision, assigned before first execution.
 
-The Windows-only stdlib modules are loaded lazily. CPython's ``_winapi``
-CreateProcess wrapper retains the initial thread handle (unlike Popen), allowing
-CREATE_SUSPENDED -> AssignProcessToJobObject -> ResumeThread. No breakaway flags
-are enabled. Closing the non-inheritable job handle kills its remaining members.
+Windows-only stdlib modules load lazily. ``_winapi`` CreateProcess keeps the
+initial thread handle (unlike Popen), enabling CREATE_SUSPENDED,
+AssignProcessToJobObject, then ResumeThread. No breakaway flags are set, and
+closing the non-inheritable job handle kills the remaining members.
+
+Author: Ngo Duc Manh Le (manh@nnsvn.me)
 """
 
 from __future__ import annotations

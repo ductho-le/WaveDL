@@ -272,9 +272,10 @@ def test_local_runs_are_not_capped_by_the_worker_budget(tmp_path, dispatch):
         with BoundedThreadPool(WorkBudget(max_workers=1)) as pool:
             handles = [
                 pool.control_lane.submit(
-                    lambda token, plan=prepared(
-                        tmp_path, STUB_MODE="sleep"
-                    ): backend.spawn(plan, 1)[1]
+                    lambda token,
+                    plan=prepared(tmp_path, STUB_MODE="sleep"): backend.spawn(plan, 1)[
+                        1
+                    ]
                 ).result(10)
                 for _ in range(3)
             ]
