@@ -38,10 +38,6 @@ _ACK = re.compile(r"([1-9][0-9]*)(?:;([A-Za-z0-9_.-]+))?\Z")
 _CLOCK_SKEW = timedelta(minutes=5)
 
 
-class SubmissionRejected(RuntimeError):
-    """sbatch definitely refused the job."""
-
-
 class SubmissionUnknown(RuntimeError):
     """sbatch may have queued the job; only ``find`` may settle it."""
 
@@ -118,9 +114,9 @@ class SlurmBackend:
         ):
             raise SubmissionUnknown("Incomplete sbatch acknowledgement")
         if result.returncode != 0:
-            raise SubmissionRejected(
-                result.stderr.decode("utf-8", errors="replace").strip()[:1000]
-            )
+            # A lost reply ("Socket timed out") fails sbatch after slurmctld queued the job.
+            diagnostic = result.stderr.decode("utf-8", errors="replace").strip()[:1000]
+            raise SubmissionUnknown(f"sbatch exited {result.returncode}: {diagnostic}")
         match = _ACK.fullmatch(result.stdout.decode("utf-8", errors="replace").strip())
         if match is None:
             raise SubmissionUnknown("Unparseable sbatch acknowledgement")

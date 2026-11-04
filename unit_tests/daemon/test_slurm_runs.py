@@ -17,7 +17,6 @@ import pytest
 from wavedl_daemon.backends.slurm import (
     SchedulerUnavailable,
     SlurmBackend,
-    SubmissionRejected,
     SubmissionUnknown,
 )
 from wavedl_daemon.backends.slurm_plan import SlurmSite, job_name
@@ -326,11 +325,24 @@ def test_a_crash_between_sbatch_and_its_commit_is_recovered(environment, found):
         assert status(head).state is RunState.TERMINAL_UNKNOWN
 
 
-def test_a_rejected_submission_fails_the_run(environment):
-    environment.scheduler.sbatch = ProcessResult(1, b"", b"Invalid partition")
+def test_a_failed_sbatch_may_have_queued_the_job_so_find_settles_it(environment):
+    scheduler = environment.scheduler
+    scheduler.sbatch = ProcessResult(1, b"", b"Socket timed out on send/recv operation")
     run_id, _ = submitted(environment)
+    scheduler.found = recovery_row(run_id)
+    head = tick_until(environment, run_id, lambda head: isinstance(head.stage, Live))
+    assert head.stage.handle == SlurmHandle("4242", "alpha", "alice")
+
+    scheduler.sbatch = ProcessResult(1, b"", b"Invalid partition specified")
+    run_id, _ = submitted(environment)
+    scheduler.found = ""
     head = tick_until(environment, run_id, lambda head: isinstance(head.stage, Ended))
-    assert head.stage.exit == Exited(Outcome.FAILED, True, detail="Invalid partition")
+    assert head.stage.exit == Exited(
+        Outcome.UNKNOWN,
+        False,
+        detail="sbatch exited 1: Invalid partition specified, and no job was found",
+    )
+    assert len(scheduler.commands("sbatch")) == 2
 
 
 def test_cancel_interrupts_the_steps_then_ends_the_job_after_the_grace(environment):
@@ -434,7 +446,7 @@ def test_an_uncertain_acknowledgement_is_unknown(environment, reply):
         environment.backend.submit(environment.plans.by_run(run_id).plan)
     environment.scheduler.sbatch = ProcessResult(1, b"", b"denied")
     run_id, _ = submitted(environment)
-    with pytest.raises(SubmissionRejected, match="denied"):
+    with pytest.raises(SubmissionUnknown, match="denied"):
         environment.backend.submit(environment.plans.by_run(run_id).plan)
 
 

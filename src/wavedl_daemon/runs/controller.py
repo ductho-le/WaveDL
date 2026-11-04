@@ -22,7 +22,7 @@ from wavedl_daemon.backends.local_execution import (
     CANCEL_GRACE_SECONDS,
     SupervisionLost,
 )
-from wavedl_daemon.backends.slurm import SubmissionRejected
+from wavedl_daemon.backends.slurm import SubmissionUnknown
 from wavedl_daemon.events.metrics_tail import read_attempt_files, read_tail
 from wavedl_daemon.execution.budget import BudgetExhausted
 from wavedl_daemon.runs.layout import RunPaths
@@ -127,19 +127,21 @@ def _sbatch(backend: SlurmBackend, plan: Plan, head: RunHead) -> Done:
     try:
         _require_checkpoint(plan)
         events: tuple[RunEvent, ...] = (Submitted(backend.submit(plan)),)
-    except (UnsupportedPlan, SubmissionRejected, OSError) as error:
+    except (UnsupportedPlan, OSError) as error:
         events = (Exited(Outcome.FAILED, True, detail=str(error)[:1000]),)
     return Done(events, Expect(offset=(head.attempt, head.metrics_offset)))
 
 
-def _recover(backend: SlurmBackend, record: PlanRecord, head: RunHead) -> Done:
-    """Find the job a submission lost between sbatch and its commit."""
+def _recover(
+    backend: SlurmBackend, record: PlanRecord, head: RunHead, unknown: str | None
+) -> Done:
+    """Find the job an unknown sbatch outcome, or a crash after sbatch, left.
+
+    ``unknown`` is why this daemon's sbatch outcome is unknown, if it knows.
+    """
     handle = backend.find(record.plan, created_at=datetime.fromisoformat(record.created_at))
-    lost = Exited(
-        Outcome.UNKNOWN,
-        False,
-        detail="The daemon stopped before the submission was recorded, and no job was found",
-    )
+    reason = unknown or "The daemon stopped before the submission was recorded"
+    lost = Exited(Outcome.UNKNOWN, False, detail=f"{reason}, and no job was found"[:1000])
     events: tuple[RunEvent, ...] = (lost,) if handle is None else (Submitted(handle),)
     return Done(events, Expect(offset=(head.attempt, head.metrics_offset)))
 
@@ -198,6 +200,7 @@ class RunController:
         self._next_tail: dict[RunId, float] = {}
         self._retry_at: dict[RunId, float] = {}
         self._watches: dict[RunId, _Watch] = {}
+        self._unknown_submissions: dict[RunId, str] = {}
         self._observing: tuple[tuple[RunId, ...], WorkHandle[dict]] | None = None
         self._offset = 0
         self._thread = threading.get_ident()
@@ -316,7 +319,8 @@ class RunController:
                 self._submit(kind, run_id, lambda: _sbatch(backend, record.plan, head))
             case WorkKind.RECOVER if slurm:
                 record, backend = self._record(head), self._backend()
-                self._submit(kind, run_id, lambda: _recover(backend, record, head))
+                unknown = self._unknown_submissions.get(run_id)
+                self._submit(kind, run_id, lambda: _recover(backend, record, head, unknown))
             case WorkKind.RECOVER:
                 # The claim committed but its spawn result did not. A process
                 # another daemon started may exist, so it is never started again.
@@ -407,6 +411,8 @@ class RunController:
             except Stale:
                 head = None
             except Exception as error:
+                if isinstance(error, SubmissionUnknown):
+                    self._unknown_submissions[run_id] = str(error)
                 current = self._log.head(run_id)
                 if current is not None:
                     self._error(current, error)
@@ -447,6 +453,7 @@ class RunController:
         self._next_tail.pop(run_id, None)
         self._retry_at.pop(run_id, None)
         self._watches.pop(run_id, None)
+        self._unknown_submissions.pop(run_id, None)
 
     def _observe(self, heads: list[RunHead]) -> None:
         """Start one batched scheduler query for the Slurm runs that are due."""
