@@ -60,11 +60,13 @@ def test_cancel_at_each_stage_of_a_real_local_run(tmp_path, monkeypatch):
         "'prefix':sys.prefix,'devices':['cpu']}))\n"
         "else:\n"
         "    signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
+        f"    open({str(tmp_path / 'ready')!r}, 'w').close()\n"
         "    time.sleep(60)\n"
     )
     executable.chmod(0o700)
     original_probe = LocalBackend._probe
     original_spawn = LocalBackend.spawn
+    original_cancel = LocalBackend.cancel
 
     def held_probe(backend, plan, cwd, environment):
         entered.set()
@@ -75,7 +77,15 @@ def test_cancel_at_each_stage_of_a_real_local_run(tmp_path, monkeypatch):
         spawned.append(plan.run_id)
         return original_spawn(backend, plan, attempt)
 
+    def ready_cancel(backend, handle):
+        # A SIGINT before the stand-in ignores it would end the run without SIGKILL.
+        deadline = time.monotonic() + 10
+        while not (tmp_path / "ready").exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return original_cancel(backend, handle)
+
     monkeypatch.setattr(LocalBackend, "_probe", held_probe)
+    monkeypatch.setattr(LocalBackend, "cancel", ready_cancel)
     monkeypatch.setattr(LocalBackend, "spawn", recorded_spawn)
     settings = Settings(tmp_path / "state", tmp_path / "runs")
     services = HostedServices(
