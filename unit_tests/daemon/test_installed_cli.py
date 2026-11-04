@@ -58,22 +58,6 @@ class _InstalledWindowsAPI(_Win32):
 
     def terminate_job(self, job):
         self.forced_kills += 1
-        # Name the survivors a forced kill would otherwise erase.
-        snapshot = subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                "Get-CimInstance Win32_Process | "
-                "Select-Object ProcessId,ParentProcessId,Name,CommandLine | "
-                "Format-List",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        print(f"Process snapshot before forced job kill:\n{snapshot.stdout}")
         super().terminate_job(job)
 
     def active(self, job):
