@@ -6,6 +6,7 @@ import io
 import json
 import os
 import re
+import signal
 import socket
 import subprocess
 import sys
@@ -525,6 +526,33 @@ def test_sigterm_removes_run_file(tmp_path):
             process.kill()
             process.wait()
         process.stdout.close()
+    assert not (state / "serve.json").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX termination signal")
+def test_sigterm_during_startup_leaves_no_run_file(tmp_path):
+    root = Path(__file__).resolve().parents[2]
+    state = tmp_path / "state"
+    script = (
+        "import os, signal, sys, uvicorn\n"
+        "from wavedl_daemon import cli\n"
+        "startup = uvicorn.Server.startup\n"
+        "async def signalled(server, sockets=None):\n"
+        "    await startup(server, sockets=sockets)\n"
+        "    os.kill(os.getpid(), signal.SIGTERM)\n"
+        "uvicorn.Server.startup = signalled\n"
+        "sys.exit(cli.main(sys.argv[1:], open_browser=None))\n"
+    )
+    process = subprocess.run(
+        [sys.executable, "-c", script, "--state-root", str(state), "--port", "0"],
+        cwd=tmp_path,
+        env=dict(os.environ, PYTHONPATH=str(root / "src")),
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert "WaveDL is running at" in process.stdout
+    assert process.returncode == -signal.SIGTERM
     assert not (state / "serve.json").exists()
 
 

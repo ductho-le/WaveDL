@@ -215,6 +215,16 @@ async def serve(
                     pass
                 await super().shutdown(sockets=sockets)
 
+            async def main_loop(self):
+                # Not in startup: a signal there makes uvicorn skip shutdown,
+                # whose removal is the only one before it re-raises the signal.
+                try:
+                    write_run_url(settings.state_root, f"http://{authority}/")
+                except OSError:
+                    # Only "already running" messages read it; never fatal.
+                    pass
+                await super().main_loop()
+
             async def startup(self, sockets=None):
                 await super().startup(sockets=sockets)
                 if self.started:
@@ -231,11 +241,6 @@ async def serve(
                         file=output,
                         flush=True,
                     )
-                    try:
-                        write_run_url(settings.state_root, f"http://{authority}/")
-                    except OSError:
-                        # Only "already running" messages read it; never fatal.
-                        pass
                     if open_browser is not None:
 
                         def launch_browser():
