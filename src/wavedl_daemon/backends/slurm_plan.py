@@ -5,6 +5,14 @@ The script claims its own attempt. Slurm sets ``SLURM_RESTART_COUNT`` on a
 requeue, so attempt N is ``1 + SLURM_RESTART_COUNT`` and ``mkdir`` makes the
 claim exclusive. Scheduler directives are literal Slurm tokens, not shell
 expansions.
+
+A cancel interrupts training with exactly one SIGINT per node, to that node's
+launcher, which forwards it to its trainers once. A step-wide signal would
+reach every trainer as well as its launcher, and the second copy would abort
+the emergency checkpoint the first one started. So the daemon sends USR1 to
+the batch shell alone (``scancel --batch``), which runs training in the
+background to stay able to trap it, and signals each launcher by the PID the
+launcher's task wrote to its attempt directory.
 """
 
 from __future__ import annotations
@@ -111,44 +119,72 @@ class SlurmSite:
             _text(self.stage_out_command, "trusted stage-out command")
 
 
+# srun --wait: how long the other launchers may outlive the first one to exit,
+# while rank 0 finishes its emergency save (its launcher allows 30 s) or its
+# final outputs. A larger bound only delays ending a crashed run.
+_STEP_WAIT_SECONDS = 120
+# Bounds the srun that delivers the interrupt, well inside the daemon's 45 s
+# cancel grace.
+_INTERRUPT_TIMEOUT_SECONDS = 20
+
 # Runtime shell dollars are escaped for string.Template; inserted quoted values
 # are not recursively interpreted by Template. $? remains the real shell status.
-# Training always runs as a job step, so a step signal reaches it while this
-# shell survives to record the exit codes.
+# WAVEDL_INTERRUPT is 0, 1 once a cancel arrives, and 2 once it is delivered.
+# A trap ends wait early, so wait repeats until no trap ran; Bash returns an
+# already reaped job's status again.
 _BATCH = Template("""#!/bin/bash
 $directives
 set -uo pipefail
+WAVEDL_INTERRUPT=0
+WAVEDL_WOKEN=0
+WAVEDL_STEP=
+wavedl_interrupt() {
+    WAVEDL_WOKEN=1
+    if [ "$$WAVEDL_INTERRUPT" -eq 2 ]; then return 0; fi
+    WAVEDL_INTERRUPT=1
+    if [ -z "$$WAVEDL_STEP" ]; then return 0; fi
+    WAVEDL_INTERRUPT=2
+    $interrupt
+}
+trap wavedl_interrupt USR1
 # NIL still exports SLURM_*; JWT is for submission authentication, not ranks.
 # https://slurm.schedmd.com/sbatch.html https://slurm.schedmd.com/jwt.html
 unset SLURM_JWT
 export SLURM_EXPORT_ENV=ALL
 $environment
-N=$$((1 + $${SLURM_RESTART_COUNT:-0}))
+WAVEDL_ATTEMPT_NUMBER=$$((1 + $${SLURM_RESTART_COUNT:-0}))
 $restart_guard
-export A=$attempts/"$$N"
-mkdir -- "$$A" || exit 125
-batch_exit=0
-training_exit=125
-stage_out_exit=125
-cd -- $working_directory || batch_exit=$$?
-if [ "$$batch_exit" -eq 0 ]; then
+export WAVEDL_ATTEMPT=$attempts/"$$WAVEDL_ATTEMPT_NUMBER"
+mkdir -- "$$WAVEDL_ATTEMPT" || exit 125
+WAVEDL_BATCH_EXIT=0
+WAVEDL_TRAINING_EXIT=125
+WAVEDL_STAGE_OUT_EXIT=125
+cd -- $working_directory || WAVEDL_BATCH_EXIT=$$?
+if [ "$$WAVEDL_BATCH_EXIT" -eq 0 ]; then
     $setup
-    batch_exit=$$?
+    WAVEDL_BATCH_EXIT=$$?
 fi
-if [ "$$batch_exit" -eq 0 ]; then
+if [ "$$WAVEDL_BATCH_EXIT" -eq 0 ]; then
     $rendezvous
-    batch_exit=$$?
+    WAVEDL_BATCH_EXIT=$$?
 fi
-if [ "$$batch_exit" -eq 0 ]; then
-    $launch
-    training_exit=$$?
+if [ "$$WAVEDL_BATCH_EXIT" -eq 0 ] && [ "$$WAVEDL_INTERRUPT" -eq 0 ]; then
+    $launch &
+    WAVEDL_STEP=$$!
+    if [ "$$WAVEDL_INTERRUPT" -eq 1 ]; then wavedl_interrupt; fi
+    WAVEDL_WOKEN=1
+    while [ "$$WAVEDL_WOKEN" -eq 1 ]; do
+        WAVEDL_WOKEN=0
+        wait "$$WAVEDL_STEP"
+        WAVEDL_TRAINING_EXIT=$$?
+    done
 fi
 $stage_out
-stage_out_exit=$$?
+WAVEDL_STAGE_OUT_EXIT=$$?
 $exit_record
-if [ "$$batch_exit" -ne 0 ]; then exit "$$batch_exit"; fi
-if [ "$$training_exit" -ne 0 ]; then exit "$$training_exit"; fi
-exit "$$stage_out_exit"
+if [ "$$WAVEDL_BATCH_EXIT" -ne 0 ]; then exit "$$WAVEDL_BATCH_EXIT"; fi
+if [ "$$WAVEDL_TRAINING_EXIT" -ne 0 ]; then exit "$$WAVEDL_TRAINING_EXIT"; fi
+exit "$$WAVEDL_STAGE_OUT_EXIT"
 """)
 
 
@@ -253,7 +289,9 @@ class SlurmPlanner:
                     f"export {key}={shlex.quote(value)}"
                     for key, value in sorted(runtime.environment.items())
                 ),
-                restart_guard="" if site.requeue else '[ "$N" -eq 1 ] || exit 125',
+                restart_guard=""
+                if site.requeue
+                else '[ "$WAVEDL_ATTEMPT_NUMBER" -eq 1 ] || exit 125',
                 attempts=shlex.quote(str(execution / "attempts")),
                 working_directory=shlex.quote(working),
                 setup=" && ".join(f"{{ {command}; }}" for command in site.setup_commands)
@@ -266,10 +304,11 @@ class SlurmPlanner:
                     else ":"
                 ),
                 launch=self._launch(spec, topology),
+                interrupt=self._interrupt(topology),
                 stage_out=f"( {site.stage_out_command} )"
                 if site.stage_out_command
                 else ":",
-                exit_record=render_exit_record("A").rstrip("\n"),
+                exit_record=render_exit_record("WAVEDL_ATTEMPT").rstrip("\n"),
             ),
             topology=topology,
             resources=tuple(
@@ -356,14 +395,31 @@ class SlurmPlanner:
             launch = shlex.join(command)
         if spec.operation in RESULT_OPTIONS:
             option, file = RESULT_OPTIONS[spec.operation]
-            launch += f' {option} "$A/{file}"'
+            launch += f' {option} "$WAVEDL_ATTEMPT/{file}"'
         probe = (
             _cuda_probe(spec.runtime.python, topology.processes_per_machine)
             if spec.runtime.device == "cuda"
             else ""
         )
+        # Rank 0 may still be saving when another node's launcher exits 130.
         return (
             f"srun --nodes={machines} --ntasks={machines} --ntasks-per-node=1 "
-            f"--cpus-per-task={self.site.cpus_per_task} --kill-on-bad-exit=1 "
-            "bash -c " + shlex.quote(probe + "exec " + launch)
+            f"--cpus-per-task={self.site.cpus_per_task} --kill-on-bad-exit=0 "
+            f"--wait={_STEP_WAIT_SECONDS} "
+            "bash -c "
+            + shlex.quote(
+                probe
+                + 'printf \'%s\\n\' "$$" > "$WAVEDL_ATTEMPT/launcher.$SLURM_NODEID" && exec '
+                + launch
+            )
+        )
+
+    @staticmethod
+    def _interrupt(topology: Topology) -> str:
+        """SIGINT each node's launcher once, from a step beside training."""
+        machines = topology.num_machines
+        kill = 'kill -INT "$(cat -- "$WAVEDL_ATTEMPT/launcher.$SLURM_NODEID")"'
+        return (
+            f"timeout {_INTERRUPT_TIMEOUT_SECONDS} srun --overlap --nodes={machines} "
+            f"--ntasks={machines} --ntasks-per-node=1 bash -c {shlex.quote(kill)}"
         )

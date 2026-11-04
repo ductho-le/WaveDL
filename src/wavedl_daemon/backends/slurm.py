@@ -213,10 +213,11 @@ class SlurmBackend:
         return answer
 
     def cancel(self, run_id: RunId, handle: SlurmHandle, *, interrupt: bool) -> None:
-        """Interrupt the job's steps, or end the job. Blocking.
+        """Interrupt the job's training, or end the job. Blocking.
 
-        The name and user filters keep a reused job ID from cancelling another
-        job.
+        The interrupt is USR1 to the batch shell alone, which sends one SIGINT
+        to each node's launcher (see ``slurm_plan``). The name and user filters
+        keep a reused job ID from cancelling another job.
         """
         require_dispatch(self.dispatch_lock)
         if handle.owner != self.owner:
@@ -227,9 +228,8 @@ class SlurmBackend:
             f"--user={self.owner}",
             f"--name={job_name(run_id)}",
         )
-        # No --full/--batch: SIGINT reaches the srun steps, not the batch shell that writes the exit record.
         if interrupt:
-            argv += ("--signal=INT",)
+            argv += ("--batch", "--signal=USR1")
         try:
             self._query((*argv, handle.job_id))
         except ValueError as error:

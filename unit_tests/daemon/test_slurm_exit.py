@@ -14,10 +14,10 @@ def test_the_rendered_bash_writes_a_record_the_daemon_parses(tmp_path):
     paths.attempt(2).mkdir(parents=True)
     script = (
         "set -eu\n"
-        'A="$1"\n'
-        "batch_exit=0\n"
-        "training_exit=137\n"
-        "stage_out_exit=3\n" + render_exit_record("A")
+        'WAVEDL_ATTEMPT="$1"\n'
+        "WAVEDL_BATCH_EXIT=0\n"
+        "WAVEDL_TRAINING_EXIT=137\n"
+        "WAVEDL_STAGE_OUT_EXIT=3\n" + render_exit_record("WAVEDL_ATTEMPT")
     )
     subprocess.run(["bash", "-c", script, "bash", str(paths.attempt(2))], check=True, timeout=10)
     assert parse_exit_record(paths.exit_record(2).read_bytes()) == ExitRecord(0, 137, 3)

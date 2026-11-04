@@ -345,7 +345,7 @@ def test_a_failed_sbatch_may_have_queued_the_job_so_find_settles_it(environment)
     assert len(scheduler.commands("sbatch")) == 2
 
 
-def test_cancel_interrupts_the_steps_then_ends_the_job_after_the_grace(environment):
+def test_cancel_interrupts_training_then_ends_the_job_after_the_grace(environment):
     scheduler = environment.scheduler
     run_id, paths = submitted(environment)
     tick_until(environment, run_id, lambda head: isinstance(head.stage, Live))
@@ -357,7 +357,8 @@ def test_cancel_interrupts_the_steps_then_ends_the_job_after_the_grace(environme
         environment, run_id, lambda head: head.stage.cancel_delivered, advance=1
     )
     filters = ("--clusters=alpha", "--user=alice", f"--name={job_name(run_id)}")
-    assert scheduler.commands("scancel") == [("scancel", *filters, "--signal=INT", "4242")]
+    interrupt = ("scancel", *filters, "--batch", "--signal=USR1", "4242")
+    assert scheduler.commands("scancel") == [interrupt]
     assert status(head).state is RunState.STOPPING
     for _ in range(5):
         environment.now[0] += 1
@@ -376,8 +377,7 @@ def test_cancel_interrupts_the_steps_then_ends_the_job_after_the_grace(environme
     assert head.stage.exit.outcome is Outcome.CANCELLED and head.stage.exit.confirmed
     assert head.stage.exit.attempt_exit == ExitRecord(0, 130, 0)
     assert (head.stage.exit.exit_code, head.stage.exit.signal) == (130, None)
-    interrupts = [call for call in scheduler.commands("scancel") if "--signal=INT" in call]
-    assert len(interrupts) == 1
+    assert scheduler.commands("scancel").count(interrupt) == 1
 
 
 def test_a_completed_job_whose_exit_record_is_not_visible_completes(environment):
@@ -400,7 +400,7 @@ def test_cancelling_a_queued_job_ends_it_without_a_signal(environment):
     environment.service.cancel(run_id)
     tick_until(environment, run_id, lambda head: head.stage.cancel_delivered, advance=1)
     (scancel,) = scheduler.commands("scancel")
-    assert "--signal=INT" not in scancel
+    assert scancel == ("scancel", "--clusters=alpha", "--user=alice", f"--name={job_name(run_id)}", "4242")
     scheduler.controller = controller(target(run_id), "CANCELLED", code="0:15")
     head = tick_until(environment, run_id, lambda head: isinstance(head.stage, Ended))
     assert head.stage.exit.outcome is Outcome.CANCELLED

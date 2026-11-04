@@ -18,7 +18,7 @@ _RECORD = re.compile(rb"([0-9]{1,3}) ([0-9]{1,3}) ([0-9]{1,3})\n")
 
 
 def render_exit_record(attempt_var: str) -> str:
-    """Bash that records ``$batch_exit $training_exit $stage_out_exit``.
+    """Bash that records ``$WAVEDL_BATCH_EXIT $WAVEDL_TRAINING_EXIT $WAVEDL_STAGE_OUT_EXIT``.
 
     ``attempt_var`` names the shell variable holding the attempt directory.
     """
@@ -28,7 +28,7 @@ def render_exit_record(attempt_var: str) -> str:
     partial = f'"${{{attempt_var}}}/{EXIT_RECORD_FILE}.tmp"'
     return (
         "printf '%d %d %d\\n' "
-        '"$batch_exit" "$training_exit" "$stage_out_exit" '
+        '"$WAVEDL_BATCH_EXIT" "$WAVEDL_TRAINING_EXIT" "$WAVEDL_STAGE_OUT_EXIT" '
         f"> {partial} && mv -f {partial} {target}\n"
     )
 

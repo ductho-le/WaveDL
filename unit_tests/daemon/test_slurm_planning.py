@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import os
+import shlex
+import signal
 import subprocess
+import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
@@ -61,14 +65,14 @@ def test_plan_is_pure_and_round_trips(tmp_path):
     assert "#SBATCH --export=NIL" in plan.script
     assert "export SLURM_EXPORT_ENV=ALL" in plan.script
     assert f"--output_dir {request.working_directory}/output" in plan.script
-    assert '--metrics_jsonl "$A/metrics.jsonl"' in plan.script
+    assert '--metrics_jsonl "$WAVEDL_ATTEMPT/metrics.jsonl"' in plan.script
     assert "wavedl_daemon" not in plan.script and "scheduler-bind" not in plan.script
 
 
 def test_test_runs_save_their_evaluation_in_the_attempt(tmp_path):
     plan = planner().plan(spec(tmp_path, operation=Operation.TEST, device="auto"))
     assert "-m wavedl.test" in plan.script
-    assert '--metrics_json "$A/evaluation.json"' in plan.script
+    assert '--metrics_json "$WAVEDL_ATTEMPT/evaluation.json"' in plan.script
     assert "--metrics_jsonl" not in plan.script
 
 
@@ -167,7 +171,7 @@ def test_mapped_execution_paths_remain_separate_from_host_paths(tmp_path):
     run = f"/compute/shared/owned/{request.run_id}"
     assert "--data_path=/compute/shared/data.npz" in plan.script
     assert f"#SBATCH --output={run}/logs/slurm-%j.out" in plan.script
-    assert f"export A={run}/attempts/" in plan.script
+    assert f"export WAVEDL_ATTEMPT={run}/attempts/" in plan.script
     assert f"--output_dir {run}/output" in plan.script
     assert str(tmp_path) not in plan.script
 
@@ -182,7 +186,16 @@ TRAINER = """#!/bin/bash
 if [ "${SLURM_JWT+x}" = x ]; then exit 91; fi
 if [ "$1" = "-c" ]; then exit "${PROBE_EXIT:-0}"; fi
 printf '%s\\n' "$@" >> "$CAPTURE"
-printf '%s\\n' "${SPECIAL-}" > "$CAPTURE.env"
+if [ -n "${INTS-}" ]; then
+    # A launcher: stop on SIGINT after an emergency save, logging every SIGINT.
+    trap 'printf "INT %s\\n" "$SLURM_NODEID" >> "$INTS"; interrupted=1' INT
+    interrupted=0
+    printf 'ready %s\\n' "$SLURM_NODEID" >> "$INTS"
+    until [ "$interrupted" = 1 ]; do sleep 0.02; done
+    sleep 0.3
+    exit 130
+fi
+printf '%s\\n' "${SPECIAL-}" "${N-}" "${A-}" > "$CAPTURE.env"
 while [ "$#" -gt 0 ]; do
     if [ "$1" = --metrics_jsonl ]; then printf '{"epoch": 1, "val_loss": 0.5}\\n' > "$2"; fi
     shift
@@ -190,18 +203,42 @@ done
 exit "${TRAINING_EXIT:-0}"
 """
 FAKE_SLURM = {
-    "scontrol": "printf 'host0\\nhost1\\n'",
-    # One launcher task per machine, each with its own rank.
-    "srun": (
-        'test "${SLURM_JWT+x}" != x || exit 92\n'
-        'while [[ "$1" == --* ]]; do shift; done\n'
-        'for rank in $(seq 0 $((${FAKE_NODES:-1} - 1))); do SLURM_PROCID="$rank" "$@" || exit "$?"; done'
-    ),
+    "scontrol": "#!/bin/bash\nprintf 'host0\\nhost1\\n'",
+    # One task per machine, each with its own rank, started as slurmstepd does:
+    # not with the SIGINT a backgrounded srun ignores. Exits with the highest code.
+    "srun": f"""#!{sys.executable}
+import os, signal, subprocess, sys
+if "SLURM_JWT" in os.environ:
+    sys.exit(92)
+args = sys.argv[1:]
+with open(os.environ["SRUN_LOG"], "a") as log:
+    log.write(" ".join(args) + "\\n")
+while args[0].startswith("--"):
+    args.pop(0)
+def task(rank):
+    env = os.environ | {{"SLURM_PROCID": str(rank), "SLURM_NODEID": str(rank)}}
+    return subprocess.Popen(
+        args, env=env, preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL)
+    )
+codes = []
+if os.environ.get("FAKE_CONCURRENT"):
+    tasks = [task(rank) for rank in range(int(os.environ.get("FAKE_NODES", "1")))]
+    codes = [process.wait() for process in tasks]
+else:
+    for rank in range(int(os.environ.get("FAKE_NODES", "1"))):
+        codes.append(task(rank).wait())
+        if codes[-1]:
+            break
+sys.exit(max(128 - code if code < 0 else code for code in codes))
+""",
 }
 
 
-def batch(tmp_path, plan, *, restart=None, **environment):
-    """Run the plan's script as Slurm would on a node: fake srun, real Bash."""
+def batch(tmp_path, plan, *, restart=None, start=False, **environment):
+    """Run the plan's script as Slurm would on a node: fake srun, real Bash.
+
+    ``start`` returns the running process instead of its result.
+    """
     paths = plan.spec.paths
     for directory in (paths.run_dir, paths.output, paths.attempt(1).parent, paths.logs):
         directory.mkdir(parents=True, exist_ok=True)
@@ -210,7 +247,7 @@ def batch(tmp_path, plan, *, restart=None, **environment):
     if not bin_dir.exists():
         bin_dir.mkdir()
         for name, body in FAKE_SLURM.items():
-            (bin_dir / name).write_text("#!/bin/bash\n" + body + "\n")
+            (bin_dir / name).write_text(body)
             (bin_dir / name).chmod(0o700)
     env = os.environ | {
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -218,11 +255,14 @@ def batch(tmp_path, plan, *, restart=None, **environment):
         "SLURM_JOB_NODELIST": "host[0-1]",
         "SLURM_JWT": "scheduler-auth-secret",
         "CAPTURE": str(tmp_path / "argv"),
+        "SRUN_LOG": str(tmp_path / "srun.log"),
         **environment,
     }
     env.pop("SLURM_RESTART_COUNT", None)
     if restart is not None:
         env["SLURM_RESTART_COUNT"] = str(restart)
+    if start:
+        return subprocess.Popen(["bash", str(paths.submission_script)], env=env)
     return subprocess.run(
         ["bash", str(paths.submission_script)],
         env=env,
@@ -295,13 +335,17 @@ def test_exit_codes_are_recorded_independently_and_quoted_values_stay_inert(
         data_path="value ' $(touch INJECTED) $HOME.npz",
     )
     request = replace(
-        request, runtime=replace(request.runtime, environment={"SPECIAL": special})
+        request,
+        runtime=replace(
+            request.runtime, environment={"SPECIAL": special, "N": "mine", "A": "mine"}
+        ),
     )
     plan = planner(stage_out_command=f"exit {stage}").plan(request)
     result = batch(tmp_path, plan, TRAINING_EXIT=str(training))
     assert result.returncode == expected, result.stderr
     assert exit_record(plan, 1) == ExitRecord(0, training, stage)
-    assert (tmp_path / "argv.env").read_text().strip() == special
+    # The script's own variables never clobber the runtime environment.
+    assert (tmp_path / "argv.env").read_text().splitlines() == [special, "mine", "mine"]
     assert "$(touch INJECTED)" in (tmp_path / "argv").read_text()
     assert not (plan.spec.paths.run_dir / "INJECTED").exists()
     assert not (plan.spec.paths.run_dir / "ENV_INJECTED").exists()
@@ -344,3 +388,62 @@ def test_multinode_ranks_expand_on_each_node_without_the_scheduler_token(tmp_pat
     assert argv.count("--main_process_ip\nhost0\n") == 2
     assert argv.count(f"--metrics_jsonl\n{plan.spec.paths.metrics(1)}\n") == 2
     assert exit_record(plan, 1) == ExitRecord(0, 0, 0)
+
+
+def wait_for(predicate, *, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() > deadline:
+            pytest.fail("The batch script made no progress")
+        time.sleep(0.02)
+
+
+@posix
+def test_a_cancel_sends_each_launcher_exactly_one_sigint(tmp_path):
+    plan = planner(gpus_per_node=1).plan(
+        spec(tmp_path, device="cuda", python=stub(tmp_path)), topology=Topology(2, 1)
+    )
+    assert "--kill-on-bad-exit=0 --wait=120" in plan.script
+    paths, ints = plan.spec.paths, tmp_path / "ints"
+    job = batch(tmp_path, plan, start=True, FAKE_NODES="2", FAKE_CONCURRENT="1", INTS=str(ints))
+    try:
+        wait_for(lambda: ints.exists() and ints.read_text().count("ready") == 2)
+        pids = {
+            node: int(paths.attempt(1).joinpath(f"launcher.{node}").read_text())
+            for node in (0, 1)
+        }
+        assert len(set(pids.values())) == 2
+        # scancel --batch --signal=USR1, delivered twice as a retried cancel would.
+        job.send_signal(signal.SIGUSR1)
+        wait_for(lambda: "INT" in ints.read_text())
+        job.send_signal(signal.SIGUSR1)
+        assert job.wait(timeout=20) == 130
+    finally:
+        job.kill()
+    assert sorted(line for line in ints.read_text().splitlines() if line.startswith("INT")) == [
+        "INT 0",
+        "INT 1",
+    ]
+    assert exit_record(plan, 1) == ExitRecord(0, 130, 0)
+    overlap = [line for line in (tmp_path / "srun.log").read_text().splitlines() if "--overlap" in line]
+    assert overlap == [
+        "--overlap --nodes=2 --ntasks=2 --ntasks-per-node=1 bash -c "
+        'kill -INT "$(cat -- "$WAVEDL_ATTEMPT/launcher.$SLURM_NODEID")"'
+    ]
+
+
+@posix
+def test_a_cancel_before_training_starts_never_launches_it(tmp_path):
+    started = tmp_path / "setup started"
+    plan = planner(setup_commands=(f"touch {shlex.quote(str(started))} && sleep 0.5",)).plan(
+        spec(tmp_path, python=stub(tmp_path))
+    )
+    job = batch(tmp_path, plan, start=True)
+    try:
+        wait_for(started.exists)
+        job.send_signal(signal.SIGUSR1)
+        assert job.wait(timeout=20) == 125
+    finally:
+        job.kill()
+    assert exit_record(plan, 1) == ExitRecord(0, 125, 0)
+    assert not (tmp_path / "argv").exists()
