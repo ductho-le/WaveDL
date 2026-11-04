@@ -174,11 +174,6 @@ def test_wavedl_help_lists_serve():
         ),
         ("port", "Port 9000 is in use. Choose another port with --port.", 1),
         (
-            "permission",
-            "WaveDL cannot use its state folder. Check that it belongs to you and is private, or choose another with --state-root.",
-            1,
-        ),
-        (
             "other",
             "Daemon unavailable: check listener, private credentials and storage.",
             1,
@@ -193,7 +188,6 @@ def test_main_messages(monkeypatch, capsys, kind, message, code):
             "running": cli.AlreadyRunning(None),
             "ports": cli.PortUnavailable((8420, 8421)),
             "port": cli.PortUnavailable((9000,)),
-            "permission": PermissionError("private"),
             "other": ValueError("private"),
             "interrupt": KeyboardInterrupt(),
         }
@@ -207,6 +201,30 @@ def test_main_messages(monkeypatch, capsys, kind, message, code):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == (message + "\n" if message else "")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX state-root confidentiality")
+def test_public_state_root_is_refused_before_binding_or_database_write(
+    tmp_path, capsys
+):
+    state = tmp_path / "state"
+    state.mkdir(mode=0o755)
+    # A private harness umask must not turn this public-state witness into 0700.
+    state.chmod(0o755)
+    with socket.socket() as occupied:
+        occupied.bind(("127.0.0.1", 0))
+        occupied.listen()
+        port = str(occupied.getsockname()[1])
+        assert (
+            cli.main(["--state-root", str(state), "--port", port], open_browser=None)
+            == 1
+        )
+    assert capsys.readouterr().err == (
+        "WaveDL cannot use its state folder. Check that it belongs to you "
+        "and is private, or choose another with --state-root.\n"
+    )
+    assert state.stat().st_mode & 0o777 == 0o755
+    assert list(state.iterdir()) == []
 
 
 def test_busy_port_refuses_before_storage_or_factory(tmp_path):
@@ -432,6 +450,7 @@ def test_server_failure_after_startup_drains_owned_resources(tmp_path, failure):
 
 def test_second_serve_reports_already_running(tmp_path):
     settings = options(tmp_path)
+    settings.state_root.mkdir(mode=0o700)
     with (
         acquire_dispatch_lock(settings.state_root / "dispatch.lock"),
         pytest.raises(cli.AlreadyRunning),

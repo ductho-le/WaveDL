@@ -13,7 +13,6 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from wavedl_daemon import paths
 from wavedl_daemon.backends.local import LocalBackend
 from wavedl_daemon.events.broker import EventBroker
 from wavedl_daemon.execution.budget import BudgetExhausted, WorkBudget
@@ -70,9 +69,6 @@ class ServiceSession:
 
     def __enter__(self):
         self.settings.validate()
-        # Another user who can write the registry could plan commands as us.
-        if not paths.is_private(self.settings.state_root.stat()):
-            raise PermissionError("State root is accessible to other users")
         stack = ExitStack()
         self._stack = stack
         try:

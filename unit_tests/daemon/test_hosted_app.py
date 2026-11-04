@@ -119,24 +119,6 @@ async def until(check, seconds=5):
     pytest.fail("The hosted pump did not make bounded progress")
 
 
-@pytest.mark.skipif(os.name != "posix", reason="POSIX state-root confidentiality")
-def test_public_state_root_is_refused_without_chmod_or_database_write(tmp_path):
-    settings = Settings(tmp_path / "state", tmp_path / "runs")
-    settings.state_root.mkdir(mode=0o755)
-    # A private harness umask must not turn this public-state witness into 0700.
-    settings.state_root.chmod(0o755)
-    services = HostedServices(settings)
-
-    async def run():
-        with pytest.raises(StorageWorkError):
-            await services.start()
-        await services.close()
-
-    asyncio.run(run())
-    assert settings.state_root.stat().st_mode & 0o777 == 0o755
-    assert not (settings.state_root / "registry.db").exists()
-
-
 def test_old_daemon_database_is_refused_and_left_untouched(tmp_path):
     settings = Settings(tmp_path / "state", tmp_path / "runs")
     settings.state_root.mkdir(mode=0o700)

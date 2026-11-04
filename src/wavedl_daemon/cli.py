@@ -128,6 +128,15 @@ async def serve(
         if not separator or name in browse_roots or not Path(path).is_absolute():
             raise ValueError("Browse authority must be a unique name and absolute path")
         browse_roots[name] = Path(path)
+    # Another user who can write the registry could plan commands as us.
+    # Checked here because uvicorn reports a lifespan failure only as its own.
+    try:
+        state = settings.state_root.stat()
+    except FileNotFoundError:
+        pass  # Settings.validate creates it private.
+    else:
+        if not paths.is_private(state):
+            raise PermissionError("State root is accessible to other users")
     check_not_running(settings.state_root)
     token = (
         read_credential(options.credential_file)
