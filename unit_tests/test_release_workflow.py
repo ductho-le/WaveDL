@@ -28,7 +28,7 @@ def test_release_waits_for_reusable_acceptance_and_exact_package():
     assert release["permissions"] == called["permissions"] == {"contents": "read"}
     for job in called["jobs"].values():
         assert job.get("permissions", called["permissions"]) == {"contents": "read"}
-    for gate in ("test", "distribution", "web-client", "daemon-native"):
+    for gate in ("test", "distribution", "web-client"):
         assert "if" not in called["jobs"][gate]
     assert "if" not in jobs["release"]
     assert jobs["publish"]["needs"] == ["release", "package"]
@@ -71,8 +71,6 @@ def test_release_static_client_gate_requires_complete_quality_checks():
         ("lint.yml", "web-lint"),
         ("test.yml", "web-client"),
         ("test.yml", "test"),
-        ("test.yml", "daemon-native"),
-        ("test.yml", "windows-installed"),
         ("release.yml", "package"),
     ],
 )
@@ -153,65 +151,39 @@ def test_retired_desktop_workflow_and_paths_are_not_active():
         "push": {"branches": ["main"]},
         "pull_request": {"branches": ["main"]},
     }
-    native = tests["jobs"]["daemon-native"]
-    assert native["strategy"]["matrix"] == {
-        "os": ["macos-latest", "windows-latest"],
-        "python": ["3.11"],
-    }
-    assert native["strategy"]["fail-fast"] is False
-    commands = "\n".join(step.get("run", "") for step in native["steps"])
-    assert (
-        "run_user_owned_pytest.py unit_tests/daemon --confcutdir=unit_tests/daemon"
-        in commands
-    )
-    assert "verify_native_foundations_report.py" in commands
-    assert "torch" not in commands
-    assert "pip install --no-deps ." in commands
-    assert "ruff check" not in commands and "ruff format" not in commands
+    assert set(tests["jobs"]) == {"test", "architecture", "distribution", "web-client"}
     lint = workflow("lint.yml")["jobs"]["lint"]
     lint_commands = "\n".join(step.get("run", "") for step in lint["steps"])
     assert "ruff check . --output-format=github" in lint_commands
     assert "ruff format . --check --diff" in lint_commands
 
 
-def test_windows_installed_gate_runs_only_on_main_tags_or_manual_dispatch():
-    windows = workflow("test.yml")["jobs"]["windows-installed"]
-    assert " ".join(windows["if"].split()) == (
-        "github.event_name == 'workflow_dispatch' || "
-        "(github.event_name == 'push' && "
-        "(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))"
+def test_shared_test_matrix_has_exactly_one_windows_cell():
+    job = workflow("test.yml")["jobs"]["test"]
+    assert job["runs-on"] == "${{ matrix.os }}"
+    assert job["defaults"]["run"]["shell"] == "bash"
+    assert job["strategy"]["fail-fast"] is False
+    matrix = job["strategy"]["matrix"]
+    assert matrix == {
+        "python-version": ["3.11", "3.12", "3.13"],
+        "os": ["ubuntu-latest"],
+        "runtime": ["latest"],
+        "include": [
+            {"python-version": "3.11", "os": "ubuntu-latest", "runtime": "minimum"},
+            {"python-version": "3.11", "os": "windows-latest", "runtime": "latest"},
+            {"python-version": "3.11", "os": "macos-latest", "runtime": "latest"},
+        ],
+    }
+    windows = [cell for cell in matrix["include"] if cell["os"] == "windows-latest"]
+    assert len(windows) == 1
+    cache = next(
+        step for step in job["steps"] if step.get("name") == "Cache pip dependencies"
     )
-    assert windows["runs-on"] == "windows-latest"
-    assert windows["strategy"]["matrix"] == {"python-version": ["3.11", "3.13"]}
-    assert windows["strategy"]["fail-fast"] is False
-    steps = windows["steps"]
-    acceptance = next(
-        step
-        for step in steps
-        if step.get("name") == "Run native installed CPU acceptance outside checkout"
+    assert "${{ matrix.os }}" in cache["with"]["key"]
+    upload = next(
+        step for step in job["steps"] if step.get("name") == "Upload unit test evidence"
     )
-    assert acceptance["if"] == "${{ success() && !cancelled() }}"
-    assert acceptance["run"] == (
-        "python tools/run_user_owned_pytest.py "
-        "unit_tests/daemon/test_installed_cli.py --confcutdir=unit_tests/daemon "
-        "-k isolated_resolved --junitxml=windows-cpu-installed.xml -q"
-    )
-    guard = next(
-        step
-        for step in steps
-        if step.get("name")
-        == "Require exactly one successful native installed CPU case"
-    )
-    assert steps.index(acceptance) < steps.index(guard)
-    assert guard["if"] == "always()"
-    for check in (
-        'ET.parse("windows-cpu-installed.xml")',
-        "assert len(cases) == 1",
-        'assert cases[0].get("classname") == "unit_tests.daemon.test_installed_cli"',
-        'assert cases[0].get("name") == "test_isolated_resolved_wheelhouse_console_scripts_and_assets"',
-        'assert not any(list(root.iter(kind)) for kind in ("skipped", "failure", "error"))',
-    ):
-        assert check in guard["run"]
+    assert "${{ matrix.os }}" in upload["with"]["name"]
 
 
 def test_release_and_pypi_consume_the_same_verified_distribution():

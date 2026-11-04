@@ -1,6 +1,7 @@
 """Local plans refuse requests they cannot faithfully execute."""
 
 from dataclasses import replace
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -58,7 +59,10 @@ def test_selected_venv_is_preserved_and_plan_has_no_side_effects(tmp_path):
     request = spec(tmp_path, data_path="train data.npz", epochs=2)
     plan = LocalBackend().plan(request)
     assert plan.argv[0] == str(tmp_path / "venv" / "bin" / "python")
-    assert plan.argv[-2:] == ("--output_dir", f"{request.working_directory}/output")
+    assert plan.argv[-2:] == (
+        "--output_dir",
+        str(Path(request.working_directory) / "output"),
+    )
     assert f"--data_path={tmp_path / 'train data.npz'}" in plan.argv
     assert not (tmp_path / "owned").exists()
     assert "--cpu" in plan.argv

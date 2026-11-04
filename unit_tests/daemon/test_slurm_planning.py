@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from dataclasses import replace
+from pathlib import PureWindowsPath
 from uuid import uuid4
 
 import pytest
@@ -44,6 +45,9 @@ def spec(tmp_path, *, device="cpu", operation=Operation.TRAIN, python=None, **co
             python or str(tmp_path / "venv" / "bin" / "python"), "selected", device, {}
         ),
         submission_cwd=tmp_path,
+        storage_map=(StorageMapping(tmp_path.anchor, "/cluster"),)
+        if sys.platform == "win32"
+        else (),
     )
 
 
@@ -177,10 +181,60 @@ def test_mapped_execution_paths_remain_separate_from_host_paths(tmp_path):
     assert str(tmp_path) not in plan.script
 
 
+def test_posix_execution_paths_are_independent_of_windows_host_paths(
+    tmp_path, monkeypatch
+):
+    request = spec(tmp_path)
+    monkeypatch.setattr("wavedl_daemon.backends.contracts.Path", PureWindowsPath)
+    host = PureWindowsPath(r"C:\shared")
+    working = f"/compute/shared/owned/{request.run_id}"
+    request = replace(
+        request,
+        submission_directory=str(host),
+        run_directory=str(host / "owned" / request.run_id),
+        working_directory=working,
+        runtime=Runtime("/compute/shared/venv/bin/python", "selected", "cpu", {}),
+        resolved_config={"model": "cnn", "data_path": "/compute/shared/data.npz"},
+        storage_map=(StorageMapping(str(host), "/compute/shared"),),
+    )
+    plan = planner().plan(request)
+    assert f"#SBATCH --chdir={working}" in plan.script
+    assert f"#SBATCH --output={working}/logs/slurm-%j.out" in plan.script
+    assert f"export WAVEDL_ATTEMPT={working}/attempts/" in plan.script
+    assert f"--output_dir {working}/output" in plan.script
+    assert str(host) not in plan.script
+    assert plan == Plan.from_json(plan.to_json())
+
+
+@pytest.mark.parametrize("field", ["working_directory", "python"])
+def test_slurm_refuses_unmapped_windows_execution_paths(tmp_path, monkeypatch, field):
+    request = spec(tmp_path)
+    monkeypatch.setattr("wavedl_daemon.backends.contracts.Path", PureWindowsPath)
+    request = replace(
+        request,
+        submission_directory=r"C:\shared",
+        run_directory=rf"C:\shared\owned\{request.run_id}",
+    )
+    if field == "working_directory":
+        request = replace(request, working_directory=r"C:\shared\run")
+    else:
+        request = replace(
+            request,
+            runtime=Runtime(r"C:\venv\python.exe", "selected", "cpu", {}),
+        )
+    with pytest.raises(UnsupportedPlan, match="absolute POSIX paths"):
+        planner().plan(request)
+
+
 def test_unsafe_directive_paths_are_refused(tmp_path):
+    request = spec(tmp_path)
     for suffix in ("percent%", "quote'", 'quote"', "slash\\", "newline\n"):
         with pytest.raises(UnsupportedPlan):
-            planner().plan(spec(tmp_path / suffix))
+            planner().plan(
+                replace(
+                    request, working_directory=f"{request.working_directory}/{suffix}"
+                )
+            )
 
 
 TRAINER = """#!/bin/bash

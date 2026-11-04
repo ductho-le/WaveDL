@@ -109,8 +109,9 @@ def list_output(output: Path) -> Inventory:
 class OpenedArtifact:
     """One open file and the byte count the download promised."""
 
-    def __init__(self, stream: BinaryIO, filename: str):
+    def __init__(self, stream: BinaryIO, filename: str, source: Path):
         self.stream, self.filename = stream, filename
+        self._source = source
         self._identity = paths.file_identity(os.fstat(stream.fileno()))
         self.size = self._remaining = self._identity["st_size"]
 
@@ -118,9 +119,16 @@ class OpenedArtifact:
         if not self._remaining:
             return b""
         chunk = self.stream.read(min(CHUNK_BYTES, self._remaining))
-        # A rewrite in place can keep the size, so only the identity reveals it.
-        if not chunk or self._identity != paths.file_identity(
-            os.fstat(self.stream.fileno())
+        # A held Windows handle can retain an old last-write timestamp.
+        # Also stat the path afresh, without blocking a trainer's writes.
+        try:
+            current = paths.file_identity(self._source.stat())
+        except OSError:
+            raise ValueError("Artifact changed during download") from None
+        if (
+            not chunk
+            or self._identity != current
+            or self._identity != paths.file_identity(os.fstat(self.stream.fileno()))
         ):
             raise ValueError("Artifact changed during download")
         self._remaining -= len(chunk)
@@ -133,9 +141,10 @@ class OpenedArtifact:
 def open_output(output: Path, name: str) -> OpenedArtifact:
     parts = artifact_path(name)
     try:
-        stream = paths.open_regular(paths.inside(output, parts))
+        source = paths.inside(output, parts)
+        stream = paths.open_regular(source)
     except paths.UnsafePath:
         raise UnsafeArtifactPath("Invalid artifact path") from None
     except (FileNotFoundError, NotADirectoryError, ValueError):
         raise ArtifactNotFound("No such artifact") from None
-    return OpenedArtifact(stream, parts[-1])
+    return OpenedArtifact(stream, parts[-1], source)

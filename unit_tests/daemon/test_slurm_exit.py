@@ -1,6 +1,7 @@
 """The Slurm exit record, written by bash and read by the daemon."""
 
 import subprocess
+import sys
 
 import pytest
 
@@ -9,6 +10,10 @@ from wavedl_daemon.runs.layout import RunPaths
 from wavedl_daemon.runs.model import ExitRecord
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Executes the cluster's Bash exit writer against a real POSIX filesystem",
+)
 def test_the_rendered_bash_writes_a_record_the_daemon_parses(tmp_path):
     paths = RunPaths(tmp_path / "run dir")
     paths.attempt(2).mkdir(parents=True)

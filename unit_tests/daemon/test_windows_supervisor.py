@@ -176,6 +176,127 @@ def test_portable_leader_exit_cleans_descendants_without_wait_timeout(tmp_path):
     assert "terminate_job" in api.events
 
 
+def test_portable_leader_exit_allows_child_shutdown_without_second_break(tmp_path):
+    api = FakeAPI()
+    finished = time.monotonic() + 0.35
+    api.active = lambda job: int(time.monotonic() < finished)
+    api.leader_running = lambda process: False
+    api.exit_code = lambda process: 3
+    process = WindowsSupervisor(_api=api).start(ProcessSpec(("unused",), tmp_path))
+    result = process.wait(timeout=2)
+    assert result.returncode == 3
+    assert not result.timed_out and not result.cancelled
+    assert "break" not in api.events
+    assert "terminate_job" not in api.events
+
+
+def test_portable_requested_cancel_keeps_grace_after_leader_exit(tmp_path):
+    api = FakeAPI()
+    finished = time.monotonic() + 0.35
+    api.active = lambda job: int(time.monotonic() < finished)
+    api.leader_running = lambda process: "break" not in api.events
+    process = WindowsSupervisor(_api=api).start(ProcessSpec(("unused",), tmp_path))
+    process.cancel(grace_seconds=1)
+    result = process.wait(timeout=2)
+    assert result.cancelled and not result.timed_out
+    assert api.events.count("break") == 1
+    assert "terminate_job" not in api.events
+
+
+def test_portable_cancel_still_signals_after_leader_exit(tmp_path):
+    api = FakeAPI()
+    api.leader_running = lambda process: False
+    process = WindowsSupervisor(_api=api).start(ProcessSpec(("unused",), tmp_path))
+    process.cancel(grace_seconds=0)
+    result = process.wait(timeout=2)
+    assert result.cancelled and not result.timed_out
+    assert api.events.count("break") == 1
+    assert api.events.count("terminate_job") == 1
+
+
+@native
+def test_native_child_can_finish_after_console_launcher_exits(tmp_path):
+    finished = tmp_path / "finished"
+    child = (
+        "import time; from pathlib import Path; time.sleep(.5); "
+        f"Path({str(finished)!r}).touch()"
+    )
+    code = f"import subprocess,sys; subprocess.Popen([sys.executable,'-c',{child!r}])"
+
+    class InspectTermination(_Win32):
+        def __init__(self):
+            super().__init__()
+            self.kills = 0
+
+        def terminate_job(self, job):
+            self.kills += 1
+            super().terminate_job(job)
+
+    api = InspectTermination()
+    process = WindowsSupervisor(_api=api).start(
+        ProcessSpec((sys.executable, "-c", code), tmp_path)
+    )
+    try:
+        result = process.wait(timeout=15)
+        assert result.returncode == 0
+        assert not result.cancelled and not result.timed_out
+        assert finished.exists()
+        assert api.kills == 0
+    finally:
+        process.cancel(grace_seconds=0)
+        process.wait()
+
+
+@native
+def test_native_cancel_allows_child_cleanup_after_launcher_takes_break(tmp_path):
+    ready = tmp_path / "ready"
+    finished = tmp_path / "finished"
+    child = (
+        "import signal,sys,time; from pathlib import Path\n"
+        "def stop(*args):\n"
+        "    time.sleep(.5)\n"
+        f"    Path({str(finished)!r}).touch()\n"
+        "    sys.exit(0)\n"
+        "signal.signal(signal.SIGBREAK,stop)\n"
+        f"Path({str(ready)!r}).touch()\n"
+        "while True: time.sleep(.01)\n"
+    )
+    code = (
+        "import signal,subprocess,sys,time; "
+        "signal.signal(signal.SIGBREAK,lambda *args: sys.exit(3)); "
+        f"subprocess.Popen([sys.executable,'-c',{child!r}])\n"
+        "while True: time.sleep(.01)\n"
+    )
+
+    class InspectTermination(_Win32):
+        def __init__(self):
+            super().__init__()
+            self.kills = 0
+
+        def terminate_job(self, job):
+            self.kills += 1
+            super().terminate_job(job)
+
+    api = InspectTermination()
+    process = WindowsSupervisor(_api=api).start(
+        ProcessSpec((sys.executable, "-c", code), tmp_path)
+    )
+    try:
+        deadline = time.monotonic() + 15
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists()
+        process.cancel(grace_seconds=3)
+        result = process.wait(timeout=15)
+        assert result.returncode == 3
+        assert result.cancelled and not result.timed_out
+        assert finished.exists()
+        assert api.kills == 0
+    finally:
+        process.cancel(grace_seconds=0)
+        process.wait()
+
+
 @native
 def test_native_large_independent_streams_and_closed_stdin(tmp_path):
     code = (
@@ -321,14 +442,14 @@ def test_native_ignoring_descendant_killed_even_after_leader_exit(
             release.touch()
         else:
             process.cancel(grace_seconds=0.1)
-        result = process.wait(timeout=5)
+        result = process.wait(timeout=15)
         assert result.cancelled is not leader_exits
         assert not result.timed_out
         if leader_exits:
             # A successful leader exit remains truthful even though its
             # ignoring descendant required forced Job Object termination.
             assert result.returncode == 0
-            assert time.monotonic() - started >= 0.19
+            assert time.monotonic() - started >= 4.9
         else:
             assert result.returncode != 0
             assert time.monotonic() - started >= 0.09

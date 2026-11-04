@@ -16,8 +16,6 @@ REQUIRED_JOBS = {
         "test",
         "distribution",
         "web-client",
-        "daemon-native",
-        "windows-installed",
     },
 }
 

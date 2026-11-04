@@ -163,8 +163,15 @@ def environment(tmp_path):
 def submitted(environment):
     """A submitted run whose job the scheduler lists as pending, as after sbatch."""
     body = train_payload(epochs=4, model="cnn", data_path="data.npz") | {
-        "backend": "slurm"
+        "backend": "slurm",
+        "storage_map": [
+            {
+                "host_root": str(environment.service.settings.run_root),
+                "execution_root": "/cluster/runs",
+            }
+        ],
     }
+    body["runtime"]["python"] = "venv/bin/python"
     plan = environment.service.plan(body, str(uuid4()))
     run_id = RunId(plan.run_id)
     environment.scheduler.controller = controller(target(run_id), "PENDING")

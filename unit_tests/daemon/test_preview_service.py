@@ -380,24 +380,14 @@ def test_hosted_preview_midrequest_mutation_refuses_decoded_child_result(
 
     write_dataset(tmp_path)
     original_command = preview_service.run_command
-    original_bytes = (tmp_path / "data.npz").read_bytes()
-    decoded, denied = [], []
+    decoded = []
 
     def mutate_after_decode(spec, budget, *, token):
         result = original_command(spec, budget, token=token)
         assert result.returncode == 0
         decoded.append(json.loads(result.stdout))
-        try:
-            with (tmp_path / "data.npz").open("ab") as dataset:
-                dataset.write(b"changed-after-child-decode")
-        except PermissionError as error:
-            if (
-                os.name != "nt"
-                or error.errno != 13
-                or getattr(error, "winerror", None) not in {None, 32}
-            ):
-                raise
-            denied.append(True)
+        with (tmp_path / "data.npz").open("ab") as dataset:
+            dataset.write(b"changed-after-child-decode")
         return result
 
     monkeypatch.setattr(preview_service, "run_command", mutate_after_decode)
@@ -420,15 +410,8 @@ def test_hosted_preview_midrequest_mutation_refuses_decoded_child_result(
         ]
         result = client.post("/api/datasets/preview", json=request())
         assert decoded[0]["input_shape"] == [6, 4]
-        if os.name == "nt":
-            assert denied == [True]
-            assert result.status_code == 200, result.text
-            assert (tmp_path / "data.npz").read_bytes() == original_bytes
-            assert result.json()["input_shape"] == [6, 4]
-        else:
-            assert denied == []
-            assert result.status_code == 409, result.text
-            assert "scatter" not in result.text
+        assert result.status_code == 409, result.text
+        assert "scatter" not in result.text
         assert str(tmp_path) not in result.text
         assert services.pool.outstanding == 0
 

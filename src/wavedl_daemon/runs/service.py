@@ -15,7 +15,7 @@ import re
 import signal
 import threading
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
@@ -211,6 +211,10 @@ def build_spec(
                 relative = host.relative_to(Path(mapping.host_root))
             except ValueError:
                 continue
+            if PurePosixPath(mapping.execution_root).is_absolute():
+                return str(
+                    PurePosixPath(mapping.execution_root).joinpath(*relative.parts)
+                )
             return str(Path(mapping.execution_root) / relative)
         return str(host)
 

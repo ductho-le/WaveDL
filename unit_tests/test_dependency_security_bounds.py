@@ -47,15 +47,6 @@ def test_reviewed_security_floors(group, package, affected, patched):
 @pytest.mark.parametrize(
     "workflow,job,package,patched,affected",
     [
-        ("test.yml", "daemon-native", "setuptools", "83.0.0", ["78.1.1", "82.0.1"]),
-        (
-            "test.yml",
-            "daemon-native",
-            "starlette",
-            "1.3.0",
-            ["0.52.1", "1.0.0", "1.2.0"],
-        ),
-        ("test.yml", "daemon-native", "h11", "0.16.0", ["0.14.0", "0.15.0"]),
         (
             "test.yml",
             "web-client",

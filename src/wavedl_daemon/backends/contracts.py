@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Protocol
 
 from wavedl_daemon.runs.layout import RunPaths
@@ -84,9 +84,9 @@ class StorageMapping:
     execution_root: str
 
     def __post_init__(self):
-        if (
-            not Path(self.host_root).is_absolute()
-            or not Path(self.execution_root).is_absolute()
+        if not Path(self.host_root).is_absolute() or not (
+            Path(self.execution_root).is_absolute()
+            or PurePosixPath(self.execution_root).is_absolute()
         ):
             raise ValueError("Storage mapping roots must be absolute")
 
@@ -126,14 +126,18 @@ class RunSpec:
     def __post_init__(self):
         if not isinstance(self.operation, Operation):
             raise ValueError("Invalid operation")
-        for path in (
-            self.submission_directory,
-            self.run_directory,
-            self.working_directory,
-        ):
+        for path in (self.submission_directory, self.run_directory):
             if not Path(path).is_absolute():
                 raise ValueError("Run directories must be absolute")
-        if not Path(self.runtime.python).is_absolute():
+        if not (
+            Path(self.working_directory).is_absolute()
+            or PurePosixPath(self.working_directory).is_absolute()
+        ):
+            raise ValueError("Run directories must be absolute")
+        if not (
+            Path(self.runtime.python).is_absolute()
+            or PurePosixPath(self.runtime.python).is_absolute()
+        ):
             raise ValueError("Runtime interpreter must be resolved")
         if not isinstance(self.resolved_config, dict):
             raise ValueError("resolved_config must be an object")
@@ -147,7 +151,10 @@ class RunSpec:
 
     def execution_path(self, path: Path) -> str:
         """A path under the run directory, as the execution host sees it."""
-        return str(Path(self.working_directory) / path.relative_to(self.run_directory))
+        relative = path.relative_to(self.run_directory)
+        if PurePosixPath(self.working_directory).is_absolute():
+            return str(PurePosixPath(self.working_directory).joinpath(*relative.parts))
+        return str(Path(self.working_directory) / relative)
 
     def to_dict(self) -> dict:
         return json.loads(canonical_json(asdict(self)))
