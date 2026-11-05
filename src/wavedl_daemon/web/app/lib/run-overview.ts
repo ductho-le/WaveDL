@@ -34,10 +34,11 @@ type RunColumnBase<Key extends RunColumnId> = {
   initialDirection: RunSort['direction'];
 };
 
-export type RunColumn<Key extends RunColumnId = RunColumnId> = RunColumnBase<Key> & (
-  | { kind: 'text'; value: (run: RunView) => string | null }
-  | { kind: 'number'; value: (run: RunView) => number | null }
-);
+export type RunColumn<Key extends RunColumnId = RunColumnId> = RunColumnBase<Key> &
+  (
+    | { kind: 'text'; value: (run: RunView) => string | null }
+    | { kind: 'number'; value: (run: RunView) => number | null }
+  );
 
 export type RunColumnRegistry = {
   [Key in RunColumnId]: RunColumn<Key>;

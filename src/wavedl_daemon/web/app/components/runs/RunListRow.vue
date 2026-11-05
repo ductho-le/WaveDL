@@ -49,22 +49,43 @@ const { t, locale } = useI18n({ useScope: 'global' });
 const labels = useRunLabels();
 const created = computed(() => runCreatedAt(props.run));
 
-const exactTime = computed(() => created.value
-  ? new Intl.DateTimeFormat(locale.value, { dateStyle: 'medium', timeStyle: 'short' }).format(created.value)
-  : undefined);
+const exactTime = computed(() =>
+  created.value
+    ? new Intl.DateTimeFormat(locale.value, { dateStyle: 'medium', timeStyle: 'short' }).format(
+        created.value,
+      )
+    : undefined,
+);
 
-const shortTime = computed(() => created.value ? relativeTime(created.value, props.now, locale.value, 'short') : '–');
-const longTime = computed(() => created.value ? relativeTime(created.value, props.now, locale.value) : '–');
-const stateLabel = computed(() => `${t(runStateMessageKeys[props.run.state])}${props.stale ? t('runs.stale') : ''}${props.run.uncertainty ? t('runs.uncertain') : ''}`);
+const shortTime = computed(() =>
+  created.value ? relativeTime(created.value, props.now, locale.value, 'short') : '–',
+);
 
-const progressLabel = computed(() => props.run.progress
-  ? t('runs.progressComplete', { percent: new Intl.NumberFormat(locale.value, { style: 'percent', maximumFractionDigits: 0 }).format(props.run.progress.fraction) })
-  : t('runs.progressUnknown'));
+const longTime = computed(() =>
+  created.value ? relativeTime(created.value, props.now, locale.value) : '–',
+);
+
+const stateLabel = computed(
+  () =>
+    `${t(runStateMessageKeys[props.run.state])}${props.stale ? t('runs.stale') : ''}${props.run.uncertainty ? t('runs.uncertain') : ''}`,
+);
+
+const progressLabel = computed(() =>
+  props.run.progress
+    ? t('runs.progressComplete', {
+        percent: new Intl.NumberFormat(locale.value, {
+          style: 'percent',
+          maximumFractionDigits: 0,
+        }).format(props.run.progress.fraction),
+      })
+    : t('runs.progressUnknown'),
+);
 
 const metadata = computed(() => props.columns.filter((column) => column.id !== 'name'));
 
 function selectCell(event: MouseEvent) {
-  if (event.target instanceof Element && event.target.closest('button, [role="note"], a, input')) return;
+  if (event.target instanceof Element && event.target.closest('button, [role="note"], a, input'))
+    return;
   emit('select', props.run.run_id);
 }
 </script>
@@ -91,31 +112,89 @@ function selectCell(event: MouseEvent) {
         >
           {{ labels.title(run) }}<span class="sr-only">, {{ stateLabel }}</span>
         </button>
-        <span data-trailing :aria-hidden="!folded" :class="cn('inline-flex shrink-0 items-center gap-1.5 text-[0.7rem] text-muted-foreground tabular-nums', stale && 'opacity-60')">
-          <time class="shrink-0 whitespace-nowrap" :datetime="created?.toISOString()" :title="exactTime">{{ shortTime }}</time>
+        <span
+          data-trailing
+          :aria-hidden="!folded"
+          :class="
+            cn(
+              'inline-flex shrink-0 items-center gap-1.5 text-[0.7rem] text-muted-foreground tabular-nums',
+              stale && 'opacity-60',
+            )
+          "
+        >
+          <time
+            class="shrink-0 whitespace-nowrap"
+            :datetime="created?.toISOString()"
+            :title="exactTime"
+            >{{ shortTime }}</time
+          >
           <svg
             v-if="run.state === 'running'"
             viewBox="0 0 16 16"
             role="img"
             :aria-label="`${progressLabel}${stale ? t('runs.stale') : ''}`"
-            :class="cn('size-4 shrink-0 text-primary', !run.progress && 'animate-spin motion-reduce:animate-none')"
+            :class="
+              cn(
+                'size-4 shrink-0 text-primary',
+                !run.progress && 'animate-spin motion-reduce:animate-none',
+              )
+            "
           >
             <title>{{ progressLabel }}{{ stale ? t('runs.stale') : '' }}</title>
-            <circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="2" class="opacity-20" />
-            <circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" pathLength="1" :stroke-dasharray="`${run.progress?.fraction ?? 0.25} 1`" transform="rotate(-90 8 8)" />
+            <circle
+              cx="8"
+              cy="8"
+              r="5.5"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              class="opacity-20"
+            />
+            <circle
+              cx="8"
+              cy="8"
+              r="5.5"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              pathLength="1"
+              :stroke-dasharray="`${run.progress?.fraction ?? 0.25} 1`"
+              transform="rotate(-90 8 8)"
+            />
           </svg>
-          <CircleX v-else-if="run.state === 'failed'" class="size-4 shrink-0 text-destructive" role="img" :aria-label="t('runs.failed')" />
+          <CircleX
+            v-else-if="run.state === 'failed'"
+            class="size-4 shrink-0 text-destructive"
+            role="img"
+            :aria-label="t('runs.failed')"
+          />
           <span v-else class="size-4 shrink-0" aria-hidden="true" />
         </span>
       </div>
     </td>
-    <td v-for="column in metadata" :key="column.id" data-metadata class="p-0" :aria-hidden="folded" :inert="folded">
+    <td
+      v-for="column in metadata"
+      :key="column.id"
+      data-metadata
+      class="p-0"
+      :aria-hidden="folded"
+      :inert="folded"
+    >
       <div v-if="column.id === 'state'" :class="cn(styles.cell, styles.state)">
         <RunStateChip :run="run" :stale="stale" />
       </div>
       <div v-else :class="cn(styles.cell, 'flex items-center text-muted-foreground')">
-        <time v-if="column.id === 'created'" class="truncate" :datetime="created?.toISOString()" :title="exactTime">{{ longTime }}</time>
-        <span v-else class="truncate" :title="String(column.value(run) ?? '–')">{{ column.value(run) ?? '–' }}</span>
+        <time
+          v-if="column.id === 'created'"
+          class="truncate"
+          :datetime="created?.toISOString()"
+          :title="exactTime"
+          >{{ longTime }}</time
+        >
+        <span v-else class="truncate" :title="String(column.value(run) ?? '–')">{{
+          column.value(run) ?? '–'
+        }}</span>
       </div>
     </td>
   </tr>

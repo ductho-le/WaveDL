@@ -53,12 +53,15 @@ function backendLabel(backend: string): string {
   return key === undefined ? backend : t(key);
 }
 
-const props = withDefaults(defineProps<{
-  snapshot: RunMonitorSnapshot;
-  now?: Date;
-  back?: boolean;
-  animateEntrance?: boolean;
-}>(), { back: false, animateEntrance: true });
+const props = withDefaults(
+  defineProps<{
+    snapshot: RunMonitorSnapshot;
+    now?: Date;
+    back?: boolean;
+    animateEntrance?: boolean;
+  }>(),
+  { back: false, animateEntrance: true },
+);
 
 const title = useTemplateRef<HTMLElement>('title');
 
@@ -92,10 +95,12 @@ const metricsUnconfirmed = computed(
 );
 
 const metricSummary = computed(() =>
-  metricsUnavailable.value ? { progress: null, best: null, latest: null } : {
-    ...props.snapshot.summary,
-    progress: props.snapshot.summary.progress ?? props.snapshot.run?.progress ?? null,
-  },
+  metricsUnavailable.value
+    ? { progress: null, best: null, latest: null }
+    : {
+        ...props.snapshot.summary,
+        progress: props.snapshot.summary.progress ?? props.snapshot.run?.progress ?? null,
+      },
 );
 
 const canCancel = computed(() =>
@@ -146,7 +151,9 @@ const streamLabel = computed(() => t(runStreamMessageKeys[props.snapshot.stream]
       :class="cn(styles.runHero)"
       :initial="animateEntrance ? { opacity: 0, y: 12 } : false"
       :animate="{ opacity: 1, y: 0 }"
-      :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 300, damping: 30 }"
+      :transition="
+        reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 300, damping: 30 }
+      "
     >
       <div class="flex items-center gap-[0.6rem]">
         <h2 class="flex-1 text-muted-foreground text-[0.78rem] font-semibold tracking-[0.01em]">
@@ -171,7 +178,11 @@ const streamLabel = computed(() => t(runStreamMessageKeys[props.snapshot.stream]
           ><component :is="back ? ArrowLeft : X" aria-hidden="true"
         /></Button>
       </div>
-      <h3 ref="title" tabindex="-1" class="-mt-1 wrap-anywhere text-[clamp(1.35rem,_2.4vw,_1.75rem)] font-[650] tracking-[-0.03em] leading-[1.15] outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      <h3
+        ref="title"
+        tabindex="-1"
+        class="-mt-1 wrap-anywhere text-[clamp(1.35rem,_2.4vw,_1.75rem)] font-[650] tracking-[-0.03em] leading-[1.15] outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
         {{ snapshot.run ? labels.title(snapshot.run) : t('runs.loadingRuns') }}
       </h3>
       <template v-if="snapshot.run">

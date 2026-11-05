@@ -249,13 +249,7 @@ describe.each(['get', 'list'])('run progress through %s', (method) => {
     const body = { ...matrixRun, ...fields };
 
     const api = new DaemonApi(origin, {}, async (url) =>
-      json(
-        String(url).endsWith('/health')
-          ? health
-          : method === 'list'
-            ? { runs: [body] }
-            : body,
-      ),
+      json(String(url).endsWith('/health') ? health : method === 'list' ? { runs: [body] } : body),
     );
 
     api.setToken(token);

@@ -18,14 +18,26 @@ const emit = defineEmits<{
 }>();
 
 const {
-  runs, selected, loading, message, page, staleRunIds, lastRefreshed,
-  refresh, select, replay, cancel, close, pause, resume,
+  runs,
+  selected,
+  loading,
+  message,
+  page,
+  staleRunIds,
+  lastRefreshed,
+  refresh,
+  select,
+  replay,
+  cancel,
+  close,
+  pause,
+  resume,
 } = useRuns(props.api, (error) => emit('connectionError', error), true);
 
 const { isActive } = usePageActive(resume, pause);
 const root = useTemplateRef<HTMLElement>('root');
 const detail = useTemplateRef('detail');
-const { width } = useElementSize(() => isActive.value ? root.value : null);
+const { width } = useElementSize(() => (isActive.value ? root.value : null));
 const stacked = computed(() => width.value > 0 && width.value < 720);
 const activeRunId = computed(() => props.runId);
 const entered = shallowRef(false);
@@ -56,19 +68,35 @@ async function focusDetail() {
   if (isActive.value && activeRunId.value) detail.value?.focusTitle();
 }
 
-const overlayContent = '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [role="combobox"], [role="tooltip"], [data-slot="popover-content"], [data-slot="dropdown-menu-content"], [data-slot="combobox-content"]';
+const overlayContent =
+  '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [role="combobox"], [role="tooltip"], [data-slot="popover-content"], [data-slot="dropdown-menu-content"], [data-slot="combobox-content"]';
 
 function onEscape(event: KeyboardEvent) {
-  if (event.key !== 'Escape' || !isActive.value || !activeRunId.value || event.defaultPrevented || event.isComposing) return;
+  if (
+    event.key !== 'Escape' ||
+    !isActive.value ||
+    !activeRunId.value ||
+    event.defaultPrevented ||
+    event.isComposing
+  )
+    return;
 
-  if (shellLayout.commandPaletteOpen.value || shellLayout.isFocusMode.value || (!shellLayout.isDockedLayout.value && shellLayout.isPanelSheetVisible.value)) return;
+  if (
+    shellLayout.commandPaletteOpen.value ||
+    shellLayout.isFocusMode.value ||
+    (!shellLayout.isDockedLayout.value && shellLayout.isPanelSheetVisible.value)
+  )
+    return;
 
   if (event.target instanceof Element && event.target.closest(overlayContent)) return;
 
-  const openOverlay = Array.from(document.querySelectorAll<HTMLElement>(overlayContent)).some((element) =>
-    element.dataset.state !== 'closed' &&
-    (element.getAttribute('role') !== 'combobox' || element.getAttribute('aria-expanded') === 'true') &&
-    !element.closest('[inert], [aria-hidden="true"]') && element.getClientRects().length > 0,
+  const openOverlay = Array.from(document.querySelectorAll<HTMLElement>(overlayContent)).some(
+    (element) =>
+      element.dataset.state !== 'closed' &&
+      (element.getAttribute('role') !== 'combobox' ||
+        element.getAttribute('aria-expanded') === 'true') &&
+      !element.closest('[inert], [aria-hidden="true"]') &&
+      element.getClientRects().length > 0,
   );
 
   if (openOverlay) return;
@@ -76,21 +104,28 @@ function onEscape(event: KeyboardEvent) {
   dismiss();
 }
 
-watch(() => props.runId, (runId, previous) => {
-  if (previous !== undefined) entered.value = true;
+watch(
+  () => props.runId,
+  (runId, previous) => {
+    if (previous !== undefined) entered.value = true;
 
-  if (runId) select(runId);
-  else close();
-}, { immediate: true });
+    if (runId) select(runId);
+    else close();
+  },
+  { immediate: true },
+);
 
-watch(() => selected.value?.message, (error) => {
-  if (error instanceof DaemonApiError && error.code === 'http' && error.status === 404) {
-    const id = activeRunId.value;
-    close();
+watch(
+  () => selected.value?.message,
+  (error) => {
+    if (error instanceof DaemonApiError && error.code === 'http' && error.status === 404) {
+      const id = activeRunId.value;
+      close();
 
-    if (id) emit('unknownRun', id);
-  }
-});
+      if (id) emit('unknownRun', id);
+    }
+  },
+);
 </script>
 
 <template>
