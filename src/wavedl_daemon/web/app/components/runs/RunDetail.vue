@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { cn } from '@/lib/utils';
-import { motion } from 'motion-v';
-import { Check, Copy, OctagonX, RotateCcw, ScrollText, X } from '@lucide/vue';
+import { motion, useReducedMotion } from 'motion-v';
+import { ArrowLeft, Check, Copy, OctagonX, RotateCcw, ScrollText, X } from '@lucide/vue';
 import { canRequestCancellation, type RunMonitorSnapshot } from '../../lib/run-monitor';
 import { pathName, runCreatedAt, shortRunId } from '../../lib/run-overview';
 import {
@@ -45,6 +45,7 @@ const { clientMessage } = useClientMessages();
 const shellLayout = useShellLayout();
 const { isActive } = usePageActive();
 const labels = useRunLabels();
+const reducedMotion = useReducedMotion();
 
 function backendLabel(backend: string): string {
   const key = Object.entries(runBackendMessageKeys).find(([name]) => name === backend)?.[1];
@@ -52,7 +53,20 @@ function backendLabel(backend: string): string {
   return key === undefined ? backend : t(key);
 }
 
-const props = defineProps<{ snapshot: RunMonitorSnapshot; now?: Date }>();
+const props = withDefaults(defineProps<{
+  snapshot: RunMonitorSnapshot;
+  now?: Date;
+  back?: boolean;
+  animateEntrance?: boolean;
+}>(), { back: false, animateEntrance: true });
+
+const title = useTemplateRef<HTMLElement>('title');
+
+function focusTitle() {
+  title.value?.focus({ preventScroll: true });
+}
+
+defineExpose({ focusTitle });
 
 defineEmits<{ cancel: []; replay: []; close: [] }>();
 
@@ -78,7 +92,10 @@ const metricsUnconfirmed = computed(
 );
 
 const metricSummary = computed(() =>
-  metricsUnavailable.value ? { progress: null, best: null, latest: null } : props.snapshot.summary,
+  metricsUnavailable.value ? { progress: null, best: null, latest: null } : {
+    ...props.snapshot.summary,
+    progress: props.snapshot.summary.progress ?? props.snapshot.run?.progress ?? null,
+  },
 );
 
 const canCancel = computed(() =>
@@ -127,9 +144,9 @@ const streamLabel = computed(() => t(runStreamMessageKeys[props.snapshot.stream]
   >
     <motion.header
       :class="cn(styles.runHero)"
-      :initial="{ opacity: 0, y: 12 }"
+      :initial="animateEntrance ? { opacity: 0, y: 12 } : false"
       :animate="{ opacity: 1, y: 0 }"
-      :transition="{ type: 'spring', stiffness: 300, damping: 30 }"
+      :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 300, damping: 30 }"
     >
       <div class="flex items-center gap-[0.6rem]">
         <h2 class="flex-1 text-muted-foreground text-[0.78rem] font-semibold tracking-[0.01em]">
@@ -148,18 +165,16 @@ const streamLabel = computed(() => t(runStreamMessageKeys[props.snapshot.stream]
           variant="ghost"
           size="icon"
           class="rounded-full text-muted-foreground"
-          :aria-label="t('runs.close')"
-          :title="t('runs.close')"
+          :aria-label="back ? t('runs.back') : t('runs.close')"
+          :title="back ? t('runs.back') : t('runs.close')"
           @click="$emit('close')"
-          ><X aria-hidden="true"
+          ><component :is="back ? ArrowLeft : X" aria-hidden="true"
         /></Button>
       </div>
+      <h3 ref="title" tabindex="-1" class="-mt-1 wrap-anywhere text-[clamp(1.35rem,_2.4vw,_1.75rem)] font-[650] tracking-[-0.03em] leading-[1.15] outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        {{ snapshot.run ? labels.title(snapshot.run) : t('runs.loadingRuns') }}
+      </h3>
       <template v-if="snapshot.run">
-        <h3
-          class="-mt-1 wrap-anywhere text-[clamp(1.35rem,_2.4vw,_1.75rem)] font-[650] tracking-[-0.03em] leading-[1.15]"
-        >
-          {{ labels.title(snapshot.run) }}
-        </h3>
         <ul :class="cn(styles.runHeroFacts)">
           <li v-for="fact in facts" :key="fact">{{ fact }}</li>
           <li v-if="created" :title="created.relative ?? undefined">
