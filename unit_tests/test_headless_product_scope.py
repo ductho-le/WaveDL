@@ -37,6 +37,7 @@ def test_web_validation_keeps_only_daemon_client_logic():
         "result-operations",
         "workstation-controls",
         "plot-series",
+        "dataset-suggestions",
     }
     assert not list((web / "test/generated").glob("*.test.mjs"))
 

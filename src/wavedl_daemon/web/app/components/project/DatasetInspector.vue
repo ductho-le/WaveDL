@@ -1,134 +1,105 @@
 <script setup lang="ts">
 import { cn } from '@/lib/utils';
-import { motion } from 'motion-v';
-import { ChevronRight, FileStack } from '@lucide/vue';
+import { AnimatePresence, motion } from 'motion-v';
+import { ArrowRight, ChevronRight, FileStack } from '@lucide/vue';
 import type { ConnectionSession } from '../../lib/connection-session';
 import type { DataSelection } from '../../lib/catalog-api';
 import type { DatasetInspection } from '../../lib/dataset-inspection';
+import { pathName } from '../../lib/run-overview';
+import { datasetInputShape, datasetOutputValues } from '../../lib/dataset-suggestions';
 
 const props = defineProps<{
   session: ConnectionSession;
   selection: DataSelection | null;
   inspection: DatasetInspection | null;
 }>();
-
 const emit = defineEmits<{
   select: [selection: DataSelection];
   inspected: [inspection: DatasetInspection | null, selection: DataSelection | null];
 }>();
-
-const { t } = useI18n({ useScope: 'global' });
-
-const name = computed(() => props.selection?.path.split(/[\\/]/).filter(Boolean).at(-1) ?? '');
-
+const { t, locale } = useI18n({ useScope: 'global' });
+const editing = shallowRef(!props.selection);
+const root = useTemplateRef<HTMLElement>('root');
+const reduceMotion = useReducedMotion();
+const { info: restoredInfo, busy, failed } = useDatasetInspection(
+  () => props.session, () => props.inspection ? null : props.selection,
+);
+const info = computed(() => props.inspection ?? restoredInfo.value);
+const output = computed(() => info.value ? datasetOutputValues(info.value.outputShape) : null);
 const stats = computed(() => {
-  const info = props.inspection;
+  const current = info.value;
 
-  if (!info) return [];
+  if (!current) return null;
 
-  return [
-    { label: t('builder.samples'), value: info.numSamples.toLocaleString() },
-    { label: t('builder.inputShape'), value: info.inputShape.join(' × ') || '—' },
-    { label: t('builder.targetShape'), value: info.outputShape.join(' × ') || '—' },
-    { label: t('builder.format'), value: info.format.toUpperCase() },
-  ];
+  return {
+    samples: current.numSamples.toLocaleString(locale.value),
+    input: datasetInputShape(current.inputShape),
+    output: output.value?.toLocaleString(locale.value) ?? '—',
+  };
 });
 
-const projectStyles = {
-  datasetLayout: cn(
-    'grid grid-cols-[minmax(0,_1.5fr)_minmax(16rem,_1fr)] [align-items:start] gap-4',
-    '[@media(max-width:_56rem)]:grid-cols-1',
+watch(restoredInfo, (value) => {
+  if (value && props.selection) emit('inspected', value, toRaw(props.selection));
+});
+watch(() => props.selection, (value) => { editing.value = !value; });
+
+function confirm(selection: DataSelection) {
+  editing.value = false;
+  emit('select', selection);
+}
+
+function focusPicker() {
+  root.value?.querySelector<HTMLInputElement>('input[type="search"]')?.focus();
+}
+
+const styles = {
+  stat: cn(
+    'min-w-28 flex-1 rounded-xl px-4 py-3 text-center',
+    'bg-[color-mix(in_srgb,var(--foreground)_4.5%,transparent)]',
+    '[&_strong]:block [&_strong]:text-2xl [&_strong]:font-semibold [&_strong]:tracking-tight',
+    '[&_strong]:tabular-nums [&_strong]:[overflow-wrap:anywhere]',
+    '[&_span]:mt-0.5 [&_span]:block [&_span]:text-xs [&_span]:text-muted-foreground',
   ),
-  datasetFile: cn(
-    'grid flex-none place-items-center rounded-[0.65rem] size-[2.6rem] text-white',
-    '[background:linear-gradient(160deg,_#35c46a,_#1f9d55)] shadow-[inset_0_1px_0_rgb(255_255_255_/_0.25)] [&_svg]:size-5',
-  ),
-  datasetEmptyGlyph: cn(
-    'grid flex-none place-items-center rounded-[0.65rem] size-11 mb-[0.4rem] text-muted-foreground',
-    '[background:color-mix(in_srgb,_var(--foreground)_5%,_transparent)] [&_svg]:size-[1.3rem]',
-  ),
-  datasetCard: cn('p-[1.1rem]'),
-  datasetStat: cn(
-    'py-[0.6rem] px-3 rounded-lg [background:color-mix(in_srgb,_var(--foreground)_4.5%,_transparent)]',
-    '[&_dt]:text-muted-foreground [&_dt]:text-[0.7rem] [&_dd]:m-[0.15rem_0_0] [&_dd]:text-[0.95rem] [&_dd]:font-semibold',
-    '[&_dd]:tabular-nums [&_dd]:[overflow-wrap:anywhere]',
-  ),
-  datasetEmpty: cn(
-    'flex min-h-52 flex-col items-center justify-center gap-[0.35rem] p-6 rounded-[1rem]',
-    '[border:1.5px_dashed_color-mix(in_srgb,_var(--foreground)_16%,_transparent)] text-center',
-  ),
-  datasetDetailsTrigger: cn(
-    'flex w-full items-center gap-[0.6rem] py-3 px-4 text-[0.85rem] font-medium',
-    '[&:hover]:[background:color-mix(in_srgb,_var(--foreground)_3%,_transparent)]',
-    "[&[data-state='open']_.dataset-details-chevron]:[transform:rotate(90deg)]",
-  ),
-  datasetDetailsChevron: cn(
-    'size-4 text-muted-foreground [transition:transform_260ms_cubic-bezier(0.22,_1,_0.36,_1)]',
+  file: cn('grid size-11 shrink-0 place-items-center rounded-xl bg-[color-mix(in_srgb,var(--primary)_10%,transparent)] text-primary [&_svg]:size-5'),
+  trigger: cn(
+    'flex w-full items-center gap-2 rounded-lg py-3 text-sm text-muted-foreground',
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+    '[&[data-state=open]_svg]:rotate-90',
   ),
 };
 </script>
+
 <template>
   <InspectorPanel :title="t('builder.datasetTitle')" :description="t('builder.datasetDescription')">
-    <div :class="projectStyles.datasetLayout">
-      <DatasetPathPicker
-        :session="session"
-        :label="t('project.trainingDataset')"
-        :selected="selection"
-        @select="emit('select', $event)"
-      />
-
-      <aside class="flex min-w-0 flex-col gap-3" :aria-label="t('project.dataset')">
-        <motion.div
-          v-if="selection"
-          :key="selection.path"
-          :class="cn('surface-group', projectStyles.datasetCard)"
-          :initial="{ opacity: 0, y: 10, scale: 0.98 }"
-          :animate="{ opacity: 1, y: 0, scale: 1 }"
-          :transition="{ type: 'spring', stiffness: 380, damping: 32 }"
-        >
-          <div class="flex items-start gap-3">
-            <span :class="projectStyles.datasetFile"><FileStack aria-hidden="true" /></span>
-            <div class="min-w-0">
-              <p class="truncate text-[1.05rem] font-semibold" data-testid="selected-dataset">
-                {{ name }}
-              </p>
-              <p class="mt-0.5 font-mono text-[0.7rem] break-all text-muted-foreground">
-                {{ selection.root }} / {{ selection.relativePath }}
-              </p>
-            </div>
-          </div>
-          <dl v-if="stats.length" class="mt-4 grid grid-cols-2 gap-2">
-            <div v-for="item in stats" :key="item.label" :class="projectStyles.datasetStat">
-              <dt>{{ item.label }}</dt>
-              <dd>{{ item.value }}</dd>
-            </div>
-          </dl>
+    <div ref="root" class="min-w-0">
+      <AnimatePresence mode="wait" :initial="false">
+        <motion.div v-if="editing" key="picker" :initial="{ opacity: 0, height: 0 }" :animate="{ opacity: 1, height: 'auto' }" :exit="{ opacity: 0, height: 0 }" :transition="{ duration: reduceMotion ? 0 : 0.22 }" @animation-complete="focusPicker">
+          <DatasetPathPicker :session="session" :label="t('project.trainingDataset')" :selected="selection" @select="confirm" @inspected="(inspection, current) => emit('inspected', inspection, current)" />
+          <Button v-if="selection" type="button" variant="ghost" size="sm" class="mt-3" @click="editing = false">{{ t('datasets.keepCurrent') }}</Button>
         </motion.div>
-        <div v-else :class="projectStyles.datasetEmpty" data-testid="selected-dataset">
-          <span :class="projectStyles.datasetEmptyGlyph"><FileStack aria-hidden="true" /></span>
-          <p class="text-[0.95rem] font-medium">{{ t('builder.noDataset') }}</p>
-          <p class="max-w-[28ch] text-xs text-muted-foreground">{{ t('builder.noDatasetHelp') }}</p>
-        </div>
-
-        <Collapsible class="surface-group overflow-hidden" :unmount-on-hide="false">
-          <CollapsibleTrigger :class="projectStyles.datasetDetailsTrigger">
-            <ChevronRight
-              :class="cn('dataset-details-chevron', projectStyles.datasetDetailsChevron)"
-              aria-hidden="true"
-            />
-            {{ t('builder.headerDetails') }}
-          </CollapsibleTrigger>
-          <CollapsibleContent class="collapsible-motion">
-            <div class="border-t border-[color-mix(in_srgb,var(--foreground)_10%,transparent)] p-4">
-              <DatasetInfoPanel
-                :session="session"
-                :selection="selection"
-                @inspected="(inspection, current) => emit('inspected', inspection, current)"
-              />
+        <motion.div v-else-if="selection" key="summary" class="surface-group p-5" :initial="{ opacity: 0, y: 6 }" :animate="{ opacity: 1, y: 0 }" :exit="{ opacity: 0, y: -6 }" :transition="{ duration: reduceMotion ? 0 : 0.18 }">
+          <div class="flex items-start gap-3">
+            <span :class="styles.file"><FileStack aria-hidden="true" /></span>
+            <div class="min-w-0 flex-1">
+              <p class="break-all text-base font-semibold" data-testid="selected-dataset">{{ pathName(selection.path) }}</p>
+              <p class="mt-1 break-all font-mono text-xs text-muted-foreground">{{ selection.root }} / {{ selection.relativePath }}</p>
             </div>
-          </CollapsibleContent>
-        </Collapsible>
-      </aside>
+            <Button type="button" variant="outline" size="sm" @click="editing = true">{{ t('datasets.change') }}</Button>
+          </div>
+          <div v-if="stats" class="mt-5 flex flex-wrap items-center gap-2">
+            <p :class="styles.stat"><strong>{{ stats.samples }}</strong><span>{{ t('datasets.samplesLabel') }}</span></p>
+            <p :class="styles.stat"><strong>{{ stats.input }}</strong><span>{{ t('datasets.eachInputLabel') }}</span></p>
+            <ArrowRight class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <p :class="styles.stat"><strong>{{ stats.output }}</strong><span>{{ t('datasets.predictLabel', output ?? 0) }}</span></p>
+          </div>
+          <Skeleton v-else-if="busy" class="mt-5 h-5 max-w-80" :aria-label="t('datasets.headerLoading')" />
+          <p v-else-if="failed" role="status" class="mt-4 text-sm text-muted-foreground">{{ t('datasets.summaryUnavailable') }}</p>
+          <Collapsible v-if="info" class="mt-3 border-t">
+            <CollapsibleTrigger :class="styles.trigger"><ChevronRight class="size-4 transition-transform" aria-hidden="true" />{{ t('datasets.technicalDetails') }}</CollapsibleTrigger>
+            <CollapsibleContent class="collapsible-motion"><DatasetInfoPanel :inspection="info" class="pb-2" /></CollapsibleContent>
+          </Collapsible>
+        </motion.div>
+      </AnimatePresence>
     </div>
   </InspectorPanel>
 </template>
