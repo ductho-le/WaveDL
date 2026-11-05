@@ -22,12 +22,16 @@ export function quotePosix(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-/** A standalone host command is not a daemon plan or a scheduler submission. */
+/**
+ * A standalone `wavedl-train` command for the installed CLI, listing only the
+ * options that differ from upstream defaults. It is not a daemon plan.
+ */
 export function trainingCommand(draft: TrainingRequest): string {
   const request = trainingRequestSchema.parse(draft);
 
   if (!request.runtime.python.startsWith('/')) throw clientError('exportWindowsHost', {});
 
+  // The launcher needs a rendezvous address this editor does not collect.
   if (request.topology.num_machines !== 1 || request.topology.machine_rank !== 0)
     throw clientError('exportMultiNode', {});
 
