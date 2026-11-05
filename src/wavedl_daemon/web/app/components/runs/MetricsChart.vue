@@ -22,7 +22,7 @@ const styles = {
     '[&_svg]:size-6',
   ),
   plot: cn(
-    'min-h-40 min-w-0 flex-1 aspect-auto',
+    'absolute inset-0 aspect-auto',
     '[--vis-axis-grid-color:var(--border)] [--vis-axis-tick-label-color:var(--muted-foreground)]',
     '[--vis-axis-label-color:var(--muted-foreground)] [--vis-axis-tick-color:var(--border)]',
     '[--vis-crosshair-line-stroke-color:var(--muted-foreground)]',
@@ -173,44 +173,45 @@ const tooltip = computed(() => {
             channel: channel === 'lr' ? t('runs.learningRateLower') : channel === 'loss' ? t('runs.lossLower') : t('runs.r2Lower'),
           }) }}
         </div>
-        <ChartContainer
-          v-else-if="isActive"
-          :key="channel"
-          :config="chartConfig"
-          :class="styles.plot"
-          cursor
-          @dblclick="zoom = null"
-        >
-          <VisXYContainer :data="chartData" :x-domain="zoom ?? undefined" :prevent-empty-domain="true" :duration="0">
-            <VisLine
-              :x="(point: PlotPoint) => point.step"
-              :y="y"
-              :color="colors"
-              :curve-type="CurveType.Linear"
-              :interpolate-missing-data="false"
-            />
-            <VisAxis type="x" :label="t('runs.step')" :grid-line="false" :tick-format="(value: number) => Number.isInteger(value) ? String(value) : ''" />
-            <VisAxis type="y" />
-            <VisPlotline
-              v-if="best"
-              axis="x"
-              :value="best.step"
-              color="var(--success)"
-              :line-style="[4, 4]"
-              :label-text="t('runs.bestEpoch')"
-              label-color="var(--muted-foreground)"
-            />
-            <VisFreeBrush :on-brush-end="zoomTo" />
-            <ChartTooltip />
-            <ChartCrosshair
-              :x="(point: PlotPoint) => point.step"
-              :y="y"
-              :color="colors"
-              :template="tooltip"
-              :hide-when-far-from-pointer="false"
-            />
-          </VisXYContainer>
-        </ChartContainer>
+        <div v-else-if="isActive" class="relative min-h-40 min-w-0 flex-1">
+          <ChartContainer
+            :key="channel"
+            :config="chartConfig"
+            :class="styles.plot"
+            cursor
+            @dblclick="zoom = null"
+          >
+            <VisXYContainer :data="chartData" :x-domain="zoom ?? undefined" :prevent-empty-domain="true" :duration="0">
+              <VisLine
+                :x="(point: PlotPoint) => point.step"
+                :y="y"
+                :color="colors"
+                :curve-type="CurveType.Linear"
+                :interpolate-missing-data="false"
+              />
+              <VisAxis type="x" :label="t('runs.step')" :grid-line="false" :tick-format="(value: number) => Number.isInteger(value) ? String(value) : ''" />
+              <VisAxis type="y" />
+              <VisPlotline
+                v-if="best"
+                axis="x"
+                :value="best.step"
+                color="var(--success)"
+                :line-style="[4, 4]"
+                :label-text="t('runs.bestEpoch')"
+                label-color="var(--muted-foreground)"
+              />
+              <VisFreeBrush :on-brush-end="zoomTo" />
+              <ChartTooltip />
+              <ChartCrosshair
+                :x="(point: PlotPoint) => point.step"
+                :y="y"
+                :color="colors"
+                :template="tooltip"
+                :hide-when-far-from-pointer="false"
+              />
+            </VisXYContainer>
+          </ChartContainer>
+        </div>
       </TabsContent>
     </Tabs>
     <p class="m-0 shrink-0 text-xs text-muted-foreground">{{ t('runs.chartNote') }}</p>
