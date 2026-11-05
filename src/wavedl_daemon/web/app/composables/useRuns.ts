@@ -2,6 +2,9 @@ import { clientError, type ClientMessage } from '../i18n/client-messages';
 import { DaemonApi, DaemonApiError, type RunView } from '../lib/daemon-api';
 import { CursorStore } from '../lib/event-stream';
 import { RunMonitor, type RunMonitorSnapshot } from '../lib/run-monitor';
+import { runFilterOf } from '../lib/run-overview';
+
+const LIST_REFRESH_INTERVAL = 10_000;
 
 export function useRuns(
   api: DaemonApi,
@@ -21,6 +24,22 @@ export function useRuns(
   let unsubscribe: (() => void) | null = null;
   let disposed = false;
   let paused = initiallyPaused;
+  const hasLiveRuns = computed(() => runs.value.some((run) => runFilterOf(run) === 'live'));
+
+  const listRefresh = useIntervalFn(
+    () => {
+      if (!paused && !disposed && !loading.value && hasLiveRuns.value) void refresh(page.value);
+    },
+    LIST_REFRESH_INTERVAL,
+    { immediate: false },
+  );
+
+  function syncRefreshTimer(): void {
+    if (paused || disposed || !hasLiveRuns.value) listRefresh.pause();
+    else if (!listRefresh.isActive.value) listRefresh.resume();
+  }
+
+  watch(hasLiveRuns, syncRefreshTimer);
 
   async function refresh(offset = page.value): Promise<void> {
     listAbort?.abort();
@@ -128,6 +147,7 @@ export function useRuns(
 
   function pause(): void {
     paused = true;
+    listRefresh.pause();
     listAbort?.abort();
     listAbort = null;
     monitor?.pause();
@@ -135,9 +155,19 @@ export function useRuns(
   }
 
   function resume(): void {
+    if (disposed) return;
     paused = false;
 
-    if (lastRefreshed.value === null) void refresh();
+    if (
+      !loading.value &&
+      (lastRefreshed.value === null ||
+        (hasLiveRuns.value &&
+          Date.now() - Date.parse(lastRefreshed.value) >= LIST_REFRESH_INTERVAL))
+    ) {
+      void refresh(page.value);
+    }
+
+    syncRefreshTimer();
     const current = monitor;
 
     if (current) {
@@ -148,6 +178,7 @@ export function useRuns(
 
   onScopeDispose(() => {
     disposed = true;
+    listRefresh.pause();
     listAbort?.abort();
     close();
   });
