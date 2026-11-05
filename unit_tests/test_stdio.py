@@ -29,8 +29,8 @@ class TestConfigureUtf8Stdio:
     def test_legacy_streams_write_utf8(self, monkeypatch):
         """Unicode output must not raise on a Windows cp1252 console."""
         out_bytes, err_bytes = io.BytesIO(), io.BytesIO()
-        stdout = io.TextIOWrapper(out_bytes, encoding="cp1252")
-        stderr = io.TextIOWrapper(err_bytes, encoding="cp1252")
+        stdout = io.TextIOWrapper(out_bytes, encoding="cp1252", newline="\n")
+        stderr = io.TextIOWrapper(err_bytes, encoding="cp1252", newline="\n")
         monkeypatch.setattr(sys, "stdout", stdout)
         monkeypatch.setattr(sys, "stderr", stderr)
 

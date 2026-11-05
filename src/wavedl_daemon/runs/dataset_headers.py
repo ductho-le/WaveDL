@@ -520,8 +520,10 @@ def _open_dataset(path, limits, expected_identity=None):
     path = Path(path)
     if not path.is_absolute():
         raise InspectionRefused("Dataset path must be absolute")
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
-    stream = os.fdopen(descriptor, "rb")
+    try:
+        stream = paths.open_regular(path)
+    except ValueError:
+        raise InspectionRefused("Dataset must be a bounded regular file") from None
     metadata = os.fstat(stream.fileno())
     identity = paths.file_identity(metadata)
     if expected_identity is not None and expected_identity != identity:

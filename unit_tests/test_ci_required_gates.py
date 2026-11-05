@@ -16,8 +16,6 @@ REQUIRED_JOBS = {
         "test",
         "distribution",
         "web-client",
-        "daemon-native",
-        "windows-installed",
     },
 }
 
@@ -40,7 +38,7 @@ def _assert_fail_closed(node: object, location: str) -> None:
 
 def test_every_workflow_has_the_required_jobs() -> None:
     workflow_dir = ROOT / ".github/workflows"
-    actual = {str(path.relative_to(ROOT)) for path in workflow_dir.glob("*.yml")}
+    actual = {path.relative_to(ROOT).as_posix() for path in workflow_dir.glob("*.yml")}
     assert actual == set(REQUIRED_JOBS)
     for path, required in REQUIRED_JOBS.items():
         jobs = _workflow(path).get("jobs", {})

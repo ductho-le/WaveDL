@@ -254,8 +254,15 @@ def test_cv_plan_preserves_supported_options_and_inapplicable_cache(
 
 def test_slurm_plans_preview_their_batch_script(environment):
     body = train_payload(epochs=2, model="cnn", data_path="data.npz") | {
-        "backend": "slurm"
+        "backend": "slurm",
+        "storage_map": [
+            {
+                "host_root": str(environment.service.settings.run_root),
+                "execution_root": "/cluster/runs",
+            }
+        ],
     }
+    body["runtime"]["python"] = "venv/bin/python"
     response = request(
         environment.app, "POST", "/api/runs/plan", body=body, key="slurm"
     )
@@ -335,8 +342,12 @@ def test_a_slurm_test_gets_the_checkpoint_through_the_storage_map(
         tmp_path,
         "epoch_3_checkpoint",
         backend="slurm",
-        storage_map=[{"host_root": str(run_root), "execution_root": "/cluster/runs"}],
+        storage_map=[
+            {"host_root": str(run_root), "execution_root": "/cluster/runs"},
+            {"host_root": str(tmp_path), "execution_root": "/cluster"},
+        ],
     )
+    body["runtime"]["python"] = "venv/bin/python"
     response = request(
         environment.app, "POST", "/api/runs/plan", body=body, key="slurm"
     )

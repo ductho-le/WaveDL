@@ -357,7 +357,7 @@ def launch_fake(tmp_path):
             os.kill(pid, signal.SIGKILL)
 
 
-@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT, signal.SIGHUP])
+@pytest.mark.parametrize("signum", launcher._FORWARDED_SIGNALS)
 def test_forwarded_signal_stops_whole_tree(launch_fake, signum):
     proc, info, _ready = launch_fake("tree", grace=0.5)
     assert info["pgid"] == info["pid"] != os.getpgrp()

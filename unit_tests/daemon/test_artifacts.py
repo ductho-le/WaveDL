@@ -37,7 +37,10 @@ def paths(tmp_path):
     (output / "fold_1").mkdir()
     (output / "fold_1" / "kết quả đẹp.svg").write_bytes(b"<svg>Unicode file</svg>")
     (output / "training_history.csv").write_bytes(b"epoch,loss\n1,0.5\n")
-    (output / "notes:1.txt").write_bytes(b"unlistable")
+    if os.name != "nt":
+        # A colon creates an alternate data stream, and an extra base file,
+        # on NTFS rather than an ordinary unlistable filename.
+        (output / "notes:1.txt").write_bytes(b"unlistable")
     secret = tmp_path / "secret"
     secret.write_bytes(b"private")
     (output / "escape.txt").symlink_to(secret)
@@ -133,6 +136,22 @@ def test_a_rewrite_in_place_between_chunks_is_never_delivered(paths):
     with pytest.raises(ValueError, match="changed"):
         artifact.read()
     artifact.close()
+
+
+def test_rewrite_is_detected_when_held_handle_metadata_is_stale(paths, monkeypatch):
+    target = paths.output / "rewritten.bin"
+    target.write_bytes(b"A" * CHUNK_BYTES * 2)
+    artifact = open_output(paths.output, "rewritten.bin")
+    held = os.fstat(artifact.stream.fileno())
+    try:
+        assert artifact.read() == b"A" * CHUNK_BYTES
+        target.write_bytes(b"B" * CHUNK_BYTES * 2)
+        os.utime(target, ns=(held.st_atime_ns, held.st_mtime_ns + 1000000000))
+        monkeypatch.setattr(os, "fstat", lambda descriptor: held)
+        with pytest.raises(ValueError, match="changed"):
+            artifact.read()
+    finally:
+        artifact.close()
 
 
 def test_an_undecodable_name_is_left_out_of_the_listing(paths, monkeypatch):

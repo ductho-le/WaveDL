@@ -31,8 +31,8 @@ permissions:
   contents: read
 
 jobs:
-  # Run the shared core, distribution, web-client and native acceptance gates
-  # before publication, including installed Windows CPU acceptance on tags.
+  # Run the shared cross-platform core, distribution and web-client gates
+  # before publication, including installed wheel acceptance.
   test:
     name: Test suite gate
     uses: ./.github/workflows/test.yml

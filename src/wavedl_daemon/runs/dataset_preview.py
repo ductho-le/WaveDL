@@ -410,7 +410,14 @@ def preview_dataset(path, *, expected_identity, limits=PreviewLimits()):
             **_summaries(*arrays, indices, shapes, limits),
             "limits": asdict(limits),
         }
-        if paths.file_identity(os.fstat(stream.fileno())) != before:
+        try:
+            current = paths.file_identity(path.stat())
+        except OSError:
+            raise PreviewRefused("Dataset changed during preview") from None
+        if (
+            paths.file_identity(os.fstat(stream.fileno())) != before
+            or current != before
+        ):
             raise PreviewRefused("Dataset changed during preview")
     if (
         len(json.dumps(result, allow_nan=False, separators=(",", ":")).encode())

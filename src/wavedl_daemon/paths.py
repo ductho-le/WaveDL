@@ -37,12 +37,18 @@ def inside(root: Path, parts: Sequence[str]) -> Path:
 
 
 def open_regular(path: Path) -> BinaryIO:
+    # Windows cannot open directories as ordinary files (unlike POSIX).
+    if path.is_dir():
+        raise ValueError("Not a regular file")
     # Nonblocking, so a FIFO cannot stall the open before the type check.
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
-    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError("Not a regular file")
+        return os.fdopen(descriptor, "rb")
+    except BaseException:
         os.close(descriptor)
-        raise ValueError("Not a regular file")
-    return os.fdopen(descriptor, "rb")
+        raise
 
 
 def read_regular(path: Path, limit: int) -> bytes:

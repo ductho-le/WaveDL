@@ -13,7 +13,12 @@ from pathlib import Path
 
 def regular_bytes(path: Path, *, limit: int) -> bytes:
     """Reject links, devices, FIFOs and oversized inputs before reading."""
-    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    if not stat.S_ISREG(path.lstat().st_mode):
+        raise ValueError(f"Not a regular release file: {path}")
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
     with os.fdopen(descriptor, "rb") as source:
         info = os.fstat(source.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
@@ -25,7 +30,12 @@ def regular_bytes(path: Path, *, limit: int) -> bytes:
 
 
 def distribution_hash(path: Path) -> str:
-    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    if not stat.S_ISREG(path.lstat().st_mode):
+        raise ValueError(f"Not a regular release file: {path}")
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
     with os.fdopen(descriptor, "rb") as source:
         info = os.fstat(source.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_size > 8 * 1024**3:

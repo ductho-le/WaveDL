@@ -261,40 +261,69 @@ def test_worker_reports_identity_changed_for_mutated_input(tmp_path):
     assert json.loads(completed.stdout)["code"] == "identity_changed"
 
 
+def test_preview_detects_mutation_when_held_handle_metadata_is_stale(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "mutation.npz"
+    np.savez(path, X=np.ones((2, 2)), Y=np.ones((2, 1)))
+    import wavedl_daemon.runs.dataset_preview as module
+
+    original = module._summaries
+    held = path.stat()
+
+    def mutate(*args):
+        result = original(*args)
+        with path.open("ab") as file:
+            file.write(b"changed")
+        monkeypatch.setattr(os, "fstat", lambda descriptor: held)
+        return result
+
+    monkeypatch.setattr(module, "_summaries", mutate)
+    with pytest.raises(PreviewRefused, match="changed"):
+        preview(path)
+
+
+def test_missing_path_after_numeric_read_is_an_identity_change(tmp_path, monkeypatch):
+    path = tmp_path / "mutation.npz"
+    np.savez(path, X=np.ones((2, 2)), Y=np.ones((2, 1)))
+    import wavedl_daemon.runs.dataset_preview as module
+
+    original = module._summaries
+    stat = type(path).stat
+
+    def missing(target, *args, **kwargs):
+        if target == path:
+            raise FileNotFoundError("Dataset was removed")
+        return stat(target, *args, **kwargs)
+
+    def mutate(*args):
+        result = original(*args)
+        monkeypatch.setattr(type(path), "stat", missing)
+        return result
+
+    monkeypatch.setattr(module, "_summaries", mutate)
+    with pytest.raises(PreviewRefused, match="changed"):
+        preview(path)
+
+
 def test_content_mutation_during_numeric_read_is_refused(tmp_path, monkeypatch):
     path = tmp_path / "mutation.npz"
     np.savez(path, X=np.ones((2, 2)), Y=np.ones((2, 1)))
     import wavedl_daemon.runs.dataset_preview as module
 
     original = module._summaries
-    original_bytes = path.read_bytes()
     attempts = []
 
     def mutate(*args):
         result = original(*args)
         attempts.append(True)
-        if os.name == "nt":
-            # The held Windows capability denies writes, rather than detecting
-            # an allowed POSIX write after numerical decoding.
-            with pytest.raises(PermissionError) as denied, path.open("ab") as file:
-                file.write(b"changed")
-            assert denied.value.errno == 13
-            assert getattr(denied.value, "winerror", None) in (None, 32)
-            assert path.read_bytes() == original_bytes
-        else:
-            with path.open("ab") as file:
-                file.write(b"changed")
+        with path.open("ab") as file:
+            file.write(b"changed")
         return result
 
     monkeypatch.setattr(module, "_summaries", mutate)
-    if os.name == "nt":
-        result = preview(path)
-        assert result["input_shape"] == [2, 2]
-        assert result["output_shape"] == [2, 1]
-        assert path.read_bytes() == original_bytes
-    else:
-        with pytest.raises(PreviewRefused, match="changed"):
-            preview(path)
+    with pytest.raises(PreviewRefused, match="changed"):
+        preview(path)
     assert attempts == [True]
 
 

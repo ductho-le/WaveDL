@@ -69,6 +69,11 @@ def build_parser():
     serve.add_argument("--max-workers", type=int, default=4)
     serve.add_argument("--max-pending", type=int, default=8)
     serve.add_argument("--work-timeout", type=float, default=30)
+    serve.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Do not open the link in a browser automatically",
+    )
     return parser
 
 
@@ -307,7 +312,9 @@ async def serve(
 def main(argv=None, *, open_browser=webbrowser.open):
     options = build_parser().parse_args(argv)
     try:
-        asyncio.run(serve(options, open_browser=open_browser))
+        asyncio.run(
+            serve(options, open_browser=None if options.no_browser else open_browser)
+        )
     except KeyboardInterrupt:
         return 130
     except AlreadyRunning as error:

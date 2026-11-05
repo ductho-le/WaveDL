@@ -229,7 +229,8 @@ def test_hosted_local_run_streams_metrics_completes_and_cancels(tmp_path):
             launch = supervisor.launches[0]
             metrics = run_dir / "attempts" / "1" / "metrics.jsonl"
             assert launch.spec.argv[-2:] == ("--metrics_jsonl", str(metrics))
-            assert run_dir.stat().st_mode & 0o777 == 0o700
+            if sys.platform != "win32":
+                assert run_dir.stat().st_mode & 0o777 == 0o700
 
             metrics.write_text(
                 json.dumps({"epoch": 1, "train_loss": 1.5, "val_loss": float("nan")})

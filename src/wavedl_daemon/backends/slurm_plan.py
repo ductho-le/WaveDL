@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import re
 import shlex
-from dataclasses import dataclass, replace
-from pathlib import Path
+from dataclasses import dataclass
+from pathlib import PurePosixPath
 from string import Template
 from uuid import UUID
 
@@ -261,6 +261,10 @@ class SlurmPlanner:
         working = spec.working_directory
         for path in (working, runtime.python):
             _text(path, "execution path")
+            if not PurePosixPath(path).is_absolute():
+                raise UnsupportedPlan(
+                    "Slurm execution paths must be absolute POSIX paths"
+                )
         if "%" in working:
             raise UnsupportedPlan(
                 "Slurm filename patterns cannot express percent in run paths"
@@ -276,7 +280,7 @@ class SlurmPlanner:
                 )
             if any(char in value for char in ("\0", "\r", "\n")):
                 raise UnsupportedPlan("Invalid environment value")
-        execution = Path(working)
+        execution = PurePosixPath(working)
         return Plan(
             target=self.name,
             spec=spec,
@@ -345,7 +349,7 @@ class SlurmPlanner:
 
     def _directives(self, name: str, spec: RunSpec, topology: Topology) -> list[str]:
         site = self.site
-        logs = Path(spec.working_directory) / "logs"
+        logs = PurePosixPath(spec.working_directory) / "logs"
         directives = [
             f"#SBATCH --job-name={name}",
             f"#SBATCH --comment={spec.run_id}",
@@ -377,10 +381,7 @@ class SlurmPlanner:
     def _launch(self, spec: RunSpec, topology: Topology) -> str:
         """``srun`` of the probe and the trainer, one launcher task per machine."""
         # Paths in the spec are execution-side; render them as the run sees them.
-        command = launch_argv(
-            replace(spec, run_directory=spec.working_directory, storage_map=()),
-            topology,
-        )
+        command = launch_argv(spec, topology)
         machines = topology.num_machines
         if machines > 1:
             rank = command.index("--machine_rank") + 1

@@ -348,9 +348,6 @@ def test_expected_identity_is_checked_before_reading_metadata(tmp_path, monkeypa
         "st_size": info.st_size,
         "st_mtime_ns": info.st_mtime_ns,
     }
-    if os.name == "nt":
-        with path.open("rb") as stream:
-            expected = dataset_headers._held_identity(stream, os.fstat(stream.fileno()))
     assert inspect_dataset(path, expected_identity=expected)["format"] == "npy"
     monkeypatch.setattr(
         dataset_headers,

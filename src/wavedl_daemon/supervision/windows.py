@@ -29,6 +29,9 @@ from .base import (
 CREATE_SUSPENDED = 0x00000004
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 CREATE_UNICODE_ENVIRONMENT = 0x00000400
+# How long job members may keep shutting down after the leader exits unasked.
+# Matches the daemon's own uvicorn timeout_graceful_shutdown.
+LEADER_EXIT_DRAIN_SECONDS = 10
 _SPAWN_LOCK = threading.Lock()
 
 
@@ -301,21 +304,29 @@ class WindowsProcess:
 
     def _run(self):
         signalled = killed = False
+        leader_deadline = None
         error = None
         result = None
         try:
             while self._api.active(self._job):
                 with self._condition:
-                    if (
-                        not self._api.leader_running(self._process)
-                        and self._deadline is None
-                    ):
-                        self._deadline = time.monotonic() + 0.2
                     deadline = self._deadline
                 if deadline is not None and not signalled:
                     self._api.send_break(self.pid)
                     signalled = True
-                if deadline is not None and not killed and time.monotonic() >= deadline:
+                if deadline is None and not self._api.leader_running(self._process):
+                    # Console launchers can exit on CTRL_BREAK before their
+                    # Python child finishes graceful shutdown. Do not signal
+                    # the group twice or mistake that cleanup for an orphan.
+                    if leader_deadline is None:
+                        leader_deadline = time.monotonic() + LEADER_EXIT_DRAIN_SECONDS
+                    deadline = leader_deadline
+                if (
+                    deadline is not None
+                    and not killed
+                    and time.monotonic() >= deadline
+                    and self._api.active(self._job)
+                ):
                     self._api.terminate_job(self._job)
                     killed = True
                 with self._condition:

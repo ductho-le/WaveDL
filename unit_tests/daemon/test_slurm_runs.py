@@ -163,8 +163,15 @@ def environment(tmp_path):
 def submitted(environment):
     """A submitted run whose job the scheduler lists as pending, as after sbatch."""
     body = train_payload(epochs=4, model="cnn", data_path="data.npz") | {
-        "backend": "slurm"
+        "backend": "slurm",
+        "storage_map": [
+            {
+                "host_root": str(environment.service.settings.run_root),
+                "execution_root": "/cluster/runs",
+            }
+        ],
     }
+    body["runtime"]["python"] = "venv/bin/python"
     plan = environment.service.plan(body, str(uuid4()))
     run_id = RunId(plan.run_id)
     environment.scheduler.controller = controller(target(run_id), "PENDING")
@@ -256,7 +263,7 @@ def test_a_requeued_job_resumes_in_a_new_attempt_and_completes(environment):
     scheduler.controller = controller(target(run_id), "RUNNING", restart=1)
     write_metrics(paths, 2, 3, 4)
     tick_until(environment, run_id, lambda head: head.metrics_offset > 0)
-    paths.exit_record(2).write_text("0 0 0\n")
+    paths.exit_record(2).write_bytes(b"0 0 0\n")
     scheduler.controller = controller(target(run_id), "COMPLETED", restart=1)
     scheduler.accounting += account(target(run_id), "COMPLETED", restart=1)
     head = tick_until(environment, run_id, lambda head: isinstance(head.stage, Ended))
@@ -399,7 +406,7 @@ def test_cancel_interrupts_training_then_ends_the_job_after_the_grace(environmen
 
     # Training saved its checkpoint and exited 130, which Slurm calls FAILED.
     paths.attempt(1).mkdir(exist_ok=True)
-    paths.exit_record(1).write_text("0 130 0\n")
+    paths.exit_record(1).write_bytes(b"0 130 0\n")
     scheduler.controller = controller(target(run_id), "FAILED", code="130:0")
     head = tick_until(environment, run_id, lambda head: isinstance(head.stage, Ended))
     assert head.stage.exit.outcome is Outcome.CANCELLED and head.stage.exit.confirmed

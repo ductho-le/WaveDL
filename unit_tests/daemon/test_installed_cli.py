@@ -150,12 +150,20 @@ class _WindowsInstalledDaemon:
             # A nonzero process-group ID targets only this owned daemon and
             # descendants. Unlike production best-effort cancellation, errors
             # 6/87 are acceptance failures, not graceful-shutdown evidence.
+            signalled_at = time.monotonic()
             if not self.api.kernel.GenerateConsoleCtrlEvent(1, self.process.pid):
                 import ctypes
 
                 error = ctypes.get_last_error()
                 raise OSError(f"Targeted native CTRL_BREAK failed: winerror={error}")
             result = await asyncio.to_thread(self.process.wait, 15)
+            print(
+                "Native installed daemon shutdown seconds: "
+                f"{time.monotonic() - signalled_at:.2f}"
+            )
+            print(
+                f"Native installed daemon stderr tail:\n{result.stderr[-1500:].decode(errors='replace')}"
+            )
             print(f"Native installed daemon exit code: {result.returncode}")
             print(
                 "Native installed daemon cleanup: "
@@ -718,6 +726,8 @@ def test_installed_serve_bootstrap_plan_client_and_shutdown(installed, record_pr
             "0",
             "--state-root",
             str(state),
+            # A real browser would join the job and never exit with the daemon.
+            "--no-browser",
         ]
         native = (
             _WindowsInstalledDaemon(argv, outside, environment)

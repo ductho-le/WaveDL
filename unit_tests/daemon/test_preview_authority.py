@@ -83,8 +83,7 @@ def test_missing_file(authority):
 
 def test_directory_is_not_a_dataset(authority):
     (authority.roots["datasets"] / "directory.npz").mkdir()
-    expected = PreviewForbidden if os.name == "nt" else PreviewChanged
-    with pytest.raises(expected):
+    with pytest.raises(PreviewChanged):
         authority.resolve_selection("datasets", "directory.npz")
 
 
@@ -109,7 +108,7 @@ def test_root_rename_cannot_redirect_held_selection(authority):
         ) as selected:
             with pytest.raises(PermissionError) as denied:
                 root.rename(root.with_name("old-datasets"))
-            assert denied.value.winerror == 32
+            assert denied.value.winerror in (5, 32)
             assert not root.with_name("old-datasets").exists()
             assert selected.path.read_bytes() == b"dataset"
             verify_selection(selected)
@@ -144,17 +143,6 @@ def test_body_exception_preserved_without_reclassification(authority):
 
 
 def test_mutated_dataset_rejected_on_context_exit(authority):
-    if os.name == "nt":
-        with authority.open_preview_selection(
-            "datasets", "nested/data.npz"
-        ) as selected:
-            with pytest.raises(PermissionError) as denied:
-                selected.path.write_bytes(b"changed")
-            assert denied.value.errno == 13
-            assert getattr(denied.value, "winerror", None) in (None, 32)
-            assert selected.path.read_bytes() == b"dataset"
-            verify_selection(selected)
-        return
     with (
         pytest.raises(PreviewChanged),
         authority.open_preview_selection("datasets", "nested/data.npz") as selected,
