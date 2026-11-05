@@ -33,8 +33,6 @@ export function trainingCommand(draft: TrainingRequest): string {
   if (request.topology.num_machines !== 1 || request.topology.machine_rank !== 0)
     throw clientError('exportMultiNode', {});
 
-  if (request.runtime.mode === 'container') throw clientError('exportContainerStartup', {});
-
   const environment = Object.entries(request.runtime.environment).map(
     ([name, value]) => `${name}=${quotePosix(value)}`,
   );
