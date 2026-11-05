@@ -21,6 +21,7 @@ from wavedl_daemon.runs.model import (
     AttemptOpened,
     BackendKind,
     CancelRequested,
+    Evaluation,
     Exited,
     Metric,
     Observed,
@@ -340,3 +341,56 @@ def test_subscribers_are_notified_after_each_commit(state):
         log.append(RUN, [CancelRequested()], expect=Expect(revision=0))
     assert notified == [RUN, RUN, RUN]
     connection.close()
+
+
+def test_latest_epoch_metric_selects_sequence_and_excludes_evaluation(log):
+    run = RunRef(
+        RUN, PlanId("plan-test"), BackendKind.SLURM, Operation.TEST, Path("/runs/test")
+    )
+    head = start(log, run)
+    assert log.latest_epoch_metric(RUN, 1) is None
+    latest = Metric(2, {"val_loss": 0.5}, 40)
+    log.append(
+        RUN,
+        [Metric(8, {"val_loss": 1.0}, 20), latest, Evaluation({"r2_score": 0.9})],
+        expect=Expect(revision=head.revision),
+    )
+    assert log.latest_epoch_metric(RUN, 1) == latest
+    assert log.latest_epoch_metric(RunId("other-run"), 1) is None
+    assert log.latest_epoch_metric(RUN, 2) is None
+
+
+def test_latest_epoch_metric_does_not_reuse_the_previous_attempt(log):
+    head = start(log)
+    first = Metric(8, {"total_epochs": 10}, 20)
+    head = log.append(RUN, [first], expect=Expect(revision=head.revision))
+    head = log.append(
+        RUN,
+        [Exited(Outcome.REQUEUED, False), AttemptOpened("requeue", 1)],
+        expect=Expect(revision=head.revision),
+    )
+    assert log.latest_epoch_metric(RUN, head.attempt) is None
+    second = Metric(1, {}, 15)
+    log.append(RUN, [second], expect=Expect(offset=(2, 0)))
+    assert log.latest_epoch_metric(RUN, 2) == second
+    assert log.latest_epoch_metric(RUN, 1) == first
+
+
+def test_latest_epoch_metric_does_not_return_a_rolled_back_metric(state):
+    root, lock = state
+    connection = open_database(root / "daemon.sqlite3", dispatch_lock=lock)
+    try:
+        log = RunLog(connection)
+        head = start(log)
+        committed = Metric(1, {}, 20)
+        head = log.append(RUN, [committed], expect=Expect(revision=head.revision))
+        connection.execute(
+            "CREATE TEMP TRIGGER reject_head BEFORE UPDATE ON run_heads "
+            "BEGIN SELECT RAISE(ABORT, 'head write refused'); END"
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="head write refused"):
+            log.append(RUN, [Metric(2, {}, 40)], expect=Expect(revision=head.revision))
+        assert log.latest_epoch_metric(RUN, 1) == committed
+        assert len(history(log)) == 4
+    finally:
+        connection.close()
