@@ -22,6 +22,9 @@ export function quotePosix(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+/** Always shown so the command reads on its own, even when they match defaults. */
+const essentialOptions = ['model', 'data_path'];
+
 /**
  * A standalone `wavedl-train` command for the installed CLI, listing only the
  * options that differ from upstream defaults. It is not a daemon plan.
@@ -48,6 +51,12 @@ export function trainingCommand(draft: TrainingRequest): string {
 
     if (!entry) throw clientError('incompleteTrainingSchema', {});
     const value = entry[1];
+
+    if (
+      !essentialOptions.includes(option.name) &&
+      JSON.stringify(value) === JSON.stringify(option.default)
+    )
+      continue;
 
     if (value === null || value === false || (Array.isArray(value) && !value.length)) continue;
     const flag = option.name === 'import_modules' ? '--import' : `--${option.name}`;
