@@ -81,6 +81,10 @@ const metricsUnavailable = computed(
 
 const chartRecords = computed(() => (metricsUnavailable.value ? [] : props.snapshot.metrics));
 
+const healthIssues = computed(() => metricsUnavailable.value
+  ? 0
+  : (props.snapshot.summary.current?.health.filter((row) => row.severity !== 'good').length ?? 0));
+
 const metricsUnconfirmed = computed(
   () =>
     props.snapshot.run?.uncertainty === true || props.snapshot.run?.state === 'supervision_lost',
@@ -185,6 +189,10 @@ const configuration = computed(() => {
           {{ snapshot.run ? labels.title(snapshot.run) : t('runs.loadingRuns') }}
         </h3>
         <RunStateChip v-if="snapshot.run" :run="snapshot.run" :stale="snapshot.freshness !== 'fresh'" />
+        <Badge v-if="healthIssues > 0" as="button" type="button" variant="outline" class="cursor-pointer" @click="tab = 'metrics'">
+          <span class="size-1.5 rounded-full bg-warning" aria-hidden="true" />
+          {{ t('runs.healthWarnings', { count: healthIssues }, healthIssues) }}
+        </Badge>
         <span :class="styles.stream" :data-stream="snapshot.stream" :title="t('runs.eventConnection', { status: streamLabel })">
           <span class="sr-only">{{ t('runs.eventConnection', { status: streamLabel }) }}</span>
         </span>
@@ -235,7 +243,7 @@ const configuration = computed(() => {
     <Tabs v-model="tab" :class="styles.tabs">
       <TabsList :class="styles.tabList" :aria-label="t('runs.selected')">
         <TabsTrigger value="overview" :class="styles.tabTrigger">{{ t('runs.tabOverview') }}</TabsTrigger>
-        <TabsTrigger value="metrics" :class="styles.tabTrigger">{{ t('runs.tabMetrics') }}</TabsTrigger>
+        <TabsTrigger value="metrics" :class="styles.tabTrigger">{{ healthIssues > 0 ? t('runs.tabMetricsCount', { count: healthIssues }) : t('runs.tabMetrics') }}</TabsTrigger>
         <TabsTrigger value="configuration" :class="styles.tabTrigger">{{ t('runs.tabConfiguration') }}</TabsTrigger>
         <TabsTrigger value="logs" :class="styles.tabTrigger">{{ t('runs.tabLogs') }}</TabsTrigger>
         <TabsTrigger v-if="hasEvaluation" value="evaluation" :class="styles.tabTrigger">{{ t('runs.tabEvaluation') }}</TabsTrigger>

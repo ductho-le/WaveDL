@@ -33,7 +33,7 @@ function share(value: number | null): string {
 <template>
   <section
     :aria-label="t('runs.perParam')"
-    class="flex flex-col gap-[0.6rem] min-w-0 p-[0.95rem_1rem] rounded-[1rem] bg-[color-mix(in_srgb,_var(--foreground)_3.5%,_transparent)]"
+    class="flex min-w-0 flex-col gap-[0.6rem]"
   >
     <h4 class="text-[0.85rem] font-[650]">{{ t('runs.perParam') }}</h4>
     <dl class="flex flex-col gap-[0.55rem] m-0">

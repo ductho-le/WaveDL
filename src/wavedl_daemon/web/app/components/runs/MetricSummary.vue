@@ -3,12 +3,6 @@ import { cn } from '@/lib/utils';
 import type { MetricSummary } from '../../lib/metric-history';
 
 const styles = {
-  metricSpec: cn(
-    '[&_summary]:w-fit [&_summary]:text-muted-foreground [&_summary]:text-[0.78rem]',
-    '[&_summary]:font-semibold [&_summary]:cursor-pointer',
-    '[&_summary:focus-visible]:[outline:2px_solid_var(--ring)]!',
-    '[&_summary:focus-visible]:[outline-offset:2px]! [&_summary:focus-visible]:rounded-[0.25rem]',
-  ),
   metricSpecList: cn(
     'grid grid-cols-[repeat(auto-fit,_minmax(min(100%,_15rem),_1fr))] gap-x-7 m-[0.5rem_0_0]',
     '[&_>_div]:flex [&_>_div]:items-baseline [&_>_div]:justify-between [&_>_div]:gap-4',
@@ -34,10 +28,6 @@ const metrics = computed(() => {
   if (!current) return [];
 
   return [
-    { label: t('runs.trainLoss'), exact: current.trainLoss },
-    { label: t('runs.valLoss'), exact: current.validationLoss },
-    { label: t('runs.r2'), exact: current.r2 },
-    { label: t('runs.lr'), exact: current.learningRate },
     { label: t('runs.pearson'), exact: current.pearson },
     { label: t('runs.gradNorm'), exact: current.gradientNorm },
     { label: t('runs.mae'), exact: current.mae },
@@ -60,8 +50,8 @@ const metrics = computed(() => {
 </script>
 <template>
   <section
-    class="@container flex flex-col gap-[1.1rem] min-w-0 p-[1.25rem_1.4rem_1.4rem] rounded-[1.25rem] bg-surface batch-r-surface-shadow"
-    :aria-label="t('runs.currentMetrics')"
+    class="@container flex min-w-0 flex-col gap-6"
+    :aria-label="unconfirmed ? t('runs.lastKnownRuntime') : t('runs.currentRuntime')"
   >
     <header
       class="flex flex-wrap items-center justify-between gap-2 [&_h3]:text-base [&_h3]:font-[650] [&_h3]:tracking-[-0.015em]"
@@ -75,8 +65,12 @@ const metrics = computed(() => {
       />
       <InfoChip v-else :label="t('runs.currentRuntime')" :text="t('runs.latestNote')" uncertain />
     </header>
-    <details v-if="metrics.length" :class="cn(styles.metricSpec)" open>
-      <summary>{{ t('runs.allMetrics') }}</summary>
+    <div class="grid grid-cols-[repeat(auto-fit,_minmax(min(100%,_16rem),_1fr))] gap-6">
+      <PerParameterMetrics :parameters="summary.current?.parameters ?? []" />
+      <MetricHealthPanel :health="summary.current?.health ?? []" class="border-t pt-6 @min-[33.5rem]:border-t-0 @min-[33.5rem]:border-l @min-[33.5rem]:pt-0 @min-[33.5rem]:pl-6" />
+    </div>
+    <section v-if="metrics.length" :aria-label="t('runs.allMetrics')">
+      <h4 class="text-[0.85rem] font-[650]">{{ t('runs.allMetrics') }}</h4>
       <dl :class="cn(styles.metricSpecList)">
         <div v-for="metric in metrics" :key="metric.label">
           <dt>{{ metric.label }}</dt>
@@ -85,7 +79,7 @@ const metrics = computed(() => {
           </dd>
         </div>
       </dl>
-    </details>
+    </section>
     <p
       v-if="summary.latest && !summary.current"
       class="tabular-nums"
@@ -93,13 +87,6 @@ const metrics = computed(() => {
     >
       {{ summary.latest.name }}: {{ summary.latest.value == null ? t('runs.unavailable') : numberFormat.format(summary.latest.value) }} {{ summary.latest.unit }}
     </p>
-    <div
-      v-if="summary.current"
-      class="grid grid-cols-[repeat(auto-fit,_minmax(min(100%,_16rem),_1fr))] gap-3"
-    >
-      <PerParameterMetrics :parameters="summary.current.parameters" />
-      <MetricHealthPanel :health="summary.current.health" />
-    </div>
     <Empty v-if="!summary.latest && !summary.progress" class="py-8">
       <EmptyDescription>{{ t('runs.waitingRuntime') }}</EmptyDescription>
     </Empty>
