@@ -123,4 +123,24 @@ describe('workstation control boundaries', () => {
       'Standalone CLI list entries cannot start with an option prefix; use the YAML export.',
     );
   });
+
+  it('exports a runnable command with only changed options for any device and runtime', () => {
+    const command = trainingCommand({
+      backend: 'local',
+      operation: 'train',
+      config: { ...trainingDefaults, data_path: '/data/my set.npz', epochs: 200 },
+      runtime: {
+        python: 'C:\\Python\\python.exe',
+        mode: 'container',
+        device: 'auto',
+        environment: { CUDA_VISIBLE_DEVICES: '0,1', NOTE: "it's" },
+      },
+      topology: { num_machines: 1, processes_per_machine: 2, machine_rank: 0 },
+    });
+
+    expect(command).toBe(
+      "CUDA_VISIBLE_DEVICES=0,1 NOTE='it'\\''s' wavedl-train --num_gpus 2 " +
+        "--model=cnn --epochs=200 '--data_path=/data/my set.npz' --output_dir ./results",
+    );
+  });
 });
