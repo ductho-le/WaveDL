@@ -139,23 +139,21 @@ const updatedLabel = computed(() => {
   });
 });
 
+/** Missing values sort last in both directions, so only present values follow the direction. */
+function missingLast<Value>(left: Value | null, right: Value | null, compare: (a: Value, b: Value) => number): number {
+  const missingLeft = left === null || left === '';
+  const missingRight = right === null || right === '';
+  if (missingLeft || missingRight) return Number(missingLeft) - Number(missingRight);
+  return compare(left, right);
+}
+
 function compareRuns(a: RunView, b: RunView): number {
   const column = registry.value[sort.value.column];
-  const left = column.value(a);
-  const right = column.value(b);
-  if (left === null || left === '') return right === null || right === '' ? a.run_id.localeCompare(b.run_id) : 1;
-  if (right === null || right === '') return -1;
-  let order = 0;
-  if (column.kind === 'number') {
-    const aValue = column.value(a);
-    const bValue = column.value(b);
-    if (aValue !== null && bValue !== null) order = aValue - bValue;
-  } else {
-    const aValue = column.value(a);
-    const bValue = column.value(b);
-    if (aValue !== null && bValue !== null) order = collator.value.compare(aValue, bValue);
-  }
-  return order * (sort.value.direction === 'asc' ? 1 : -1) || a.run_id.localeCompare(b.run_id);
+  const direction = sort.value.direction === 'asc' ? 1 : -1;
+  const order = column.kind === 'number'
+    ? missingLast(column.value(a), column.value(b), (left, right) => (left - right) * direction)
+    : missingLast(column.value(a), column.value(b), (left, right) => collator.value.compare(left, right) * direction);
+  return order || a.run_id.localeCompare(b.run_id);
 }
 
 function changeSort(column: RunColumn) {
