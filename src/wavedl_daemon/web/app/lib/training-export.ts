@@ -15,7 +15,10 @@ export function trainingYaml(draft: TrainingRequest): string {
   );
 }
 
+/** Quote only words the shell would otherwise split or expand. */
 export function quotePosix(value: string): string {
+  if (/^[\w@%+=:,./-]+$/.test(value)) return value;
+
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 

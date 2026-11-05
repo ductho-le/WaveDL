@@ -117,8 +117,8 @@ describe('workstation control boundaries', () => {
         topology: { num_machines: 1, processes_per_machine: 1, machine_rank: 0 },
       });
 
-    expect(request([-0.5, -2])).toContain("'--constraint_weight' '-0.5' '-2'");
-    expect(request([-0.5])).toContain("'--grad_clip=-1e-7'");
+    expect(request([-0.5, -2])).toContain(' --constraint_weight -0.5 -2');
+    expect(request([-0.5])).toContain(' --grad_clip=-1e-7');
     expect(() => request([-1e-7])).toThrow(
       'Standalone CLI list entries cannot start with an option prefix; use the YAML export.',
     );
