@@ -3,6 +3,47 @@ import type { RunState, RunView } from './daemon-api';
 /** Presentation-only grouping of one run page; lifecycle truth stays with the daemon. */
 export type RunFilter = 'all' | 'live' | 'completed' | 'attention';
 
+export type RunColumnId =
+  | 'name'
+  | 'model'
+  | 'dataset'
+  | 'operation'
+  | 'epochs'
+  | 'cv'
+  | 'created'
+  | 'state';
+
+export type RunColumnLabelKey =
+  | 'runs.columnName'
+  | 'runs.columnModel'
+  | 'runs.columnDataset'
+  | 'runs.columnType'
+  | 'runs.columnEpochs'
+  | 'runs.columnCv'
+  | 'runs.columnCreated'
+  | 'runs.columnState';
+
+export interface RunSort {
+  column: RunColumnId;
+  direction: 'asc' | 'desc';
+}
+
+type RunColumnBase<Key extends RunColumnId> = {
+  id: Key;
+  labelKey: RunColumnLabelKey;
+  initialDirection: RunSort['direction'];
+};
+
+export type RunColumn<Key extends RunColumnId = RunColumnId> = RunColumnBase<Key> &
+  (
+    | { kind: 'text'; value: (run: RunView) => string | null }
+    | { kind: 'number'; value: (run: RunView) => number | null }
+  );
+
+export type RunColumnRegistry = {
+  [Key in RunColumnId]: RunColumn<Key>;
+};
+
 export type RunGroupKey = 'live' | 'today' | 'yesterday' | 'week' | 'earlier';
 
 export interface RunGroup {
@@ -80,9 +121,13 @@ export function runMatches(run: RunView, query: string, labels: readonly string[
 
   if (!needle) return true;
 
-  return [run.run_id, run.summary?.model, pathName(run.summary?.data_path), ...labels].some(
-    (value) => value != null && value.toLowerCase().includes(needle),
-  );
+  return [
+    run.run_id,
+    run.summary?.name,
+    run.summary?.model,
+    pathName(run.summary?.data_path),
+    ...labels,
+  ].some((value) => value != null && value.toLowerCase().includes(needle));
 }
 
 function startOfDay(date: Date): number {
@@ -128,9 +173,14 @@ export function groupRuns(runs: readonly RunView[], now: Date): RunGroup[] {
 }
 
 /** "3 minutes ago"-style text, choosing the largest sensible unit. */
-export function relativeTime(date: Date, now: Date, locale: string): string {
+export function relativeTime(
+  date: Date,
+  now: Date,
+  locale: string,
+  style: Intl.RelativeTimeFormatStyle = 'long',
+): string {
   const seconds = Math.round((date.getTime() - now.getTime()) / 1000);
-  const format = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
+  const format = new Intl.RelativeTimeFormat(locale, { numeric: 'auto', style });
 
   const units: [Intl.RelativeTimeFormatUnit, number][] = [
     ['day', 86_400],

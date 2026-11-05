@@ -258,6 +258,21 @@ class RunLog:
             )
         return events
 
+    def latest_epoch_metric(self, run_id: RunId, attempt: int) -> Metric | None:
+        row = self._connection.execute(
+            "SELECT payload_json, source_end FROM run_events "
+            "WHERE run_id = ? AND attempt = ? AND type = 'metric' "
+            "AND json_extract(payload_json, '$.name') = 'epoch' "
+            "ORDER BY seq DESC LIMIT 1",
+            (run_id, attempt),
+        ).fetchone()
+        if row is None:
+            return None
+        event = parse_event(
+            "metric", json.loads(row["payload_json"]), row["source_end"]
+        )
+        return event if isinstance(event, Metric) else None
+
     @contextmanager
     def _transaction(self) -> Iterator[None]:
         self._connection.execute("BEGIN IMMEDIATE")

@@ -131,6 +131,34 @@ const negativeResponses = [
     code: 'response',
     key: 'invalidRunResponse',
   })),
+  ...[
+    {},
+    [],
+    { epoch: '1', total_epochs: 100 },
+    { epoch: true, total_epochs: 100 },
+    { epoch: -1, total_epochs: 100 },
+    { epoch: 1.5, total_epochs: 100 },
+    { epoch: Number.MAX_SAFE_INTEGER + 1, total_epochs: 100 },
+    { epoch: 1, total_epochs: '100' },
+    { epoch: 1, total_epochs: true },
+    { epoch: 1, total_epochs: 0 },
+    { epoch: 1, total_epochs: -100 },
+    { epoch: 1, total_epochs: 100.5 },
+    { epoch: 1, total_epochs: Number.MAX_SAFE_INTEGER + 1 },
+  ].flatMap((progress) => [
+    {
+      method: 'run',
+      body: { ...matrixRun, progress },
+      code: 'response',
+      key: 'invalidRunResponse',
+    },
+    {
+      method: 'list',
+      body: { runs: [{ ...matrixRun, progress }] },
+      code: 'response',
+      key: 'invalidRunResponse',
+    },
+  ]),
   { method: 'list', body: { runs: [{}] }, code: 'response', key: 'invalidRunResponse' },
   ...Object.keys(matrixPlan).map((field) => ({
     method: 'plan',
@@ -195,6 +223,38 @@ describe('malformed response diagnostic compatibility matrix', () => {
 
     if ('params' in rest) Object.assign(expected, { clientMessageParams: rest.params });
     await expect(operation).rejects.toMatchObject(expected);
+  });
+});
+
+describe.each(['get', 'list'])('run progress through %s', (method) => {
+  it.each([
+    { label: 'omitted progress', fields: {}, expected: null },
+    { label: 'null progress', fields: { progress: null }, expected: null },
+    {
+      label: 'zero epoch',
+      fields: { progress: { epoch: 0, total_epochs: 100 } },
+      expected: { epoch: 0, totalEpochs: 100, fraction: 0 },
+    },
+    {
+      label: 'partial progress',
+      fields: { progress: { epoch: 34, total_epochs: 100 } },
+      expected: { epoch: 34, totalEpochs: 100, fraction: 0.34 },
+    },
+    {
+      label: 'capped progress',
+      fields: { progress: { epoch: 120, total_epochs: 100 } },
+      expected: { epoch: 120, totalEpochs: 100, fraction: 1 },
+    },
+  ])('maps $label to domain progress', async ({ fields, expected }) => {
+    const body = { ...matrixRun, ...fields };
+
+    const api = new DaemonApi(origin, {}, async (url) =>
+      json(String(url).endsWith('/health') ? health : method === 'list' ? { runs: [body] } : body),
+    );
+
+    api.setToken(token);
+    const run = method === 'list' ? (await api.listRuns())[0] : await api.getRun(matrixId);
+    expect(run?.progress).toEqual(expected);
   });
 });
 
@@ -686,7 +746,7 @@ describe('daemon transport', () => {
     );
 
     api.setToken('short');
-    await expect(api.getRun(run)).resolves.toEqual(view);
+    await expect(api.getRun(run)).resolves.toEqual({ ...view, progress: null });
     response = { ...view, run_id: '22222222-2222-2222-2222-222222222222' };
     await expect(api.getRun(run)).rejects.toMatchObject({ code: 'response' });
     response = { ...view, state: 'success' };
@@ -771,8 +831,8 @@ describe('daemon transport', () => {
     expect(() => api.approvedRequest({ ...plan })).toThrow();
     expect(Object.isFrozen(plan)).toBe(true);
     expect(Object.isFrozen(plan.preview.argv)).toBe(true);
-    await expect(api.submit(plan)).resolves.toEqual(submitted);
-    await expect(api.submit(plan)).resolves.toEqual(submitted);
+    await expect(api.submit(plan)).resolves.toEqual({ ...submitted, progress: null });
+    await expect(api.submit(plan)).resolves.toEqual({ ...submitted, progress: null });
     api.clearToken();
     api.setToken(token);
     expect(() => api.approvedRequest(plan)).toThrow();

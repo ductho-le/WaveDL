@@ -38,6 +38,11 @@ export const planPreviewSchema = jsonObjectSchema.and(
   }),
 );
 
+const runProgressSchema = z.object({
+  epoch: integer.refine((value) => value >= 0),
+  total_epochs: positive,
+});
+
 export const runViewSchema = z.object({
   plan_id: uuid,
   run_id: uuid,
@@ -50,6 +55,7 @@ export const runViewSchema = z.object({
   submission_requested: z.boolean(),
   cancellation_requested: z.boolean(),
   evidence: jsonObjectSchema.nullable(),
+  progress: runProgressSchema.nullable().optional(),
   // Older daemons omit these; a run is still valid without a human identity.
   created_at: z.iso.datetime({ offset: true }).nullable().optional(),
   summary: z

@@ -14,7 +14,7 @@ import os
 import re
 import signal
 import threading
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from wavedl_daemon.backends.contracts import Planner
     from wavedl_daemon.runs.layout import RunPaths
     from wavedl_daemon.runs.lifecycle import RunHead
+    from wavedl_daemon.runs.model import Metric
     from wavedl_daemon.storage.plans import PlanRecord, PlanStore
     from wavedl_daemon.storage.run_log import RunLog
     from wavedl_daemon.storage.settings import Settings
@@ -79,6 +80,12 @@ class PlanResponse:
 
 
 @dataclass(frozen=True)
+class RunProgress:
+    epoch: int
+    total_epochs: int
+
+
+@dataclass(frozen=True)
 class RunResponse:
     plan_id: str
     run_id: str
@@ -93,9 +100,27 @@ class RunResponse:
     evidence: dict | None = None
     created_at: str | None = None
     summary: dict | None = None
+    progress: RunProgress | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def _run_progress(
+    metric: Metric | None, approved_epochs: int | None
+) -> RunProgress | None:
+    if metric is None:
+        return None
+    epoch = metric.epoch
+    total = metric.stats.get("total_epochs", approved_epochs)
+    if (
+        type(epoch) is not int
+        or not 0 <= epoch <= 9007199254740991
+        or type(total) is not int
+        or not 0 < total <= 9007199254740991
+    ):
+        return None
+    return RunProgress(epoch, total)
 
 
 def _run_summary(plan: Plan) -> dict:
@@ -490,7 +515,9 @@ class RunService:
         self._guard()
         return self._owned(run_id).plan.spec.paths
 
-    def _view(self, record: PlanRecord) -> RunResponse:
+    def _view(
+        self, record: PlanRecord, *, include_progress: bool = True
+    ) -> RunResponse:
         plan = record.plan
         head = self.log.head(RunId(record.run_id))
         if head is None:
@@ -499,7 +526,7 @@ class RunService:
             current = status(head)
             state, uncertainty = current.state.value, not current.confirmed
             evidence = _evidence(head)
-        return RunResponse(
+        view = RunResponse(
             record.plan_id,
             record.run_id,
             record.request_id,
@@ -514,6 +541,21 @@ class RunService:
             record.created_at,
             _run_summary(plan),
         )
+        return self._with_progress(view) if include_progress else view
+
+    def _with_progress(self, view: RunResponse) -> RunResponse:
+        if view.attempt is None or view.state not in {
+            "pending",
+            "submitted",
+            "queued",
+            "held",
+            "running",
+            "stopping",
+        }:
+            return view
+        metric = self.log.latest_epoch_metric(RunId(view.run_id), view.attempt)
+        approved_epochs = None if view.summary is None else view.summary.get("epochs")
+        return replace(view, progress=_run_progress(metric, approved_epochs))
 
     def list(
         self, limit: int = 50, offset: int = 0, state: str | None = None
@@ -537,11 +579,11 @@ class RunService:
                 for record in self.plans.page(limit=limit, offset=offset)
             ]
         # A bounded scan keeps state filtering from monopolizing the owner thread.
-        matches = [
-            view
-            for view in map(self._view, self.plans.page(limit=1000, offset=0))
-            if view.state == state
-        ]
+        views = (
+            self._view(record, include_progress=False)
+            for record in self.plans.page(limit=1000, offset=0)
+        )
+        matches = [view for view in views if view.state == state]
         if self.plans.page(limit=1, offset=1000):
             raise BudgetExhausted("Derived-state list scan capacity exhausted")
-        return matches[offset : offset + limit]
+        return [self._with_progress(view) for view in matches[offset : offset + limit]]

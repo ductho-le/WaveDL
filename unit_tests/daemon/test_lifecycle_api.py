@@ -23,11 +23,12 @@ from wavedl_daemon.execution.pool import BoundedThreadPool
 from wavedl_daemon.http.app import create_app
 from wavedl_daemon.http.runs import lifecycle_routes
 from wavedl_daemon.runs.controller import RunController
-from wavedl_daemon.runs.service import RunService
+from wavedl_daemon.runs.model import Metric, RunId
+from wavedl_daemon.runs.service import RunProgress, RunService, _run_progress
 from wavedl_daemon.storage.database import open_database
 from wavedl_daemon.storage.ownership import acquire_dispatch_lock
 from wavedl_daemon.storage.plans import PlanStore, canonical_request
-from wavedl_daemon.storage.run_log import RunLog
+from wavedl_daemon.storage.run_log import Expect, RunLog
 from wavedl_daemon.storage.settings import Settings
 
 from .test_hosted_app import StubSupervisor, train_payload
@@ -766,6 +767,136 @@ def test_duplicate_key_header_is_refused(environment):
             )
 
     assert asyncio.run(run()).status_code == 400
+
+
+@pytest.mark.parametrize(
+    ("metric", "approved_epochs", "expected"),
+    [
+        (None, 10, None),
+        (Metric(0, {}, 1), 10, RunProgress(0, 10)),
+        (Metric(12, {}, 1), 10, RunProgress(12, 10)),
+        (Metric(2, {"total_epochs": 20}, 1), 10, RunProgress(2, 20)),
+        (Metric(2, {"total_epochs": 20}, 1), None, RunProgress(2, 20)),
+        (Metric(2, {}, 1), None, None),
+        (Metric(2, {}, 1), 0, None),
+        (Metric(2, {}, 1), -1, None),
+        (Metric(2, {}, 1), True, None),
+        (Metric(2, {}, 1), 2.0, None),
+        (Metric(2, {}, 1), 9007199254740992, None),
+        (Metric(2, {"total_epochs": None}, 1), 10, None),
+        (Metric(2, {"total_epochs": 0}, 1), 10, None),
+        (Metric(2, {"total_epochs": -1}, 1), 10, None),
+        (Metric(2, {"total_epochs": True}, 1), 10, None),
+        (Metric(2, {"total_epochs": 2.0}, 1), 10, None),
+        (Metric(2, {"total_epochs": "10"}, 1), 10, None),
+        (Metric(2, {"total_epochs": 9007199254740992}, 1), 10, None),
+        (Metric(-1, {}, 1), 10, None),
+        (Metric(True, {}, 1), 10, None),
+        (Metric(2.0, {}, 1), 10, None),
+        (Metric("2", {}, 1), 10, None),
+        (Metric(9007199254740992, {}, 1), 10, None),
+        (
+            Metric(9007199254740991, {"total_epochs": 9007199254740991}, 1),
+            None,
+            RunProgress(9007199254740991, 9007199254740991),
+        ),
+    ],
+)
+def test_run_progress_uses_only_valid_same_record_or_approved_totals(
+    metric, approved_epochs, expected
+):
+    assert _run_progress(metric, approved_epochs) == expected
+
+
+@pytest.mark.parametrize(
+    ("stats", "expected"),
+    [
+        ({"val_loss": 0.5}, {"epoch": 1, "total_epochs": 2}),
+        ({"total_epochs": 10}, {"epoch": 1, "total_epochs": 10}),
+        ({"total_epochs": None}, None),
+        ({"total_epochs": 0}, None),
+        ({"total_epochs": True}, None),
+    ],
+)
+def test_list_and_get_share_current_running_progress(environment, stats, expected):
+    run_id = planned_and_submitted(environment, "live-progress")["run_id"]
+    view = tick_until(environment, run_id, lambda view: view.state == "running")
+    environment.log.append(
+        RunId(run_id), [Metric(1, stats, 20)], expect=Expect(offset=(view.attempt, 0))
+    )
+    got = request(environment.app, "GET", f"/api/runs/{run_id}")
+    listed = request(environment.app, "GET", "/api/runs")
+    assert got.status_code == listed.status_code == 200
+    assert got.json()["progress"] == expected
+    assert listed.json()["runs"] == [got.json()]
+    assert got.json()["summary"]["epochs"] == 2
+    cancelled = request(environment.app, "POST", f"/api/runs/{run_id}/cancel")
+    assert cancelled.status_code == 202
+    assert cancelled.json()["state"] == "stopping"
+    assert cancelled.json()["progress"] == expected
+
+
+def test_progress_fallback_never_uses_a_previous_metrics_total(environment):
+    run_id = planned_and_submitted(environment, "record-progress")["run_id"]
+    view = tick_until(environment, run_id, lambda view: view.state == "running")
+    environment.log.append(
+        RunId(run_id),
+        [Metric(1, {"total_epochs": 10}, 20), Metric(0, {}, 40)],
+        expect=Expect(offset=(view.attempt, 0)),
+    )
+    got = request(environment.app, "GET", f"/api/runs/{run_id}")
+    assert got.json()["progress"] == {"epoch": 0, "total_epochs": 2}
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_progress_is_null_before_metrics_and_after_a_run_ends(environment, returncode):
+    app = environment.app
+    plan = request(
+        app, "POST", "/api/runs/plan", body=payload(), key="null-progress"
+    ).json()
+    run_id = plan["run_id"]
+    assert request(app, "GET", f"/api/runs/{run_id}").json()["progress"] is None
+    submitted = request(app, "POST", "/api/runs", body={"plan_id": plan["plan_id"]})
+    assert submitted.json()["progress"] is None
+    view = tick_until(environment, run_id, lambda view: view.state == "running")
+    assert request(app, "GET", f"/api/runs/{run_id}").json()["progress"] is None
+    environment.log.append(
+        RunId(run_id), [Metric(1, {}, 20)], expect=Expect(offset=(view.attempt, 0))
+    )
+    environment.supervisor.launches[-1].finish(returncode)
+    tick_until(environment, run_id, lambda view: view.state in {"completed", "failed"})
+    assert request(app, "GET", f"/api/runs/{run_id}").json()["progress"] is None
+    assert request(app, "GET", "/api/runs").json()["runs"][0]["progress"] is None
+
+
+def test_filtered_progress_queries_only_the_returned_live_page(
+    environment, monkeypatch
+):
+    app = environment.app
+    plans = [
+        request(
+            app, "POST", "/api/runs/plan", body=payload(), key=f"page-{index}"
+        ).json()
+        for index in range(4)
+    ]
+    for plan in (plans[1], plans[3]):
+        request(app, "POST", "/api/runs", body={"plan_id": plan["plan_id"]})
+    calls = []
+    latest = environment.log.latest_epoch_metric
+
+    def lookup(run_id, attempt):
+        calls.append((run_id, attempt))
+        return latest(run_id, attempt)
+
+    monkeypatch.setattr(environment.log, "latest_epoch_metric", lookup)
+    response = request(app, "GET", "/api/runs?state=pending&limit=1&offset=1")
+    assert response.status_code == 200
+    assert [run["run_id"] for run in response.json()["runs"]] == [plans[3]["run_id"]]
+    assert calls == [(plans[3]["run_id"], 1)]
+    calls.clear()
+    response = request(app, "GET", "/api/runs?state=planned&limit=1&offset=1")
+    assert [run["run_id"] for run in response.json()["runs"]] == [plans[2]["run_id"]]
+    assert calls == []
 
 
 def test_runs_carry_creation_time_and_approved_inputs(environment):

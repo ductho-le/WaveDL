@@ -42,6 +42,12 @@ export { RUN_STATES };
 
 export type RunState = (typeof RUN_STATES)[number];
 
+export interface RunProgress {
+  epoch: number;
+  totalEpochs: number;
+  fraction: number;
+}
+
 export interface RunView {
   plan_id: string;
   run_id: string;
@@ -56,6 +62,7 @@ export interface RunView {
   evidence: z.output<typeof runEvidenceSchema> | null;
   created_at?: string | null;
   summary?: RunSummary | null;
+  progress?: RunProgress | null;
 }
 
 /** The approved inputs that name a run; never live state. */
@@ -152,6 +159,13 @@ function runView(value: Json, expectedRunId?: string): RunView {
   return {
     ...run,
     evidence: run.evidence === null ? null : runEvidence(run.evidence),
+    progress: run.progress
+      ? {
+          epoch: run.progress.epoch,
+          totalEpochs: run.progress.total_epochs,
+          fraction: Math.min(1, run.progress.epoch / run.progress.total_epochs),
+        }
+      : null,
   };
 }
 

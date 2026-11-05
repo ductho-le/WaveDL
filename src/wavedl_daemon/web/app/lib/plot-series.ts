@@ -1,5 +1,4 @@
 import { clientRangeError } from '../i18n/client-messages';
-import type uPlot from 'uplot';
 import type { MetricRecord } from './metric-history';
 import type { RuntimeMetricField } from '../../shared/schemas/metric-history';
 
@@ -22,9 +21,14 @@ export const PLOT_LABELS = {
   lr: 'Learning rate',
 } satisfies Record<string, string>;
 
+export interface PlotPoint {
+  step: number;
+  values: Partial<Record<RuntimeMetricField, number | null>>;
+}
+
 export interface PlotSeries {
-  data: uPlot.AlignedData;
-  fields: readonly string[];
+  points: readonly PlotPoint[];
+  fields: readonly RuntimeMetricField[];
   pointCount: number;
 }
 
@@ -78,9 +82,32 @@ export function buildPlotSeries(
 
   const steps = [...rows.keys()].sort((a, b) => a - b);
 
-  const values = selected.map((field) =>
-    steps.map((step) => rows.get(step)?.get(field)?.value ?? null),
-  );
+  const points = steps.map((step): PlotPoint => ({
+    step,
+    values: Object.fromEntries(
+      selected.map((field) => [field, rows.get(step)?.get(field)?.value ?? null]),
+    ),
+  }));
 
-  return { data: [steps, ...values], fields: selected, pointCount: steps.length };
+  return {
+    points,
+    fields: selected.filter((field) => points.some((point) => point.values[field] != null)),
+    pointCount: steps.length,
+  };
+}
+
+export function minimumPoint(
+  series: PlotSeries,
+  field: RuntimeMetricField,
+): { step: number; value: number } | null {
+  let minimum: { step: number; value: number } | null = null;
+
+  for (const point of series.points) {
+    const value = point.values[field];
+
+    if (value != null && (minimum === null || value < minimum.value))
+      minimum = { step: point.step, value };
+  }
+
+  return minimum;
 }

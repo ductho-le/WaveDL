@@ -71,6 +71,8 @@ function navigate(section: WorkstationSection) {
 
 function shortcut(event: KeyboardEvent) {
   if (event.key === 'Escape') {
+    if (event.defaultPrevented) return;
+
     if (layout.isFocusMode.value) layout.exitFocusMode();
     else if (!isDesktop.value) layout.closePanel();
   }

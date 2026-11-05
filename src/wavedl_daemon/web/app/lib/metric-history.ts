@@ -3,7 +3,7 @@ import {
   type ClientErrorKey,
   type ClientErrorParams,
 } from '../i18n/client-messages';
-import { DaemonApiError, type JsonObject, type RunView } from './daemon-api';
+import { DaemonApiError, type JsonObject, type RunProgress, type RunView } from './daemon-api';
 import {
   metricPayloadSchema,
   metricEventScopeSchema,
@@ -36,7 +36,7 @@ function snapshotMetric(record: StoredMetricRecord): MetricRecord {
 }
 
 export interface MetricSummary {
-  progress: { epoch: number; totalEpochs: number; fraction: number } | null;
+  progress: RunProgress | null;
   best: number | null;
   latest: MetricRecord | null;
   /** Present only when the selected runtime has emitted metrics. */

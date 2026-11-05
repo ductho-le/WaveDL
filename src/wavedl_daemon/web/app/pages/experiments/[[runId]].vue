@@ -9,7 +9,7 @@ definePageMeta({
   title: 'shell.experiments',
   breadcrumb: 'shell.experiments',
   fullWidth: true,
-  fillHeight: false,
+  fillHeight: true,
 });
 
 const { state, api, reportFailure } = useWorkstation();

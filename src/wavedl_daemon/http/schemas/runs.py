@@ -5,9 +5,9 @@ Author: Ngo Duc Manh Le (manh@nnsvn.me)
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import MISSING, JsonValue
+from pydantic import MISSING, Field, JsonValue
 
 from wavedl_daemon.http.schemas.common import WireModel
 from wavedl_daemon.runs.lifecycle import RunState
@@ -100,6 +100,11 @@ class RunEvidence(WireModel):
     restart_count: int | None
 
 
+class RunProgressView(WireModel):
+    epoch: Annotated[int, Field(ge=0, le=9007199254740991)]
+    total_epochs: Annotated[int, Field(gt=0, le=9007199254740991)]
+
+
 class RunResponse(WireModel):
     """Lifecycle view retaining the existing daemon response field types."""
 
@@ -116,6 +121,7 @@ class RunResponse(WireModel):
     evidence: RunEvidence | None
     created_at: str | None
     summary: dict[str, JsonValue] | None
+    progress: RunProgressView | None
 
 
 class RunList(WireModel):
