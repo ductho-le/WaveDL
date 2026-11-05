@@ -33,9 +33,6 @@ export function trainingCommand(draft: TrainingRequest): string {
   if (request.topology.num_machines !== 1 || request.topology.machine_rank !== 0)
     throw clientError('exportMultiNode', {});
 
-  if (!['cpu', 'cuda'].includes(request.runtime.device))
-    throw clientError('exportDeviceRequired', {});
-
   if (request.runtime.mode === 'container') throw clientError('exportContainerStartup', {});
 
   const environment = Object.entries(request.runtime.environment).map(
@@ -45,6 +42,7 @@ export function trainingCommand(draft: TrainingRequest): string {
   // Explicit, like the daemon's plan, so launcher auto-detection cannot add processes.
   const argv = ['wavedl-train', '--num_gpus', String(request.topology.processes_per_machine)];
 
+  // auto, mps and cuda all leave device selection to the launcher.
   if (request.runtime.device === 'cpu') argv.push('--cpu');
 
   for (const option of options) {
