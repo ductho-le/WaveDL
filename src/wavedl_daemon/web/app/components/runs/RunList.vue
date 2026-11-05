@@ -11,6 +11,7 @@ import {
 } from '../../lib/run-overview';
 
 const FOLD_DURATION = 340;
+
 const styles = {
   root: cn(
     'flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden',
@@ -35,6 +36,7 @@ const styles = {
 };
 
 type CollectionColumns = { [Key in RunColumnId]: RunColumnRegistry[Key] & { weight: number } };
+
 type PendingFocus = { kind: 'detail'; runId: string } | { kind: 'row'; runId: string };
 
 const props = defineProps<{
@@ -48,13 +50,13 @@ const props = defineProps<{
   lastRefreshed?: string | null;
   now: Date;
 }>();
+
 const emit = defineEmits<{
   select: [runId: string];
   refresh: [];
   page: [offset: number];
   focusDetail: [];
 }>();
-defineSlots<{ detail(): unknown }>();
 
 const { t, locale } = useI18n({ useScope: 'global' });
 const labels = useRunLabels();
@@ -87,6 +89,7 @@ const identityWidth = computed(() => Math.max(0, listWidth.value - 2 - gutter.va
 const metadataWidth = computed(() => Math.max(0, tableWidth.value - identityWidth.value - 28));
 const cardTransition = computed(() => ({ duration: animate.value ? 0.25 : 0, delay: animate.value ? 0.09 : 0, ease: [0.22, 1, 0.36, 1] }));
 const seamTransition = computed(() => ({ duration: animate.value ? 0.17 : 0, delay: animate.value ? 0.17 : 0, ease: [0.22, 1, 0.36, 1] }));
+
 const seamExit = computed(() => ({
   opacity: [null, 0, 0], x: [null, 32, 32],
   transition: { duration: animate.value ? 0.34 : 0, times: [0, 0.35, 1], ease: [0.22, 1, 0.36, 1] },
@@ -102,38 +105,52 @@ const registry = computed<CollectionColumns>(() => ({
   created: { id: 'created', labelKey: 'runs.columnCreated', kind: 'number', initialDirection: 'desc', weight: 20, value: (run) => runCreatedAt(run)?.getTime() ?? null },
   state: { id: 'state', labelKey: 'runs.columnState', kind: 'text', initialDirection: 'asc', weight: 24, value: (run) => t(runStateMessageKeys[run.state]) },
 }));
+
 const columns = computed(() => Object.values(registry.value));
 const collator = computed(() => new Intl.Collator(locale.value, { numeric: true, sensitivity: 'base' }));
 const counts = computed(() => runCounts(props.runs));
+
 const filterOptions = computed<{ value: RunFilter; label: string }[]>(() => [
   { value: 'all', label: `${t('runs.filterAll')} ${counts.value.all}` },
   { value: 'live', label: `${t('runs.filterLive')} ${counts.value.live}` },
   { value: 'completed', label: `${t('runs.filterDone')} ${counts.value.completed}` },
   { value: 'attention', label: `${t('runs.filterAttention')} ${counts.value.attention}` },
 ]);
+
 const groupLabels = computed<Record<RunGroupKey, string>>(() => ({
   live: t('runs.groupLive'), today: t('runs.groupToday'), yesterday: t('runs.groupYesterday'), week: t('runs.groupWeek'), earlier: t('runs.groupEarlier'),
 }));
+
 const visible = computed(() => props.runs.filter((run) =>
   (filter.value === 'all' || runFilterOf(run) === filter.value) && runMatches(run, query.value, [labels.operation(run)]),
 ));
+
 const grouped = computed(() => sort.value.column === 'created' && sort.value.direction === 'desc');
+
 const groups = computed<{ key: RunGroupKey | null; runs: RunView[] }[]>(() => grouped.value
   ? groupRuns(visible.value, props.now)
   : [{ key: null, runs: [...visible.value].sort(compareRuns) }]);
+
 const orderedRuns = computed(() => groups.value.flatMap((group) => group.runs));
+
 const rows = computed(() => {
   const starts = new Map<string, string>();
+
   for (const group of groups.value) {
     const first = group.runs[0];
+
     if (first && group.key) starts.set(first.run_id, groupLabels.value[group.key]);
   }
+
   return orderedRuns.value.map((run) => ({ run, group: starts.get(run.run_id) }));
 });
+
 const filtered = computed(() => filter.value !== 'all' || query.value.trim() !== '');
 const keyboardHintId = `${useId()}-run-keys`;
+
 const updatedLabel = computed(() => {
   const date = new Date(props.lastRefreshed ?? '');
+
   return Number.isNaN(date.getTime()) ? t('runs.unavailable') : t('runs.updatedTime', {
     time: new Intl.DateTimeFormat(locale.value, { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(date),
   });
@@ -143,16 +160,20 @@ const updatedLabel = computed(() => {
 function missingLast<Value>(left: Value | null, right: Value | null, compare: (a: Value, b: Value) => number): number {
   const missingLeft = left === null || left === '';
   const missingRight = right === null || right === '';
+
   if (missingLeft || missingRight) return Number(missingLeft) - Number(missingRight);
+
   return compare(left, right);
 }
 
 function compareRuns(a: RunView, b: RunView): number {
   const column = registry.value[sort.value.column];
   const direction = sort.value.direction === 'asc' ? 1 : -1;
+
   const order = column.kind === 'number'
     ? missingLast(column.value(a), column.value(b), (left, right) => (left - right) * direction)
     : missingLast(column.value(a), column.value(b), (left, right) => collator.value.compare(left, right) * direction);
+
   return order || a.run_id.localeCompare(b.run_id);
 }
 
@@ -164,6 +185,7 @@ function changeSort(column: RunColumn) {
 function sortLabel(column: RunColumn): string {
   const direction = sort.value.column === column.id
     ? sort.value.direction === 'asc' ? 'desc' : 'asc' : column.initialDirection;
+
   return t(direction === 'asc' ? 'runs.sortAscending' : 'runs.sortDescending', { column: t(column.labelKey) });
 }
 
@@ -179,12 +201,16 @@ function rowButton(runId: string): HTMLButtonElement | undefined {
 function focusRow(runId: string) {
   const row = rowButton(runId);
   const body = list.value;
+
   if (!row || !body) {
     search.value?.focus({ preventScroll: true });
+
     return;
   }
+
   const bounds = row.getBoundingClientRect();
   const viewport = body.getBoundingClientRect();
+
   if (bounds.top < viewport.top + 32) body.scrollTop -= viewport.top + 32 - bounds.top;
   else if (bounds.bottom > viewport.bottom) body.scrollTop += bounds.bottom - viewport.bottom;
   row.focus({ preventScroll: true });
@@ -196,18 +222,23 @@ function move(event: KeyboardEvent, step: -1 | 1) {
   const id = target instanceof HTMLElement ? target.dataset.runId : undefined;
   const index = orderedRuns.value.findIndex((run) => run.run_id === id);
   const next = index < 0 ? undefined : orderedRuns.value[Math.min(orderedRuns.value.length - 1, Math.max(0, index + step))];
+
   if (!next) return;
   event.preventDefault();
+
   if (props.folded) emit('select', next.run_id);
   else focusRow(next.run_id);
 }
 
 function moveFromDetail(event: KeyboardEvent) {
   if (!isActive.value || !props.folded || event.defaultPrevented || event.isComposing || (event.key !== 'ArrowDown' && event.key !== 'ArrowUp')) return;
+
   if (!(event.target instanceof Element) || !detailRegion.value?.contains(event.target)) return;
+
   if (event.target.closest('input, textarea, select, button, a, [contenteditable], [aria-haspopup], [role="button"], [role="note"], [role="tab"], [role="slider"], [role="combobox"], [role="menu"], [role="listbox"], [data-slot="tooltip-trigger"], [data-slot="popover-content"], .uplot')) return;
   const index = orderedRuns.value.findIndex((run) => run.run_id === props.selectedRunId);
   const next = index < 0 ? undefined : orderedRuns.value[Math.min(orderedRuns.value.length - 1, Math.max(0, index + (event.key === 'ArrowDown' ? 1 : -1)))];
+
   if (!next) return;
   event.preventDefault();
   emit('select', next.run_id);
@@ -215,6 +246,7 @@ function moveFromDetail(event: KeyboardEvent) {
 
 function enterList(event: KeyboardEvent) {
   const first = orderedRuns.value[0];
+
   if (!isActive.value || !first || event.defaultPrevented || event.isComposing) return;
   event.preventDefault();
   focusRow(first.run_id);
@@ -229,6 +261,7 @@ function clearFocusWork() {
 
 function onCardAnimationComplete() {
   const card = list.value?.parentElement;
+
   if (card && Math.abs(card.offsetWidth - cardWidth.value) < 1) settleFocus();
 }
 
@@ -236,7 +269,9 @@ function settleFocus() {
   clearTimeout(focusTimer);
   const intent = pendingFocus;
   pendingFocus = null;
+
   if (!intent || !isActive.value) return;
+
   if (intent.kind === 'detail') {
     if (props.selectedRunId === intent.runId) emit('focusDetail');
   } else if (props.selectedRunId === null) {
@@ -249,12 +284,16 @@ function settleFocus() {
 async function requestFocus(intent: PendingFocus, wait: boolean) {
   clearFocusWork();
   pendingFocus = intent;
+
   if (intent.kind === 'row') highlighted.value = intent.runId;
   await nextTick();
+
   if (pendingFocus !== intent) return;
+
   if (props.stacked && !props.folded && list.value && list.value.offsetWidth > 0) {
     gutter.value = Math.max(0, list.value.offsetWidth - list.value.clientWidth);
   }
+
   if (wait) focusTimer = setTimeout(settleFocus, FOLD_DURATION + 30);
   else settleFocus();
 }
@@ -262,6 +301,7 @@ async function requestFocus(intent: PendingFocus, wait: boolean) {
 watch(() => props.selectedRunId, (id, previous) => {
   if (!id) detailRegion.value?.setAttribute('inert', '');
   else detailRegion.value?.removeAttribute('inert');
+
   if (id) void requestFocus({ kind: 'detail', runId: id }, previous === null && animate.value);
   else if (previous) void requestFocus({ kind: 'row', runId: previous }, animate.value);
 }, { flush: 'sync' });
@@ -269,21 +309,27 @@ watch(() => props.selectedRunId, (id, previous) => {
 watch([width, () => props.stacked, isActive], async ([measured, , active], _previous, onCleanup) => {
   const intent = pendingFocus;
   clearFocusWork();
+
   if (resizeFrame !== undefined) cancelAnimationFrame(resizeFrame);
   let cancelled = false;
   onCleanup(() => {
     cancelled = true;
+
     if (resizeFrame !== undefined) cancelAnimationFrame(resizeFrame);
   });
   resizing.value = true;
+
   if (!active || measured <= 0) return;
   const firstEntry = !entered.value;
   await nextTick();
+
   if (cancelled) return;
+
   if (list.value && list.value.offsetWidth > 0) gutter.value = Math.max(0, list.value.offsetWidth - list.value.clientWidth);
   resizeFrame = requestAnimationFrame(() => {
     resizing.value = false;
     entered.value = true;
+
     if (intent) void requestFocus(intent, false);
     else if (firstEntry && props.selectedRunId) void requestFocus({ kind: 'detail', runId: props.selectedRunId }, false);
   });
@@ -291,6 +337,7 @@ watch([width, () => props.stacked, isActive], async ([measured, , active], _prev
 
 onScopeDispose(() => {
   clearFocusWork();
+
   if (resizeFrame !== undefined) cancelAnimationFrame(resizeFrame);
 });
 </script>

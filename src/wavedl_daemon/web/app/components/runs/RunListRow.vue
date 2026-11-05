@@ -48,15 +48,19 @@ const emit = defineEmits<{
 const { t, locale } = useI18n({ useScope: 'global' });
 const labels = useRunLabels();
 const created = computed(() => runCreatedAt(props.run));
+
 const exactTime = computed(() => created.value
   ? new Intl.DateTimeFormat(locale.value, { dateStyle: 'medium', timeStyle: 'short' }).format(created.value)
   : undefined);
+
 const shortTime = computed(() => created.value ? relativeTime(created.value, props.now, locale.value, 'short') : '–');
 const longTime = computed(() => created.value ? relativeTime(created.value, props.now, locale.value) : '–');
 const stateLabel = computed(() => `${t(runStateMessageKeys[props.run.state])}${props.stale ? t('runs.stale') : ''}${props.run.uncertainty ? t('runs.uncertain') : ''}`);
+
 const progressLabel = computed(() => props.run.progress
   ? t('runs.progressComplete', { percent: new Intl.NumberFormat(locale.value, { style: 'percent', maximumFractionDigits: 0 }).format(props.run.progress.fraction) })
   : t('runs.progressUnknown'));
+
 const metadata = computed(() => props.columns.filter((column) => column.id !== 'name'));
 
 function selectCell(event: MouseEvent) {
