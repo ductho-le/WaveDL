@@ -29,8 +29,6 @@ export function quotePosix(value: string): string {
 export function trainingCommand(draft: TrainingRequest): string {
   const request = trainingRequestSchema.parse(draft);
 
-  if (!request.runtime.python.startsWith('/')) throw clientError('exportWindowsHost', {});
-
   // The launcher needs a rendezvous address this editor does not collect.
   if (request.topology.num_machines !== 1 || request.topology.machine_rank !== 0)
     throw clientError('exportMultiNode', {});
@@ -43,15 +41,8 @@ export function trainingCommand(draft: TrainingRequest): string {
   if (Object.keys(request.runtime.environment).length)
     throw clientError('envValuesNotExported', {});
 
-  const argv = [
-    request.runtime.python,
-    '-m',
-    'wavedl.launcher',
-    '--num_gpus',
-    String(request.topology.processes_per_machine),
-    '--mixed_precision',
-    request.config.precision,
-  ];
+  // Explicit, like the daemon's plan, so launcher auto-detection cannot add processes.
+  const argv = ['wavedl-train', '--num_gpus', String(request.topology.processes_per_machine)];
 
   if (request.runtime.device === 'cpu') argv.push('--cpu');
 
