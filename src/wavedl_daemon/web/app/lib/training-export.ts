@@ -38,8 +38,9 @@ export function trainingCommand(draft: TrainingRequest): string {
 
   if (request.runtime.mode === 'container') throw clientError('exportContainerStartup', {});
 
-  if (Object.keys(request.runtime.environment).length)
-    throw clientError('envValuesNotExported', {});
+  const environment = Object.entries(request.runtime.environment).map(
+    ([name, value]) => `${name}=${quotePosix(value)}`,
+  );
 
   // Explicit, like the daemon's plan, so launcher auto-detection cannot add processes.
   const argv = ['wavedl-train', '--num_gpus', String(request.topology.processes_per_machine)];
@@ -68,5 +69,5 @@ export function trainingCommand(draft: TrainingRequest): string {
 
   argv.push('--output_dir', './results');
 
-  return argv.map(quotePosix).join(' ');
+  return [...environment, ...argv.map(quotePosix)].join(' ');
 }
