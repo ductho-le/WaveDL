@@ -44,10 +44,7 @@ function displayHealthValue(row: MetricHealth): string {
 }
 </script>
 <template>
-  <section
-    :aria-label="t('runs.health')"
-    class="flex min-w-0 flex-col gap-[0.6rem]"
-  >
+  <section :aria-label="t('runs.health')" class="flex min-w-0 flex-col gap-[0.6rem]">
     <div class="flex flex-wrap items-center justify-between gap-2">
       <h4 class="text-[0.85rem] font-[650]">{{ t('runs.health') }}</h4>
       <InfoChip :label="t('runs.health')" :text="t('runs.healthNote')" uncertain />

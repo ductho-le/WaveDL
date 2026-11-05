@@ -8,7 +8,9 @@ type StatChannel = 'train_loss' | 'val_loss' | 'r2' | 'lr';
 
 const styles = {
   strip: cn('grid shrink-0 grid-cols-[repeat(auto-fit,minmax(7rem,1fr))] py-3'),
-  stat: cn('min-w-0 border-l px-4 first:border-l-0 [&_dt]:truncate [&_dt]:text-xs [&_dt]:text-muted-foreground'),
+  stat: cn(
+    'min-w-0 border-l px-4 first:border-l-0 [&_dt]:truncate [&_dt]:text-xs [&_dt]:text-muted-foreground',
+  ),
   trend: cn(
     'inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[0.65rem] font-medium tabular-nums',
     'bg-muted text-muted-foreground [&_svg]:size-3',
@@ -33,8 +35,9 @@ function series(index: number): (number | null)[] {
   if (!channel) return [];
 
   return props.records.slice(-60).map((record) => {
-    const value = (channel === 'r2' ? record.metrics.r2 ?? record.metrics.val_r2 : record.metrics[channel])
-      ?? (record.name === channel ? record.value : null);
+    const value =
+      (channel === 'r2' ? (record.metrics.r2 ?? record.metrics.val_r2) : record.metrics[channel]) ??
+      (record.name === channel ? record.value : null);
 
     return value !== null && value !== undefined && Number.isFinite(value) ? value : null;
   });
@@ -60,16 +63,20 @@ function trend(
   if (channel.name !== 'r2' && previous !== 0) options.style = 'percent';
   const format = new Intl.NumberFormat(locale.value, options);
 
-  const change = channel.name === 'r2' || previous === 0
-    ? latest - previous
-    : (latest - previous) / Math.abs(previous);
+  const change =
+    channel.name === 'r2' || previous === 0
+      ? latest - previous
+      : (latest - previous) / Math.abs(previous);
 
   return {
     text: format.format(change),
     rising,
-    tone: channel.risingIsBetter === null
-      ? 'neutral'
-      : rising === channel.risingIsBetter ? 'good' : 'bad',
+    tone:
+      channel.risingIsBetter === null
+        ? 'neutral'
+        : rising === channel.risingIsBetter
+          ? 'good'
+          : 'bad',
   };
 }
 
@@ -108,8 +115,14 @@ const stats = computed(() => {
         ...change,
         label: [
           t('runs.changeFromPrevious', { value: change.text }),
-          change.tone === 'good' ? t('runs.improving') : change.tone === 'bad' ? t('runs.worsening') : '',
-        ].filter(Boolean).join(', '),
+          change.tone === 'good'
+            ? t('runs.improving')
+            : change.tone === 'bad'
+              ? t('runs.worsening')
+              : '',
+        ]
+          .filter(Boolean)
+          .join(', '),
       },
     };
   });
@@ -120,10 +133,25 @@ const stats = computed(() => {
     <div v-for="stat in stats" :key="stat.label" :class="styles.stat">
       <dt :title="stat.label">{{ stat.label }}</dt>
       <dd class="mt-1 flex h-12 flex-wrap content-start items-baseline gap-x-2 gap-y-0.5">
-        <span class="truncate text-lg font-semibold tracking-tight tabular-nums" :title="stat.value == null ? undefined : String(stat.value)">{{ stat.text }}</span>
-        <span v-if="stat.epoch !== undefined" class="text-xs text-muted-foreground tabular-nums">{{ t('runs.atEpoch', { epoch: stat.epoch }) }}</span>
-        <span v-if="stat.trend" :class="styles.trend" :data-tone="stat.trend.tone" role="img" :aria-label="stat.trend.label">
-          <TrendingUp v-if="stat.trend.rising" aria-hidden="true" /><TrendingDown v-else aria-hidden="true" />
+        <span
+          class="truncate text-lg font-semibold tracking-tight tabular-nums"
+          :title="stat.value == null ? undefined : String(stat.value)"
+          >{{ stat.text }}</span
+        >
+        <span v-if="stat.epoch !== undefined" class="text-xs text-muted-foreground tabular-nums">{{
+          t('runs.atEpoch', { epoch: stat.epoch })
+        }}</span>
+        <span
+          v-if="stat.trend"
+          :class="styles.trend"
+          :data-tone="stat.trend.tone"
+          role="img"
+          :aria-label="stat.trend.label"
+        >
+          <TrendingUp v-if="stat.trend.rising" aria-hidden="true" /><TrendingDown
+            v-else
+            aria-hidden="true"
+          />
           <span aria-hidden="true">{{ stat.trend.text }}</span>
         </span>
       </dd>

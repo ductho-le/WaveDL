@@ -31,10 +31,7 @@ function share(value: number | null): string {
 }
 </script>
 <template>
-  <section
-    :aria-label="t('runs.perParam')"
-    class="flex min-w-0 flex-col gap-[0.6rem]"
-  >
+  <section :aria-label="t('runs.perParam')" class="flex min-w-0 flex-col gap-[0.6rem]">
     <h4 class="text-[0.85rem] font-[650]">{{ t('runs.perParam') }}</h4>
     <dl class="flex flex-col gap-[0.55rem] m-0">
       <div v-for="parameter in parameters" :key="parameter.name" :class="cn(styles.parameterRow)">

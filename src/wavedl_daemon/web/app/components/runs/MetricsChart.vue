@@ -76,30 +76,39 @@ const visibleFields = computed(() => {
 
 const chartData = computed(() => [...(projection.value.series?.points ?? [])]);
 
-const chartConfig = computed<ChartConfig>(() => Object.fromEntries(
-  fields.value.map((field, index) => [field, {
-    label: metricLabel(field),
-    color: index === 0 ? 'var(--primary)' : 'var(--chart-2)',
-  }]),
-));
-
-const visibleConfig = computed<ChartConfig>(() => Object.fromEntries(
-  Object.entries(chartConfig.value).filter(([field]) =>
-    visibleFields.value.some((visible) => visible === field),
+const chartConfig = computed<ChartConfig>(() =>
+  Object.fromEntries(
+    fields.value.map((field, index) => [
+      field,
+      {
+        label: metricLabel(field),
+        color: index === 0 ? 'var(--primary)' : 'var(--chart-2)',
+      },
+    ]),
   ),
-));
+);
 
-const colors = computed(() => visibleFields.value.map(
-  (field) => chartConfig.value[field]?.color ?? 'var(--primary)',
-));
+const visibleConfig = computed<ChartConfig>(() =>
+  Object.fromEntries(
+    Object.entries(chartConfig.value).filter(([field]) =>
+      visibleFields.value.some((visible) => visible === field),
+    ),
+  ),
+);
 
-const y = computed(() => visibleFields.value.map(
-  (field) => (point: PlotPoint) => point.values[field] ?? undefined,
-));
+const colors = computed(() =>
+  visibleFields.value.map((field) => chartConfig.value[field]?.color ?? 'var(--primary)'),
+);
 
-const best = computed(() => channel.value === 'loss' && projection.value.series
-  ? minimumPoint(projection.value.series, 'val_loss')
-  : null);
+const y = computed(() =>
+  visibleFields.value.map((field) => (point: PlotPoint) => point.values[field] ?? undefined),
+);
+
+const best = computed(() =>
+  channel.value === 'loss' && projection.value.series
+    ? minimumPoint(projection.value.series, 'val_loss')
+    : null,
+);
 
 function selectChannel(value: string | number) {
   if (value === 'loss' || value === 'r2' || value === 'lr') {
@@ -117,7 +126,11 @@ function toggleField(field: RuntimeMetricField) {
   }
 }
 
-const zoomTo: NonNullable<FreeBrushConfigInterface<PlotPoint>['onBrushEnd']> = (selection, _event, userDriven) => {
+const zoomTo: NonNullable<FreeBrushConfigInterface<PlotPoint>['onBrushEnd']> = (
+  selection,
+  _event,
+  userDriven,
+) => {
   if (!userDriven || !selection) return;
   const [start, end] = selection;
 
@@ -129,14 +142,21 @@ const tooltip = computed(() => {
     labelFormatter: (step: number) => `${t('runs.step')} ${step}`,
   });
 
-  return (point: PlotPoint) => template?.(Object.fromEntries(visibleFields.value.map((field) => [
-    field, point.values[field] ?? t('runs.unavailable'),
-  ])), point.step) ?? '';
+  return (point: PlotPoint) =>
+    template?.(
+      Object.fromEntries(
+        visibleFields.value.map((field) => [field, point.values[field] ?? t('runs.unavailable')]),
+      ),
+      point.step,
+    ) ?? '';
 });
 </script>
 
 <template>
-  <section class="flex min-h-0 min-w-0 flex-1 flex-col gap-3" :aria-label="t('runs.runtimeHistory')">
+  <section
+    class="flex min-h-0 min-w-0 flex-1 flex-col gap-3"
+    :aria-label="t('runs.runtimeHistory')"
+  >
     <Tabs class="min-h-0 flex-1 gap-3" :model-value="channel" @update:model-value="selectChannel">
       <div :class="styles.header">
         <TabsList :aria-label="t('runs.channel')">
@@ -155,7 +175,11 @@ const tooltip = computed(() => {
             :class="cn(!visibleFields.includes(field) && 'opacity-50')"
             @click="toggleField(field)"
           >
-            <span class="h-0.5 w-3" :style="{ backgroundColor: chartConfig[field]?.color }" aria-hidden="true" />
+            <span
+              class="h-0.5 w-3"
+              :style="{ backgroundColor: chartConfig[field]?.color }"
+              aria-hidden="true"
+            />
             {{ metricLabel(field) }}
           </Button>
         </div>
@@ -167,7 +191,8 @@ const tooltip = computed(() => {
           :aria-label="t('runs.resetZoom')"
           :title="t('runs.resetZoom')"
           @click="zoom = null"
-        ><Maximize2 aria-hidden="true" /></Button>
+          ><Maximize2 aria-hidden="true"
+        /></Button>
       </div>
       <TabsContent :value="channel" force-mount class="m-0 flex min-h-40 min-w-0 flex-1 flex-col">
         <p v-if="message" role="status" :class="styles.state">{{ message }}</p>
@@ -176,9 +201,16 @@ const tooltip = computed(() => {
         </div>
         <div v-else-if="!projection.series?.pointCount" role="status" :class="styles.state">
           <ChartLine aria-hidden="true" />
-          {{ t('runs.waitingChannel', {
-            channel: channel === 'lr' ? t('runs.learningRateLower') : channel === 'loss' ? t('runs.lossLower') : t('runs.r2Lower'),
-          }) }}
+          {{
+            t('runs.waitingChannel', {
+              channel:
+                channel === 'lr'
+                  ? t('runs.learningRateLower')
+                  : channel === 'loss'
+                    ? t('runs.lossLower')
+                    : t('runs.r2Lower'),
+            })
+          }}
         </div>
         <div v-else-if="isActive" class="relative min-h-40 min-w-0 flex-1">
           <ChartContainer
@@ -188,7 +220,12 @@ const tooltip = computed(() => {
             cursor
             @dblclick="zoom = null"
           >
-            <VisXYContainer :data="chartData" :x-domain="zoom ?? undefined" :prevent-empty-domain="true" :duration="0">
+            <VisXYContainer
+              :data="chartData"
+              :x-domain="zoom ?? undefined"
+              :prevent-empty-domain="true"
+              :duration="0"
+            >
               <VisLine
                 :x="(point: PlotPoint) => point.step"
                 :y="y"
@@ -196,7 +233,12 @@ const tooltip = computed(() => {
                 :curve-type="CurveType.Linear"
                 :interpolate-missing-data="false"
               />
-              <VisAxis type="x" :label="t('runs.step')" :grid-line="false" :tick-format="(value: number) => Number.isInteger(value) ? String(value) : ''" />
+              <VisAxis
+                type="x"
+                :label="t('runs.step')"
+                :grid-line="false"
+                :tick-format="(value: number) => (Number.isInteger(value) ? String(value) : '')"
+              />
               <VisAxis type="y" />
               <VisPlotline
                 v-if="best"
