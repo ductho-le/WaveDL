@@ -142,6 +142,7 @@ const percent = computed(() =>
       )
     : '',
 );
+
 const elapsed = computed(() => metricSummary.value.current?.elapsedSeconds ?? null);
 
 // Last-known evidence must not read as a live countdown.

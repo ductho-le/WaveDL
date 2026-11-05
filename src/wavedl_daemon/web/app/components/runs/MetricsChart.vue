@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ChartLine, Maximize2 } from '@lucide/vue';
-import { CurveType, type FreeBrushSelection } from '@unovis/ts';
+import { CurveType, type FreeBrushConfigInterface } from '@unovis/ts';
 import { VisXYContainer, VisLine, VisAxis, VisFreeBrush, VisPlotline } from '@unovis/vue';
 import { ChartTooltipContent, componentToString, type ChartConfig } from '@/components/ui/chart';
 import { cn } from '@/lib/utils';
@@ -65,30 +65,38 @@ const message = computed(() => {
 
   return count === undefined ? raw : t('runs.chartCapacity', { count });
 });
+
 const fields = computed(() => projection.value.series?.fields ?? []);
+
 const visibleFields = computed(() => {
   const visible = fields.value.filter((field) => !hiddenFields.value.includes(field));
 
   return visible.length ? visible : fields.value.slice(0, 1);
 });
+
 const chartData = computed(() => [...(projection.value.series?.points ?? [])]);
+
 const chartConfig = computed<ChartConfig>(() => Object.fromEntries(
   fields.value.map((field, index) => [field, {
     label: metricLabel(field),
     color: index === 0 ? 'var(--primary)' : 'var(--chart-2)',
   }]),
 ));
+
 const visibleConfig = computed<ChartConfig>(() => Object.fromEntries(
   Object.entries(chartConfig.value).filter(([field]) =>
     visibleFields.value.some((visible) => visible === field),
   ),
 ));
+
 const colors = computed(() => visibleFields.value.map(
   (field) => chartConfig.value[field]?.color ?? 'var(--primary)',
 ));
+
 const y = computed(() => visibleFields.value.map(
   (field) => (point: PlotPoint) => point.values[field] ?? undefined,
 ));
+
 const best = computed(() => channel.value === 'loss' && projection.value.series
   ? minimumPoint(projection.value.series, 'val_loss')
   : null);
@@ -109,13 +117,12 @@ function toggleField(field: RuntimeMetricField) {
   }
 }
 
-function zoomTo(selection: FreeBrushSelection | undefined, _event: unknown, userDriven: boolean) {
+const zoomTo: NonNullable<FreeBrushConfigInterface<PlotPoint>['onBrushEnd']> = (selection, _event, userDriven) => {
   if (!userDriven || !selection) return;
   const [start, end] = selection;
 
-  if (typeof start === 'number' && typeof end === 'number' && end > start)
-    zoom.value = [start, end];
-}
+  if (!Array.isArray(start) && !Array.isArray(end) && end > start) zoom.value = [start, end];
+};
 
 const tooltip = computed(() => {
   const template = componentToString(visibleConfig.value, ChartTooltipContent, {

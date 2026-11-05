@@ -51,6 +51,7 @@ function trend(
   if (latest === undefined || previous === undefined || !channel || latest === previous)
     return null;
   const rising = latest > previous;
+
   const options: Intl.NumberFormatOptions = {
     maximumSignificantDigits: 2,
     signDisplay: 'always',
@@ -58,6 +59,7 @@ function trend(
 
   if (channel.name !== 'r2' && previous !== 0) options.style = 'percent';
   const format = new Intl.NumberFormat(locale.value, options);
+
   const change = channel.name === 'r2' || previous === 0
     ? latest - previous
     : (latest - previous) / Math.abs(previous);
@@ -87,6 +89,7 @@ const best = computed(() => {
 
 const stats = computed(() => {
   const current = props.summary.current;
+
   const values = [
     { label: t('runs.valLoss'), value: current?.validationLoss, channel: 0 },
     { label: t('runs.trainLoss'), value: current?.trainLoss, channel: 1 },

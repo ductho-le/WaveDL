@@ -22,30 +22,25 @@ const props = defineProps<{
 
 const numberFormat = computed(() => new Intl.NumberFormat(locale.value, { maximumSignificantDigits: 4 }));
 
+function formatted(value: number | null | undefined, suffix = ''): string {
+  return value == null ? t('runs.unavailable') : `${numberFormat.value.format(value)}${suffix}`;
+}
+
 const metrics = computed(() => {
   const current = props.summary.current;
 
   if (!current) return [];
+  const patience = current.patience ? `${current.patience.used} / ${current.patience.maximum}` : null;
 
   return [
-    { label: t('runs.pearson'), exact: current.pearson },
-    { label: t('runs.gradNorm'), exact: current.gradientNorm },
-    { label: t('runs.mae'), exact: current.mae },
-    { label: t('runs.epochDuration'), exact: current.epochSeconds, suffix: ' s' },
-    { label: t('runs.bestR2'), exact: current.bestR2 },
-    { label: t('runs.elapsed'), exact: current.elapsedSeconds, suffix: ' s' },
-    {
-      label: t('runs.patience'),
-      exact: current.patience ? `${current.patience.used} / ${current.patience.maximum}` : null,
-    },
-  ].map((metric) => ({
-    ...metric,
-    value: metric.exact == null
-      ? t('runs.unavailable')
-      : typeof metric.exact === 'number'
-        ? `${numberFormat.value.format(metric.exact)}${metric.suffix ?? ''}`
-        : metric.exact,
-  }));
+    { label: t('runs.pearson'), exact: current.pearson, value: formatted(current.pearson) },
+    { label: t('runs.gradNorm'), exact: current.gradientNorm, value: formatted(current.gradientNorm) },
+    { label: t('runs.mae'), exact: current.mae, value: formatted(current.mae) },
+    { label: t('runs.epochDuration'), exact: current.epochSeconds, value: formatted(current.epochSeconds, ' s') },
+    { label: t('runs.bestR2'), exact: current.bestR2, value: formatted(current.bestR2) },
+    { label: t('runs.elapsed'), exact: current.elapsedSeconds, value: formatted(current.elapsedSeconds, ' s') },
+    { label: t('runs.patience'), exact: patience, value: patience ?? t('runs.unavailable') },
+  ];
 });
 </script>
 <template>
