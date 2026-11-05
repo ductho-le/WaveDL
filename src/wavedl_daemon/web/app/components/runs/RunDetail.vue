@@ -1,42 +1,48 @@
 <script setup lang="ts">
 import { cn } from '@/lib/utils';
 import { motion, useReducedMotion } from 'motion-v';
-import { ArrowLeft, Check, Copy, OctagonX, RotateCcw, ScrollText, X } from '@lucide/vue';
+import { ArrowLeft, Check, Copy, Ellipsis, OctagonX, RotateCcw, ScrollText, X } from '@lucide/vue';
+import { evaluationResults } from '../../lib/evaluation-results';
 import { canRequestCancellation, type RunMonitorSnapshot } from '../../lib/run-monitor';
-import { pathName, runCreatedAt, shortRunId } from '../../lib/run-overview';
+import {
+  durationText,
+  pathName,
+  remainingSeconds,
+  runCreatedAt,
+  shortRunId,
+} from '../../lib/run-overview';
 import {
   runBackendMessageKeys,
   runCancellationMessageKeys,
   runStreamMessageKeys,
 } from '../../i18n/dynamic-keys';
 
-// Utility bundles keep state and descendant styling beside their component.
+type RunDetailTab = 'overview' | 'metrics' | 'configuration' | 'logs' | 'evaluation';
+
 const styles = {
-  runHero: cn(
-    'relative flex flex-col gap-[0.85rem] overflow-hidden p-[1.25rem_1.4rem_1.3rem] rounded-[1.4rem]',
-    'bg-surface',
-    'shadow-[0_0_0_0.5px_color-mix(in_srgb,_var(--foreground)_10%,_transparent),_0_24px_48px_-32px_rgb(0_0_0_/_0.35),_0_2px_6px_rgb(0_0_0_/_0.04)]',
-    "[&::before]:[content:''] [&::before]:absolute [&::before]:[inset:0_0_auto] [&::before]:h-[3px]",
-    '[&::before]:[background:linear-gradient(90deg,_#0a63d8,_#5aa9ff,_#35c46a)]',
+  card: cn('@container h-full min-h-0 min-w-0 gap-0 overflow-hidden py-0'),
+  header: cn('flex shrink-0 flex-col gap-3 px-4 py-3'),
+  stream: cn(
+    'size-2 shrink-0 rounded-full bg-muted-foreground/40',
+    "[&[data-stream='live']]:bg-success",
+    "[&[data-stream='connecting']]:bg-warning [&[data-stream='reconnecting']]:bg-warning",
+    "[&[data-stream='error']]:bg-destructive",
   ),
-  runStream: cn(
-    'inline-flex items-center gap-[0.4rem] p-[0.2rem_0.6rem] rounded-full text-muted-foreground',
-    'text-[0.72rem] font-[550] bg-[color-mix(in_srgb,_var(--foreground)_5%,_transparent)]',
-    '[&_>_span[aria-hidden]::first-letter]:uppercase [&_i]:w-[0.45rem] [&_i]:h-[0.45rem]',
-    '[&_i]:rounded-full [&_i]:bg-[color-mix(in_srgb,_var(--foreground)_25%,_transparent)]',
-    "[&[data-stream='live']_i]:bg-success",
-    "[&[data-stream='live']_i]:shadow-[0_0_0_3px_color-mix(in_srgb,_var(--success)_22%,_transparent)]",
-    "[&[data-stream='connecting']_i]:bg-warning",
-    "[&[data-stream='connecting']_i]:[animation:run-stream-blink_1.2s_ease-in-out_infinite]",
-    "[&[data-stream='reconnecting']_i]:bg-warning",
-    "[&[data-stream='reconnecting']_i]:[animation:run-stream-blink_1.2s_ease-in-out_infinite]",
-    "[&[data-stream='error']_i]:bg-destructive motion-reduce:[&_i]:animate-none",
+  facts: cn(
+    "flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs text-muted-foreground [&>li+li]:before:mr-2 [&>li+li]:before:content-['·'] [&>li]:min-w-0 [&>li]:wrap-anywhere",
   ),
-  runHeroFacts: cn(
-    'flex flex-wrap gap-[0.35rem] m-0 p-0 list-none [&_li]:max-w-full [&_li]:overflow-hidden',
-    '[&_li]:p-[0.2rem_0.6rem] [&_li]:rounded-full [&_li]:text-muted-foreground [&_li]:text-xs',
-    '[&_li]:font-medium [&_li]:text-ellipsis [&_li]:whitespace-nowrap',
-    '[&_li]:bg-[color-mix(in_srgb,_var(--foreground)_5%,_transparent)]',
+  tabs: cn('flex min-h-0 flex-1 flex-col gap-0'),
+  tabList: cn(
+    'h-10 w-full shrink-0 justify-start overflow-x-auto rounded-none border-b bg-transparent p-0 px-2',
+  ),
+  tabTrigger: cn(
+    'h-full flex-none rounded-none border-0 border-b-2 border-transparent px-3 text-xs text-muted-foreground shadow-none',
+    'data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none',
+    'dark:data-[state=active]:border-primary dark:data-[state=active]:bg-transparent',
+  ),
+  body: cn('min-h-0 flex-1 overflow-y-auto p-4'),
+  configuration: cn(
+    'grid gap-0 text-sm [&>div]:grid [&>div]:grid-cols-[minmax(6rem,1fr)_minmax(0,2fr)] [&>div]:gap-4 [&>div]:border-b [&>div]:py-3 [&_dt]:text-muted-foreground [&_dd]:min-w-0 [&_dd]:wrap-anywhere',
   ),
 };
 
@@ -73,6 +79,7 @@ defineExpose({ focusTitle });
 
 defineEmits<{ cancel: []; replay: []; close: [] }>();
 
+const tab = shallowRef<RunDetailTab>('overview');
 const logTarget = shallowRef<HTMLElement | null>(null);
 const parkedLogs = shallowRef<HTMLElement | null>(null);
 
@@ -88,6 +95,12 @@ const metricsUnavailable = computed(
 );
 
 const chartRecords = computed(() => (metricsUnavailable.value ? [] : props.snapshot.metrics));
+
+const healthIssues = computed(() =>
+  metricsUnavailable.value
+    ? 0
+    : (props.snapshot.summary.current?.health.filter((row) => row.severity !== 'good').length ?? 0),
+);
 
 const metricsUnconfirmed = computed(
   () =>
@@ -121,7 +134,6 @@ const created = computed(() => {
   };
 });
 
-/** Approved inputs first, then where and how it executes. */
 const facts = computed(() => {
   const run = props.snapshot.run;
 
@@ -141,149 +153,278 @@ const facts = computed(() => {
 });
 
 const streamLabel = computed(() => t(runStreamMessageKeys[props.snapshot.stream]));
+
+const percent = computed(() =>
+  metricSummary.value.progress
+    ? new Intl.NumberFormat(locale.value, { style: 'percent', maximumFractionDigits: 0 }).format(
+        Math.min(1, Math.max(0, metricSummary.value.progress.fraction)),
+      )
+    : '',
+);
+
+const elapsed = computed(() => metricSummary.value.current?.elapsedSeconds ?? null);
+
+// Last-known evidence must not read as a live countdown.
+const remaining = computed(() =>
+  metricsUnconfirmed.value ? null : remainingSeconds(metricSummary.value.progress, elapsed.value),
+);
+
+const hasEvaluation = computed(
+  () =>
+    props.snapshot.run !== null &&
+    props.snapshot.freshness === 'fresh' &&
+    evaluationResults(props.snapshot.run, props.snapshot.events) !== null,
+);
+
+watch(hasEvaluation, (available) => {
+  if (!available && tab.value === 'evaluation') tab.value = 'overview';
+});
+
+const configuration = computed(() => {
+  const run = props.snapshot.run;
+  const summary = run?.summary;
+  const unavailable = t('runs.unavailable');
+
+  return [
+    { label: t('runs.configModel'), value: summary?.model ?? unavailable },
+    { label: t('runs.configDataset'), value: summary?.data_path ?? unavailable },
+    { label: t('runs.configEpochs'), value: summary?.epochs ?? unavailable },
+    { label: t('runs.configFolds'), value: summary?.cv ?? unavailable },
+    { label: t('runs.configSource'), value: summary?.source_run_id ?? unavailable },
+    { label: t('runs.configOperation'), value: run ? labels.operation(run) : unavailable },
+    { label: t('runs.configBackend'), value: run ? backendLabel(run.backend) : unavailable },
+    { label: t('runs.configAttempt'), value: run?.attempt ?? t('runs.notAllocated') },
+    { label: t('runs.configCreated'), value: created.value?.text ?? unavailable },
+  ];
+});
 </script>
 <template>
-  <section
-    class="flex flex-col gap-4 min-w-0 max-w-full [&_[data-slot='card']]:min-w-0 [&_[data-slot='card']]:max-w-full"
-    :aria-label="t('runs.selected')"
+  <motion.div
+    as-child
+    :initial="animateEntrance ? { opacity: 0, y: 12 } : false"
+    :animate="{ opacity: 1, y: 0 }"
+    :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 300, damping: 30 }"
   >
-    <motion.header
-      :class="cn(styles.runHero)"
-      :initial="animateEntrance ? { opacity: 0, y: 12 } : false"
-      :animate="{ opacity: 1, y: 0 }"
-      :transition="
-        reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 300, damping: 30 }
-      "
-    >
-      <div class="flex items-center gap-[0.6rem]">
-        <h2 class="flex-1 text-muted-foreground text-[0.78rem] font-semibold tracking-[0.01em]">
-          {{ t('runs.detail') }}
-        </h2>
-        <span
-          :class="cn(styles.runStream)"
-          :data-stream="snapshot.stream"
-          :title="t('runs.eventConnection', { status: streamLabel })"
-          ><i aria-hidden="true" /><span class="sr-only">{{
-            t('runs.eventConnection', { status: streamLabel })
-          }}</span
-          ><span aria-hidden="true">{{ streamLabel }}</span></span
-        >
-        <Button
-          variant="ghost"
-          size="icon"
-          class="rounded-full text-muted-foreground"
-          :aria-label="back ? t('runs.back') : t('runs.close')"
-          :title="back ? t('runs.back') : t('runs.close')"
-          @click="$emit('close')"
-          ><component :is="back ? ArrowLeft : X" aria-hidden="true"
-        /></Button>
-      </div>
-      <h3
-        ref="title"
-        tabindex="-1"
-        class="-mt-1 wrap-anywhere text-[clamp(1.35rem,_2.4vw,_1.75rem)] font-[650] tracking-[-0.03em] leading-[1.15] outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        {{ snapshot.run ? labels.title(snapshot.run) : t('runs.loadingRuns') }}
-      </h3>
-      <template v-if="snapshot.run">
-        <ul :class="cn(styles.runHeroFacts)">
+    <Card :class="styles.card" :aria-label="t('runs.selected')">
+      <header :class="styles.header">
+        <div class="flex flex-wrap items-center gap-2">
+          <h3
+            ref="title"
+            tabindex="-1"
+            class="min-w-[min(100%,10rem)] flex-1 truncate text-lg font-semibold tracking-tight outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            :title="snapshot.run ? labels.title(snapshot.run) : undefined"
+          >
+            {{ snapshot.run ? labels.title(snapshot.run) : t('runs.loadingRuns') }}
+          </h3>
+          <RunStateChip
+            v-if="snapshot.run"
+            :run="snapshot.run"
+            :stale="snapshot.freshness !== 'fresh'"
+          />
+          <Badge
+            v-if="healthIssues > 0"
+            as="button"
+            type="button"
+            variant="outline"
+            class="cursor-pointer"
+            @click="tab = 'metrics'"
+          >
+            <span class="size-1.5 rounded-full bg-warning" aria-hidden="true" />
+            {{ t('runs.healthWarnings', { count: healthIssues }, healthIssues) }}
+          </Badge>
+          <span
+            :class="styles.stream"
+            :data-stream="snapshot.stream"
+            :title="t('runs.eventConnection', { status: streamLabel })"
+          >
+            <span class="sr-only">{{ t('runs.eventConnection', { status: streamLabel }) }}</span>
+          </span>
+          <div class="ml-auto flex shrink-0 items-center gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              :aria-label="t('runs.replay')"
+              :title="t('runs.replay')"
+              @click="$emit('replay')"
+              ><RotateCcw aria-hidden="true" /><span class="hidden @min-[48rem]:inline">{{
+                t('runs.replay')
+              }}</span></Button
+            >
+            <Button
+              variant="outline"
+              size="sm"
+              class="text-destructive"
+              :disabled="!canCancel"
+              :aria-label="
+                snapshot.cancellation === 'sending' ? t('runs.requesting') : t('runs.requestCancel')
+              "
+              :title="t('runs.requestCancel')"
+              @click="$emit('cancel')"
+            >
+              <OctagonX aria-hidden="true" /><span class="hidden @min-[48rem]:inline">{{
+                snapshot.cancellation === 'sending' ? t('runs.requesting') : t('runs.requestCancel')
+              }}</span>
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger as-child>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  class="size-8"
+                  :aria-label="t('runs.moreActions')"
+                  ><Ellipsis aria-hidden="true"
+                /></Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem v-if="snapshot.run && canCopy" @select="copy(snapshot.run.run_id)"
+                  ><Copy aria-hidden="true" />{{ t('runs.copyRunId') }}</DropdownMenuItem
+                >
+                <DropdownMenuItem
+                  v-if="logTarget"
+                  data-testid="run-open-logs"
+                  @select="shellLayout.setActiveTab('logs')"
+                  ><ScrollText aria-hidden="true" />{{ t('runs.openLogsPanel') }}</DropdownMenuItem
+                >
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Button
+              variant="ghost"
+              size="icon"
+              class="size-8 text-muted-foreground"
+              :aria-label="back ? t('runs.back') : t('runs.close')"
+              :title="back ? t('runs.back') : t('runs.close')"
+              @click="$emit('close')"
+            >
+              <component :is="back ? ArrowLeft : X" aria-hidden="true" />
+            </Button>
+          </div>
+        </div>
+        <ul v-if="snapshot.run" :class="styles.facts">
           <li v-for="fact in facts" :key="fact">{{ fact }}</li>
           <li v-if="created" :title="created.relative ?? undefined">
             {{ t('runs.createdAt', { time: created.text }) }}
           </li>
+          <li>
+            <code>{{ shortRunId(snapshot.run.run_id) }}</code>
+          </li>
         </ul>
-        <div class="flex flex-wrap items-start justify-between gap-3">
-          <RunStateChip
-            :run="snapshot.run"
-            :stale="snapshot.freshness !== 'fresh'"
-            :progress="metricSummary.progress"
-          />
-          <span class="inline-flex items-center gap-[0.15rem] min-w-0 max-w-full"
-            ><code
-              class="identity overflow-hidden text-muted-foreground [font:0.75rem/1.4_ui-monospace,_'SF_Mono',_monospace] text-ellipsis whitespace-nowrap"
-              >{{ snapshot.run.run_id }}</code
-            ><Button
-              v-if="canCopy"
-              variant="ghost"
-              size="icon"
-              class="size-7 flex-none rounded-[0.5rem] text-muted-foreground"
-              :aria-label="t('runs.copyRunId')"
-              :title="t('runs.copyRunId')"
-              @click="copy(snapshot.run.run_id)"
-              ><Check v-if="copied" class="size-[0.85rem]" aria-hidden="true" /><Copy
-                v-else
-                class="size-[0.85rem]"
-                aria-hidden="true" /></Button
-          ></span>
-          <span class="sr-only" role="status" aria-live="polite">{{
-            copied ? t('runs.runIdCopied') : ''
-          }}</span>
-        </div>
-      </template>
-      <div
-        class="flex flex-wrap gap-2 pt-[0.85rem] [border-top:1px_solid_color-mix(in_srgb,_var(--border)_65%,_transparent)]! [&_button]:rounded-[0.7rem]"
-      >
-        <Button
-          variant="outline"
-          class="[&:not(:disabled)]:text-destructive dark:[&:not(:disabled)]:text-[#ff8a8a]"
-          :disabled="!canCancel"
-          @click="$emit('cancel')"
-          ><OctagonX aria-hidden="true" />{{
-            snapshot.cancellation === 'sending' ? t('runs.requesting') : t('runs.requestCancel')
-          }}</Button
-        ><Button variant="outline" @click="$emit('replay')"
-          ><RotateCcw aria-hidden="true" />{{ t('runs.replay') }}</Button
-        ><Button
-          v-if="logTarget"
-          variant="outline"
-          data-testid="run-open-logs"
-          @click="shellLayout.setActiveTab('logs')"
-          ><ScrollText aria-hidden="true" />{{ t('runs.logs') }}</Button
+        <div
+          v-if="metricSummary.progress"
+          class="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs tabular-nums"
         >
-      </div>
-      <div
-        v-if="
-          snapshot.message || snapshot.cancellation !== 'idle' || snapshot.freshness !== 'fresh'
-        "
-        class="flex flex-col gap-[0.35rem] text-muted-foreground text-[0.82rem] [&:not(:has(p:not(.sr-only)))]:contents"
+          <span>{{
+            t('runs.epoch', {
+              epoch: metricSummary.progress.epoch,
+              total: metricSummary.progress.totalEpochs,
+            })
+          }}</span>
+          <Progress
+            class="h-1.5 min-w-20 flex-1"
+            :model-value="metricSummary.progress.fraction * 100"
+            :aria-label="t('runs.epochProgress')"
+            :aria-valuetext="percent"
+          />
+          <span class="text-muted-foreground">
+            <span v-if="elapsed !== null">{{ durationText(elapsed, locale) }}</span>
+            <span v-if="elapsed !== null && remaining !== null" aria-hidden="true"> · </span>
+            <span v-if="remaining !== null" :title="t('runs.remainingNote')"
+              >≈ {{ durationText(remaining, locale) }} {{ t('runs.remaining') }}</span
+            >
+          </span>
+        </div>
+        <span class="sr-only" role="status" aria-live="polite">{{
+          copied ? t('runs.runIdCopied') : ''
+        }}</span>
+        <div
+          v-if="
+            snapshot.message || snapshot.cancellation !== 'idle' || snapshot.freshness !== 'fresh'
+          "
+          class="flex flex-col gap-[0.35rem] text-muted-foreground text-[0.82rem] [&:not(:has(p:not(.sr-only)))]:contents"
+        >
+          <p v-if="snapshot.freshness !== 'fresh'" class="sr-only" role="status" aria-live="polite">
+            {{ t('runs.lifecycleNote') }}
+          </p>
+          <p v-if="snapshot.message" role="status">{{ clientMessage(snapshot.message) }}</p>
+          <p v-if="snapshot.cancellation !== 'idle'" role="status">
+            {{
+              t('runs.cancellation', {
+                status: t(runCancellationMessageKeys[snapshot.cancellation]),
+              })
+            }}
+          </p>
+        </div>
+      </header>
+      <Separator />
+      <Tabs v-model="tab" :class="styles.tabs">
+        <TabsList :class="styles.tabList" :aria-label="t('runs.selected')">
+          <TabsTrigger value="overview" :class="styles.tabTrigger">{{
+            t('runs.tabOverview')
+          }}</TabsTrigger>
+          <TabsTrigger value="metrics" :class="styles.tabTrigger">{{
+            healthIssues > 0
+              ? t('runs.tabMetricsCount', { count: healthIssues })
+              : t('runs.tabMetrics')
+          }}</TabsTrigger>
+          <TabsTrigger value="configuration" :class="styles.tabTrigger">{{
+            t('runs.tabConfiguration')
+          }}</TabsTrigger>
+          <TabsTrigger value="logs" :class="styles.tabTrigger">{{ t('runs.tabLogs') }}</TabsTrigger>
+          <TabsTrigger v-if="hasEvaluation" value="evaluation" :class="styles.tabTrigger">{{
+            t('runs.tabEvaluation')
+          }}</TabsTrigger>
+        </TabsList>
+        <TabsContent value="overview" class="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          <RunStats :summary="metricSummary" :records="chartRecords" />
+          <Separator />
+          <div class="flex min-h-0 flex-1 flex-col p-4">
+            <MetricsChart :records="chartRecords" :unavailable="metricsUnavailable" />
+          </div>
+        </TabsContent>
+        <TabsContent value="metrics" :class="styles.body">
+          <MetricSummary :summary="metricSummary" :unconfirmed="metricsUnconfirmed" />
+        </TabsContent>
+        <TabsContent value="configuration" :class="styles.body">
+          <dl :class="styles.configuration">
+            <div v-for="fact in configuration" :key="fact.label">
+              <dt>{{ fact.label }}</dt>
+              <dd>{{ fact.value }}</dd>
+            </div>
+            <div>
+              <dt>{{ t('runs.configRunId') }}</dt>
+              <dd v-if="snapshot.run" class="flex items-start gap-1">
+                <code class="min-w-0 flex-1 wrap-anywhere">{{ snapshot.run.run_id }}</code>
+                <Button
+                  v-if="canCopy"
+                  variant="ghost"
+                  size="icon"
+                  class="size-7 shrink-0"
+                  :aria-label="t('runs.copyRunId')"
+                  @click="copy(snapshot.run.run_id)"
+                  ><Check v-if="copied" aria-hidden="true" /><Copy v-else aria-hidden="true"
+                /></Button>
+              </dd>
+              <dd v-else>{{ t('runs.unavailable') }}</dd>
+            </div>
+          </dl>
+        </TabsContent>
+        <TabsContent value="logs" :class="styles.body">
+          <LogPanel :events="snapshot.events" :truncated="snapshot.truncated" panel />
+        </TabsContent>
+        <TabsContent v-if="hasEvaluation" value="evaluation" :class="styles.body">
+          <EvaluationResultsPanel
+            :run="snapshot.run"
+            :events="snapshot.events"
+            :freshness="snapshot.freshness"
+          />
+        </TabsContent>
+      </Tabs>
+      <Teleport
+        v-if="logTarget && parkedLogs && snapshot.events.length"
+        :to="isActive ? logTarget : parkedLogs"
+        defer
       >
-        <p v-if="snapshot.freshness !== 'fresh'" class="sr-only" role="status" aria-live="polite">
-          {{ t('runs.lifecycleNote') }}
-        </p>
-        <p v-if="snapshot.message" role="status">
-          {{ clientMessage(snapshot.message) }}
-        </p>
-        <p v-if="snapshot.cancellation !== 'idle'" role="status">
-          {{
-            t('runs.cancellation', { status: t(runCancellationMessageKeys[snapshot.cancellation]) })
-          }}
-        </p>
-      </div>
-    </motion.header>
-    <MetricSummary
-      :summary="metricSummary"
-      :records="chartRecords"
-      :unconfirmed="metricsUnconfirmed"
-    />
-    <MetricsChart :records="chartRecords" :unavailable="metricsUnavailable" />
-    <EvaluationResultsPanel
-      class="p-[1.25rem_1.4rem] rounded-[1.25rem] bg-surface batch-r-surface-shadow"
-      :run="snapshot.run"
-      :events="snapshot.events"
-      :freshness="snapshot.freshness"
-    />
-    <Teleport
-      v-if="logTarget && parkedLogs && snapshot.events.length"
-      :to="isActive ? logTarget : parkedLogs"
-      defer
-    >
-      <LogPanel :events="snapshot.events" :truncated="snapshot.truncated" panel />
-    </Teleport>
-    <LogPanel
-      v-else-if="!logTarget"
-      class="p-[1.25rem_1.4rem] rounded-[1.25rem] bg-surface batch-r-surface-shadow"
-      :events="snapshot.events"
-      :truncated="snapshot.truncated"
-    />
-  </section>
+        <LogPanel :events="snapshot.events" :truncated="snapshot.truncated" panel />
+      </Teleport>
+    </Card>
+  </motion.div>
 </template>
