@@ -54,7 +54,8 @@ def _is_latex_available() -> bool:
     """Check if LaTeX is available for matplotlib rendering."""
     import shutil
 
-    return shutil.which("latex") is not None
+    # usetex needs dvipng to rasterize PNG output; latex alone is not enough.
+    return all(shutil.which(tool) for tool in ("latex", "dvipng"))
 
 
 def configure_matplotlib_style():
