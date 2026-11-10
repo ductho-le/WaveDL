@@ -4,7 +4,8 @@ WaveDL Lightweight Web GUI
 ==========================
 
 A standalone, zero-dependency local web GUI for building WaveDL YAML
-configurations and launching/monitoring `wavedl-train` runs.
+configurations, launching/monitoring `wavedl-train` runs, and testing or
+exporting trained models with `wavedl-test`.
 
 Usage:
     wavedl-gui
@@ -279,20 +280,28 @@ def format_config_yaml(cfg: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _resolve_wavedl_command() -> list[str]:
+def _resolve_wavedl_command(
+    script: str = "wavedl-train", module: str = "wavedl.launcher"
+) -> list[str]:
     """Prefer the active Python environment's CLI, then PATH, then module launch."""
-    executable = "wavedl-train.exe" if os.name == "nt" else "wavedl-train"
+    executable = f"{script}.exe" if os.name == "nt" else script
     candidate = Path(sysconfig.get_path("scripts")) / executable
     if candidate.is_file() and os.access(candidate, os.X_OK):
         return [str(candidate)]
-    executable_on_path = shutil.which("wavedl-train")
+    executable_on_path = shutil.which(script)
     if executable_on_path:
         return [executable_on_path]
-    return [sys.executable, "-m", "wavedl.launcher"]
+    return [sys.executable, "-m", module]
+
+
+TEST_MODE_ARGS = {
+    "test": ["--plot", "--save_predictions"],
+    "export": ["--export", "onnx"],
+}
 
 
 class TrainingManager:
-    """Manages a single background `wavedl-train` subprocess and captures logs."""
+    """Manages a single background WaveDL subprocess (train, test, or export) and captures logs."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -305,26 +314,24 @@ class TrainingManager:
 
     def is_running(self) -> bool:
         with self._lock:
-            return self.process is not None and self.process.poll() is None
+            return self._active()
 
-    def start(
-        self,
-        config_path: Path,
-        num_gpus: int | None = None,
-        extra_args: list[str] | None = None,
-    ) -> dict[str, Any]:
+    def _active(self) -> bool:
+        # exit_code is set by the stream thread only after all output is captured,
+        # so the UI keeps polling until the final log lines are available.
+        return self.process is not None and self.exit_code is None
+
+    def start(self, config_path: Path, num_gpus: int | None = None) -> dict[str, Any]:
+        cmd = _resolve_wavedl_command()
+        if num_gpus is not None and num_gpus > 0:
+            cmd.extend(["--num_gpus", str(num_gpus)])
+        cmd.extend(["--config", str(config_path)])
+        return self.run(cmd)
+
+    def run(self, cmd: list[str]) -> dict[str, Any]:
         with self._lock:
-            if self.process is not None and self.process.poll() is None:
-                raise RuntimeError("A training process is already running.")
-
-            cmd = _resolve_wavedl_command()
-
-            if num_gpus is not None and num_gpus > 0:
-                cmd.extend(["--num_gpus", str(num_gpus)])
-
-            cmd.extend(["--config", str(config_path)])
-            if extra_args:
-                cmd.extend(extra_args)
+            if self._active():
+                raise RuntimeError("Another WaveDL job is already running.")
 
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
@@ -381,7 +388,7 @@ class TrainingManager:
             proc = self.process
             running = proc is not None and proc.poll() is None
             if running:
-                self.logs.append("\n[Sending interrupt signal to training process...]")
+                self.logs.append("\n[Sending interrupt signal to running job...]")
 
         if not running:
             return self.status(0)
@@ -411,10 +418,8 @@ class TrainingManager:
 
     def status(self, offset: int = 0) -> dict[str, Any]:
         with self._lock:
-            running = self.process is not None and self.process.poll() is None
+            running = self._active()
             pid = self.process.pid if self.process is not None else None
-            if not running and self.process is not None and self.exit_code is None:
-                self.exit_code = self.process.poll()
             offset = max(0, min(offset, len(self.logs)))
             new_logs = self.logs[offset:]
             elapsed = None
@@ -682,6 +687,37 @@ class WaveDLGUIHandler(BaseHTTPRequestHandler):
                 )
             return
 
+        if route == "/api/test/start":
+            mode = payload.get("mode")
+            fields = {
+                "checkpoint": (
+                    "Checkpoint folder",
+                    "Train a model first, or browse to an existing best_checkpoint.",
+                ),
+                "data_path": ("Test data file", "Check the path or use Browse."),
+            }
+            try:
+                if mode not in TEST_MODE_ARGS:
+                    raise ValueError(f"Unknown mode: {mode!r}")
+                cmd = _resolve_wavedl_command("wavedl-test", "wavedl.test")
+                for key, (label, hint) in fields.items():
+                    raw = str(payload.get(key) or "").strip()
+                    if not raw:
+                        raise ValueError(f"{label} is required.")
+                    path = _resolve_user_path(raw)
+                    if not path.exists():
+                        raise ValueError(f"{label} not found: {raw}. {hint}")
+                    cmd += [f"--{key}", str(path)]
+                output_dir = str(payload.get("output_dir") or "").strip()
+                cmd += [
+                    "--output_dir",
+                    str(_resolve_user_path(output_dir or "test_results")),
+                ]
+                self._send_json(TRAINER.run(cmd + TEST_MODE_ARGS[mode]))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
         if route == "/api/train/stop":
             self._send_json(TRAINER.stop())
             return
@@ -707,7 +743,7 @@ def main() -> int:
     global WORKSPACE_ROOT, DEFAULT_CONFIG_PATH
 
     parser = argparse.ArgumentParser(
-        description="WaveDL Lightweight Web GUI (Config Builder & Training Runner)"
+        description="WaveDL Lightweight Web GUI (Config Builder, Training, Test & Export)"
     )
     parser.add_argument(
         "--host",

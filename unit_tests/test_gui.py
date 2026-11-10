@@ -13,6 +13,7 @@ import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
@@ -111,6 +112,39 @@ class TestGUIWorkspace(unittest.TestCase):
             ["--num_gpus", "2", "--config", str(self.root / "config.yaml")],
         )
         self.assertTrue((self.root / "config.yaml").is_file())
+
+    def test_export_launches_wavedl_test_and_rejects_missing_checkpoint(self):
+        (self.root / "run" / "best_checkpoint").mkdir(parents=True)
+        (self.root / "test.npz").touch()
+        child = (
+            "import json, pathlib, sys; "
+            "pathlib.Path('args.json').write_text(json.dumps(sys.argv[1:]))"
+        )
+        payload = {"mode": "export", "checkpoint": "missing", "data_path": "test.npz"}
+        with self.assertRaises(HTTPError) as err:
+            self.request("/api/test/start", payload)
+        self.assertEqual(err.exception.code, 400)
+        self.assertIn("Checkpoint folder not found", err.exception.read().decode())
+        payload["checkpoint"] = "run/best_checkpoint"
+        with patch.object(
+            app, "_resolve_wavedl_command", return_value=[sys.executable, "-c", child]
+        ) as resolve:
+            self.request("/api/test/start", payload)
+        resolve.assert_called_once_with("wavedl-test", "wavedl.test")
+        self.assertEqual(self.trainer.process.wait(timeout=10), 0)
+        self.assertEqual(
+            json.loads((self.root / "args.json").read_text()),
+            [
+                "--checkpoint",
+                str(self.root / "run" / "best_checkpoint"),
+                "--data_path",
+                str(self.root / "test.npz"),
+                "--output_dir",
+                str(self.root / "test_results"),
+                "--export",
+                "onnx",
+            ],
+        )
 
     def test_stop_when_idle_returns_without_deadlocking(self):
         status = json.loads(self.request("/api/train/stop", {}))
