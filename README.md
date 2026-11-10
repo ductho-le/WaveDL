@@ -184,6 +184,22 @@ pip install -e ".[dev]"
 > [!TIP]
 > In all examples below, replace `<...>` placeholders with your values. See [Configuration](#️-configuration) for defaults and options.
 
+### Configuration & Training GUI
+
+```bash
+cd /path/to/your/project
+wavedl-gui
+```
+
+WaveDL Studio opens a local web interface at `http://127.0.0.1:7860` for editing
+YAML configurations, browsing files, and launching `wavedl-train` with live logs.
+The directory you launch it from is the workspace: configurations default to
+`./config.yaml`, and training resolves relative data/output paths from there.
+The GUI is bundled with WaveDL and requires no additional dependencies.
+
+Use `wavedl-gui --port 8080 --no-browser` to choose a port and open the browser
+yourself. `python -m wavedl.gui` is also supported.
+
 ### Training
 
 ```bash

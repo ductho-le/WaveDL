@@ -2,6 +2,7 @@
 
 import subprocess
 import sys
+from importlib.resources import files
 from pathlib import Path
 
 import numpy as np
@@ -23,9 +24,10 @@ def main():
     np.testing.assert_allclose(
         scaler.inverse_transform(scaler.transform(values)), values, atol=1e-5
     )
-    for module in ("train", "test", "hpo"):
+    assert files("wavedl.gui").joinpath("index.html").is_file()
+    for module in ("train", "test", "hpo", "gui"):
         subprocess.run([sys.executable, "-m", f"wavedl.{module}", "--help"], check=True)
-    for command in ("wavedl-train", "wavedl-test", "wavedl-hpo"):
+    for command in ("wavedl-train", "wavedl-test", "wavedl-hpo", "wavedl-gui"):
         subprocess.run([command, "--help"], check=True)
 
 

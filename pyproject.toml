@@ -13,6 +13,9 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 include = ["wavedl*"]
 
+[tool.setuptools.package-data]
+"wavedl.gui" = ["*.html"]
+
 [tool.setuptools.dynamic]
 version = {attr = "wavedl.__version__"}
 
@@ -95,6 +98,7 @@ wavedl-train = "wavedl.launcher:main"  # Universal training (auto-detects HPC vs
 wavedl-hpc = "wavedl.launcher:main"    # Alias for backwards compatibility
 wavedl-test = "wavedl.test:main"
 wavedl-hpo = "wavedl.hpo:main"
+wavedl-gui = "wavedl.gui.app:main"
 
 [project.urls]
 Homepage = "https://github.com/ductho-le/WaveDL"

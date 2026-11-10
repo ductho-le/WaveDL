@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Bundle WaveDL Studio as `wavedl-gui` (also `python -m wavedl.gui`), with a packaged HTML interface, current-directory workspaces, YAML editing, and training subprocess logs; no additional dependencies
+
 ### Fixed
 
 - Preserve positional compatibility in `train_single_trial()` while adding keyword-only gradient clipping; record the best validation loss before returning a pruned trial

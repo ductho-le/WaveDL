@@ -1,0 +1,2382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>WaveDL — Configuration &amp; Training Studio</title>
+<style>
+  :root {
+    --brand-dark: #006f68;
+    --brand: #00897b;
+    --brand-light: #00a896;
+    --brand-tint: #f0fdfa;
+    --brand-tint-strong: #ccfbf1;
+    --brand-border: #99f6e4;
+
+    --bg: #f8fafc;
+    --surface: #ffffff;
+    --surface-subtle: #f1f5f9;
+    --border: #e2e8f0;
+    --border-strong: #cbd5e1;
+
+    --text: #0f172a;
+    --text-secondary: #334155;
+    --muted: #64748b;
+
+    --success-bg: #f0fdf4;
+    --success-text: #15803d;
+    --success-border: #bbf7d0;
+
+    --warn-bg: #fffbeb;
+    --warn-text: #b45309;
+    --warn-border: #fde68a;
+
+    --danger: #dc2626;
+    --danger-bg: #fef2f2;
+    --danger-border: #fecaca;
+
+    --radius-lg: 14px;
+    --radius: 10px;
+    --radius-sm: 8px;
+    --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.05);
+    --shadow-md: 0 8px 24px rgba(15, 23, 42, 0.07);
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 14px;
+    line-height: 1.55;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* Top Header with Top-Left WaveDL Logo */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 28px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    box-shadow: var(--shadow-sm);
+    gap: 20px;
+    flex-shrink: 0;
+    z-index: 10;
+  }
+  .brand-area {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .brand-logo {
+    height: 42px;
+    width: auto;
+    display: block;
+  }
+  .brand-divider {
+    width: 1px;
+    height: 28px;
+    background: var(--border);
+  }
+  .brand-titles {
+    display: flex;
+    flex-direction: column;
+  }
+  .brand-title-main {
+    font-weight: 700;
+    font-size: 15px;
+    color: var(--brand-dark);
+  }
+  .brand-subtitle {
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  /* Center Stepper in Header */
+  .stepper {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--surface-subtle);
+    padding: 5px;
+    border-radius: 11px;
+    border: 1px solid var(--border);
+  }
+  .step-btn {
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    padding: 7px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .step-btn:hover {
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.6);
+  }
+  .step-btn.active {
+    background: var(--surface);
+    color: var(--brand-dark);
+    box-shadow: var(--shadow-sm);
+  }
+  .step-circle {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--border);
+    color: var(--text-secondary);
+    font-size: 11.5px;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .step-btn.active .step-circle {
+    background: var(--brand);
+    color: #ffffff;
+  }
+
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  /* Buttons */
+  button {
+    font-family: var(--font);
+    font-size: 13px;
+    font-weight: 600;
+    padding: 8px 14px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    white-space: nowrap;
+  }
+  button:hover {
+    border-color: var(--brand);
+    color: var(--brand-dark);
+    background: var(--brand-tint);
+  }
+  button.btn-brand {
+    background: var(--brand);
+    color: #ffffff;
+    border-color: var(--brand-dark);
+  }
+  button.btn-brand:hover {
+    background: var(--brand-dark);
+    color: #ffffff;
+  }
+  button.btn-run {
+    background: linear-gradient(135deg, var(--brand-light), var(--brand-dark));
+    color: #ffffff;
+    border: none;
+    padding: 9px 18px;
+    font-size: 13.5px;
+    box-shadow: 0 3px 10px rgba(0, 137, 123, 0.25);
+  }
+  button.btn-run:hover {
+    filter: brightness(1.06);
+    transform: translateY(-0.5px);
+  }
+  button.btn-stop {
+    background: var(--danger);
+    color: #ffffff;
+    border-color: var(--danger);
+    padding: 9px 18px;
+  }
+  button.sm {
+    padding: 5px 10px;
+    font-size: 12px;
+  }
+
+  /* Workspace Layout */
+  main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 430px;
+    max-width: 1480px;
+    width: 100%;
+    margin: 0 auto;
+    overflow: hidden;
+  }
+  @media (max-width: 1100px) {
+    main { grid-template-columns: 1fr; overflow-y: auto; }
+    .stepper { display: none; }
+  }
+
+  /* Left Wizard Area */
+  .wizard-pane {
+    overflow-y: auto;
+    padding: 28px 34px 60px;
+  }
+
+  .step-panel {
+    display: none;
+    animation: fadeIn 0.16s ease;
+  }
+  .step-panel.active {
+    display: block;
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .step-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+    padding: 26px 28px;
+    margin-bottom: 20px;
+  }
+  .step-header {
+    margin-bottom: 22px;
+  }
+  .step-eyebrow {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--brand);
+    margin-bottom: 4px;
+  }
+  .step-title {
+    margin: 0 0 6px 0;
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text);
+  }
+  .step-desc {
+    margin: 0;
+    font-size: 14px;
+    color: var(--muted);
+  }
+
+  /* Quick Start Cards */
+  .preset-cards {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    margin-bottom: 24px;
+  }
+  @media (max-width: 780px) {
+    .preset-cards { grid-template-columns: repeat(2, 1fr); }
+  }
+  .preset-card {
+    background: var(--surface-subtle);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .preset-card:hover {
+    border-color: var(--brand);
+    background: var(--brand-tint);
+    transform: translateY(-1px);
+  }
+  .preset-card-title {
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--text);
+  }
+  .preset-card-sub {
+    font-size: 11.5px;
+    color: var(--muted);
+    line-height: 1.35;
+  }
+
+  /* Form Grids & Inputs */
+  .grid-2 {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px;
+  }
+  .grid-3 {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+  }
+  @media (max-width: 720px) {
+    .grid-2, .grid-3 { grid-template-columns: 1fr; }
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    margin-bottom: 18px;
+  }
+  .field:last-child { margin-bottom: 0; }
+  .field-label {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-weight: 600;
+    font-size: 13.5px;
+    color: var(--text);
+  }
+  .field-key {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--muted);
+    font-weight: 400;
+    background: var(--surface-subtle);
+    padding: 2px 6px;
+    border-radius: 5px;
+  }
+  .field-help {
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+  .input-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  input[type="text"],
+  input[type="number"],
+  select {
+    width: 100%;
+    height: 40px;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    color: var(--text);
+    padding: 8px 12px;
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    font-family: var(--font);
+    outline: none;
+    transition: border-color 0.14s, box-shadow 0.14s;
+  }
+  input[type="text"]:focus,
+  input[type="number"]:focus,
+  select:focus {
+    border-color: var(--brand);
+    box-shadow: 0 0 0 3px rgba(0, 137, 123, 0.14);
+  }
+  input[type="range"] {
+    flex: 1;
+    accent-color: var(--brand);
+    cursor: pointer;
+  }
+
+  /* Choice Pills */
+  .pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+  }
+  .pill {
+    padding: 6px 13px;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-weight: 500;
+    background: var(--surface-subtle);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+    transition: all 0.12s ease;
+  }
+  .pill:hover {
+    border-color: var(--brand);
+    color: var(--brand-dark);
+    background: var(--brand-tint);
+  }
+  .pill.active {
+    background: var(--brand);
+    border-color: var(--brand-dark);
+    color: #ffffff;
+    font-weight: 600;
+  }
+  .pill.sm-pill {
+    padding: 4px 9px;
+    font-size: 12px;
+  }
+
+  /* Toggle Cards */
+  .toggle-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 15px;
+    background: var(--surface-subtle);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    cursor: pointer;
+    user-select: none;
+    gap: 12px;
+    transition: border-color 0.12s, background 0.12s;
+  }
+  .toggle-card:hover {
+    border-color: var(--brand);
+    background: var(--brand-tint);
+  }
+  .toggle-card input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--brand);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .toggle-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .toggle-title {
+    font-weight: 600;
+    font-size: 13.5px;
+    color: var(--text);
+  }
+  .toggle-sub {
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  /* Collapsible Advanced Drawer */
+  details.adv-drawer {
+    margin-top: 18px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-subtle);
+    overflow: hidden;
+  }
+  details.adv-drawer summary {
+    padding: 12px 16px;
+    font-weight: 600;
+    font-size: 13.5px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    list-style: none;
+  }
+  details.adv-drawer summary::-webkit-details-marker { display: none; }
+  details.adv-drawer summary:hover {
+    background: var(--brand-tint);
+    color: var(--brand-dark);
+  }
+  .adv-body {
+    padding: 18px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+  }
+
+  /* Model Grid */
+  .model-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 10px;
+    max-height: 290px;
+    overflow-y: auto;
+    padding: 10px;
+    background: var(--surface-subtle);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .model-card {
+    padding: 11px 13px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    transition: all 0.12s ease;
+  }
+  .model-card:hover {
+    border-color: var(--brand);
+    box-shadow: var(--shadow-sm);
+  }
+  .model-card.active {
+    background: var(--brand-tint);
+    border-color: var(--brand);
+    box-shadow: 0 0 0 1.5px var(--brand);
+  }
+  .model-card-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+  }
+  .model-id {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+  }
+  .model-card.active .model-id {
+    color: var(--brand-dark);
+  }
+  .dim-badge {
+    font-size: 10.5px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 5px;
+    background: var(--surface-subtle);
+    color: var(--muted);
+  }
+  .model-card.active .dim-badge {
+    background: var(--brand-tint-strong);
+    color: var(--brand-dark);
+  }
+  .model-meta {
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  .context-box {
+    margin-top: 12px;
+    padding: 14px 16px;
+    background: var(--brand-tint);
+    border: 1px solid var(--brand-border);
+    border-radius: var(--radius);
+  }
+
+  /* Step Footer Navigation */
+  .step-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 24px;
+    padding-top: 18px;
+    border-top: 1px solid var(--border);
+  }
+
+  /* Right Sidebar: Summary + Tabbed YAML / Console */
+  .right-pane {
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    overflow: hidden;
+  }
+  .summary-box {
+    padding: 18px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .summary-title {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    margin-bottom: 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px 12px;
+    font-size: 12.5px;
+    margin-bottom: 12px;
+  }
+  .summary-item {
+    display: flex;
+    flex-direction: column;
+    background: var(--surface-subtle);
+    padding: 7px 10px;
+    border-radius: 7px;
+  }
+  .summary-label {
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .summary-val {
+    font-family: var(--mono);
+    font-weight: 700;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .config-path-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .config-path-row input {
+    height: 34px;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+
+  /* Right Pane Tabs */
+  .right-tabs {
+    display: flex;
+    background: var(--surface-subtle);
+    border-bottom: 1px solid var(--border);
+    padding: 6px 12px 0;
+    gap: 6px;
+  }
+  .right-tab {
+    border: 1px solid transparent;
+    border-bottom: none;
+    background: transparent;
+    color: var(--muted);
+    padding: 8px 14px;
+    border-radius: 8px 8px 0 0;
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+  .right-tab.active {
+    background: var(--surface);
+    color: var(--brand-dark);
+    border-color: var(--border);
+  }
+  .right-tab-body {
+    flex: 1;
+    display: none;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .right-tab-body.active {
+    display: flex;
+  }
+
+  .yaml-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .yaml-editor {
+    flex: 1;
+    width: 100%;
+    background: #fcfdfd;
+    color: #0f172a;
+    border: none;
+    padding: 14px 16px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.55;
+    resize: none;
+    outline: none;
+  }
+  .cli-preview-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--brand-tint);
+    border-top: 1px solid var(--brand-border);
+    padding: 8px 14px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--brand-dark);
+    gap: 8px;
+  }
+  .console-output {
+    flex: 1;
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 14px 16px;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.55;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+  }
+
+  .status-pill {
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .status-idle { background: var(--border); color: var(--text-secondary); }
+  .status-running { background: var(--brand-tint-strong); color: var(--brand-dark); }
+  .status-ok { background: var(--success-bg); color: var(--success-text); border: 1px solid var(--success-border); }
+  .status-err { background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger-border); }
+
+  /* File Browser Modal */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.45);
+    backdrop-filter: blur(2px);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+  .modal-backdrop.open { display: flex; }
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    width: min(640px, 92vw);
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-shadow: var(--shadow-md);
+  }
+  .modal-header {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-weight: 700;
+    font-size: 15px;
+  }
+  .modal-path {
+    padding: 10px 16px;
+    background: var(--surface-subtle);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 12px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .file-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+  }
+  .file-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    border-radius: 7px;
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+  .file-row:hover {
+    background: var(--brand-tint);
+    color: var(--brand-dark);
+  }
+
+  .toast {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: var(--brand-dark);
+    color: #ffffff;
+    padding: 10px 18px;
+    border-radius: 9px;
+    font-size: 13px;
+    font-weight: 600;
+    display: none;
+    z-index: 200;
+    box-shadow: var(--shadow-md);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <!-- Top-Left Official WaveDL Logo -->
+  <div class="brand-area">
+    <img src="data:image/webp;base64,UklGRoRGAABXRUJQVlA4WAoAAAAQAAAAcgEAXwAAQUxQSD0fAAAB/yckSPD/eGtEpO4TECPJDdsMHqAEgMf+CxYkJx1E9H8CihgdYsTyq73zKumebCj0dTFctwA9j5QRUQWZU33QZNFvrbGqMvKO4AcZWOQfoEqpA9D66ejWex+pBaqWMkC1996y59T62q0cVkuCEtjNAuzqAb5l5mDTBrYOcmIA/0ESqmXnoYKNJJntPbhXSQD77u7M5Y9UZJUEkuoESPZ0b2RmBo8wr0eGed2X2T524jI/DMcbhtXdEebubhZh7n7ZvzIctG0kSEn4s57e/kOIiAkIZ+GMXr2o5aQGwQofU4HDiBE2iF7VFPz+IAC18J1CeEqNqtWvQs+kHdKirMz8hDeGUgVFFcGq8Lui04i4gyX3iwotKhoBhFZJmoraRRUqoCiuF/I1IkdFAURAqIAwUg0YEZXf/dMXtu2Lm/r/dz3PJCktpSygi8VbeLt+3N3d3W3TZc/d3d3d3V2WK06VQoEq1TSpJJmZ13NvNNMi/Xy+382ImAC/tW27tpZtW2tzozW4pEAQFOIiDCywIAosTK0hAq21hrPP6oj7XnPMsfb2I2IC9Gzbtmxu7hzHdT/PO++gWJqRxtKAwCiZeVlmr7XCzMzMqVKlTZ02KRmrbPkJXKVazEwmDbzvc1/F+9yj8beNZZcRMQGAo24mhf4n19pRN5MiF0m+o6pGRyHMapIrLqB7gMi6UPmu6mLJ7NUnvdfcYBzKhh4RAQM/dWogtVayGOp3FNDIS++0kVP1zp2rAEmOICfXEUBjPvTe7/NqX1+4dzlDvqsqmOee1vsM4aeGxiQJBxQwcUEmsJ9A1JUv/Yq3D9G78c/3zqWg30kWzat7Hwxi6O2f5y9jS5IjCAII0KMA6uzP/uAQwshvX1v47upRTF8kZQZp+M+Xz9lCc0HBIBMzQuyzl0AcvPL7TqcMSNmDpTjybFJwXUCAHoiIJwshPcz0869KnxoAWckLr999TpJWixp1Fn1nRaGahzigevSnKWvsT3331Rdm4pkzGGOIS0KC9iNSJo62EraEtADT4OjbFYxGfnChhtLdTI5XNy8s93Tb62u7LrOHThwuvpjBaOhtjw/KOHqlRK+yRopKhWH3yyhdyAkVqQzR06A2dNwY13vPzELshg2xt3Xx0rklWgvT0zfv5sZDLqmH98Ux7PhQDezI0SgediW+IQxIqSjLlAyw+yHR1VkpOpZS6fUyqQcQeZfWMHl3XpS+6mM698zW3jKje1f+/cVrWB+1AYmjh9QWvV5wFI/w/NsmuCDKzk67vd1JWOrl+8Dug6XeelCRdvjtcU/RQ/Lu+hw5Bjxc5geqsnHvzlWoI07nH/6qwUMvOX2DZDyZW++6dORome//M775tNdcvj0xeXsrLAMEOCHRH3z8pzihXq8/+9uDhWwB1lubpB28emsW2kYQsqi/CNUyIjnP1GVCD5Hg0f41ogGTa13jKI6OwW/KMPYXt1586lq3VpMkptXJcR1KC1JmQ0WIjkKKzZlu5Jj10mvHRdNGSOR5jSEKbUVWy3tIKGmCxOFbZCt6NzZDQrk4hsk3L4TMgbH6WjuzJE2hIY/rlogWiPDW3F0aJO8XpYtDCus22wwTTp5oN3sWEl2D8JDaqMzNbXkgLrDyAysp4+yb093tWkrJDEaegoKmku2uTNGWd64MIaSDiijX7mA9j2vcWSuQkh4C8817SHtqZdckjt4gP9gRfuLs0m1iI9klp2k8tKJDDVlFsH//OAw9FSOG3sZ9fdtQYKY9kHHw8kA0TOemQ4ieOUh7Rcbf/NRKzQ2wqmLTJFHi2BVTP4Z4WENaKuClXn1MNmc69moVGaAtwPkHDGVMtroSqPJEGPj0t9MHrekrRjmIaarg4UZGj0WLcuA1MgpNrz6WwmjrsPEKbXFjuRZ5ckxZ8zEMcVSqlJmTWEVw/+5xJLhMF4p03kV1sIH8fMr36TJD8vC5FaJhTC7PA/VJgZQN1JAkvAiIeDyzbepnXXlnXkJPLbuDJ2UHkBOaRga7pdJTcfQetYzJdm50qTxBEKhLCgkvAmgczN+iguTDKVsDBex2X8MB4xe5lY4Br+l2BXSZiFx6h7TB7HyKPGHurVkZIV4C1XK0MkF18PrNGQQXLTpv14dkFeH8bP61DsdMQ43ts2G5Geho/zpBe2JlXlS/jZKgVoilVYrEpUDrxnThFeaVN2an0DF91D5nVOf0os5/tDbAzrV+l5aqHb5NtryY2qgh3xbJruB/bugUcKmVCsALABJHW7fniH5UPizqKgMsNYeVtGUnFxYW5k8a1eKfm6UB9qAE36c2goU7TVWuYvjNn03dMtIFY/nctZu39zfwOJys/B91D2IOBeTO8iTV8u7m7UBdgsA66xdNxk3D22tlWmsPYxXhC+sdA/FgJWN24w7SnlzaHYBXAfbuFGWIXMgB7Fa3XvqkIIvDIL9+zSRxFApEsT4hq4jceemvk7LUDIjNnXPYkJ1c3g3tLo+YKjB2NwMwW2FKHLxeszRM4+v5EK+FyohgRDBK6WT51/4luJ9/tl0TmD16IEHz1oqpH9UPcbBc3r13zGTcGO02oyyj2R3FKsIG73VdPPDI+iFDjMlWb22ici2Vp0AIJKmW0k2Xelf/6RY6TPjUf9QU4ogMby9OUSUPH9vUVbC1elqasrObPcqSfPOsqQI/vbrFAxeGy/eRBtOL2y54NRJINEUjun6PND3Pffy1tdoRIST56jh2gGee+OskWieSFcu9WjpmjHpbERFq++NYRWT5cmF6IJLGwUt5AmNstQd6NRDi4GqUvJdnO+Whkj9zuZ6koyK0eWPLVDH0T25DWSvbnR+xZFz2ht3cIqWwfOf1pio7ubBjkhaAOP+QoRuTtW5sKECup8DIk4CmFIn6ucOQ9a52EDoCAMNbczNUAE89lKF1Cmht7QSOqRMn26AIwfbIiLwfDK+tBQ9WHDZeoy1m5toecm2Tk4skebz2TTOJ7kwtiaNQEN2VMaqDF+8dh2gViMPmHpX+8k49Mkc9Gu6YjfStTULrJPXouVWiAeMrHcS3vYgoj82tmw6GD9e7EmdGxMbUnmvMuvLeUJRvMrLcnmJV/9RXGZKJkV9t9y15cK8zWClx9AG1jMk7kxsRym87QFIMP7/sOsTTe/ShZwALtnVnlgqSj1Yy9NQU6trTZFTYU2sHwgL4aPWmrbz46lqGWiYOK++QNpi9s2Uh8lvPQNTaf0scyDq5n33IWSiSdZbHqA5e25+FaI2gdfMWaT/ZM/N50Ixh/ow5RvL6JqEUS+rx3csE7fHlPZN4AjQMDfxnN9NBqDzo+tCzQml9ovCG9fw786KUa5bdCdI/2H6EQiYIj7ZpyXN3OyJVIHH4PrU0vBhfT/q/Qd9jt65zMLi7HiU4G6Wwrdm71DGSj5cILVKpa/fIaLjWjgIFUOJoLW3lxZdWU7Qul36IdKwyN9u0EPkkYEC2+8qhblyi6JkgCttdGqMdvLUzC9EKQeuVm6RjYUtDDYFMwKjzX7SOUXn1KhFqBeJwf5ugPb60ayHxZGhmuo4fSM5tZhHPCKlcG0vRMK++NQulWIlby8i4uHCgoqCoB/+bbATP7RcpF4/eI1sRY2ulJJ4MzcyYbZkOQnWTImekUg7zFtGPyscT1RqxLt/OjIbzzFGgtPP/PyOvMK/cX2YF3UNqI9idoko+EZCE9QUOllwl9GwQLYe5SrW8uz0P0TlJHS7tUB0LW75QQ3BBoPzihWWLfqQvXUoTnBPweGcHqb62NA9AnhCT6MwfAi5FyBkhOsyQVUTeeOO4SK3g9jna4sqsiieIr29fQhXwws0w1EocvkOWhmm9H0J8UghJxRKHPReeFaCUw3rP1I/KJ72nl5PbM6LhPL8VSFvI1gt4RbD97BLVQnxAjTHZytRFnhhDxNqhVkM9I0TLIRNUyXvX5wE6I+BwfpfakDUvpFBtAJEubJr6UbuXzt2Q4IyAs6fuIA0mluYB+MRAghZ2iKXgzFS0zq5hFZE3X5sVSsXcvEI7GL/hSkug+MwYUQH3r/86QqXEwduZpWFc74cQnySk3UP1ZwgoHE6vmfpR/aSYEsxut2LDeGnDVE4o2saLWIXs3fmWkBLiA4YYk61PmaoseoIcwEYeLYgeh5UzVLQ7mJugSh5uDYJOCA5r+2SMybsvFwCeYLF8peOqyLX7H98SZgWcXX8GaTA5NxQBRBCEkEHIBU/HHTkiiEguhBwJZOlQNc8W/O2Va9gBTk0272TaRPLKddIGNycsEnYKhE3MUEFy/4qKngwktiZPHcC4trLaZ4hIiICQFFI0QgUyM2woIggJhKDqBkgywx4tk8cujhKEeLQxtWnqR1hr5q5MgRDby0j74rJHyA6Q8JWLVMvTO6Hy2MJM04P+subkxkoGaoSWUFBESilEja5rqSNihAKhkIAwwpK5I5XJDIQ9QmT/WN1ARwdg3b47SRU+cvks6D6xTvfqCVwvdYgwG3ReCj/AtWenhJ5MwNnlE04VU3fb64NaonSlzuc1k74qIjS66UoomXVWQgG1lK6gpLJMQi2lcy4wyazu4lEWmJKebCcJHRlC2rt3FaswTk18cieTkjpcuEWNsWD5KhL7BYmrS0Q/ajy4kCGaDQGJw8nTWIVxbSWfYCllaTiM81vXr2xMUndrfXV1szedEGVJ+giyzpeXQkUtXT3uVFHEUASWrh8Ol2+84dxI1t2Yv91VnSTJg0DUdR63FSGOTsnQxkTT1I/wrdfuygQIbl6kLa7d9RBklyh87hqqgOdvhAo2cgSaHvSXtSbWySilL19tvvfGZtLsrk48+ZsHK07mf/wfHlKldP9i3gtiTI5f+4tHVqfR+p4Ci4lf3/qRV9aG2a+F83ur8iKSHkPJS6QnW9eRAujtu1NU4SMvnQWdyH53hg3npZYFYTqs/RJeITt3J0ZoNhBwdv2EU8XU3Z2sdrE07//kewBZF8wM+PDwx6d9ffYfAkR0h7+6rImWbv4HWKz5+MTJ8Onh6p97HVAA5px858DMhuWlegQhvMrJjVVCOjqEpLd8FaswTn3w6Z3sFjKG9V0yxmQ7F5IkJkVSurhtauTy/fUMlRwREA/fPIVVGFcWO7IszW7+U6ipEQsgyS5+vPE/J9Pf+PRGCkP56BeXQjDk8u5QAyL729fIB7988HdgUKOvwu3M9Zv0VPuZBpOreCKPFZLQRQltTLRM/Qg/vXZXdoGYVzZJG9y44ffLp6epILl/1UBZTCqpRnzgQX/ZzoI/8UTphst/i3kpkoMBgQPU+hL/e+PR/ts1IHj+83mnYn/8XGYBZRtLb+8ObX/4J5mXDpAwA/Pkg8+NS8F2aAwXN06WbK1YSFxUY5hsTdMxYuQKArMTELU8tYS0L6x5iEwgCt+4QLXc3e0sZgJRStf3pXTDtctBi9kNP00X8beZTwG5g8zp64qvfI/pxrM4YDGsK1khy2pl9hZDQPDSemPQPrRDgepmQDhgijU1QKaHL+LDp9kvFjdJwREqEPPu3DYNOTXVykS1Arm8lyfw9FKXkJgSst7LyVt5+blptUz7Sd+XyBxms9nsy/sVG8aFqzOZ9wd/gvkUkOf/dnUzhs6+90eYDEzZZ/7M4OS8CRCvfYYilNVZexYB42ll2et/DAGE1S1GzrnYb2s3zAQPm4Tlpee9nZjZiaSjxnR6R5rVWzP1OACgw6Wb1BirLFy3kJhVk8Kuz1PHSF/Z27q1t1uPDg8PDo6PZrVi/G4q47L2teU8q7n6w1kAWev7T7zrSNZpjY98cwZgvPvrajvXCMB506Umiaw+2y8EpK9fGaj5N51NIOV//O1OnfLY536S9olnbw4ED7sZBs99dNp2GWNlEdIRsmgMk+vTdAw/eQ0hbAhxfYN2cnXeQ5BdAkLKFq+QDXjhuY1y+FuHs0oAUfqubj9HUzF9e9vlh/cYrKDab7/xffci3Af/8cyHhAMMtoMXccD0WHecnNrg0WsMBSovrTXyD//YAKjH//t/vfsbBukt/O2b6WP5dMeEHi40+kfPMOnlmJUhjlKRmHcb2zTk1PRWJqrFurR7hI3gxW2TJKYMQq0XiUawef6Xf/aXfj3UCEzTg7dr2jCuLnddOnjAqPPv72zWMhc+MPmusn2+2/an71gA4W+4UU9J3r3Cojwd1vhiBDI5X6edXpg1hn7t3fcRPjzZSHq4JCKie2dsu4LZWYqQjhJkcXpHmmHbM/WoUHQ4v0MtYxlbF0LikCIZSdnxxxfa5hi1f3Y1uwI1E0CJDxloWntsnVBZfvl/Ry+pe+8xSt3czFJep78pNp5GgPPaSxo+Ply/lARkWbs60Hvr+ysD+F1XJ10tc1Fa9sHvJwdlH/CikqSHyIyIyZefMile3EplcOQa835rmo7hJ68CUhYFr12lXWPiZhbSYRK642fPv/41o/NTtODBDYEUEHC2fQ/HTKZmWyT1Vv77f5xaghh9R6Nez8zSbv09sH4qI56WA6bR6esRx4+9Si1Q4/mVWvkB9YAYdv/C5Mr5zLGk4ti5bzQBfNDEmkfw0Aph9PXCH3Tb53oq8iQdLSoxdBvbNIzHZpouxpXsd8CGvLxhIaQ9MllZm75+tLazNHftWdpy+84EIVk04/CdzNKAK0s9Qmk26QeIvp7tOoGy42/4LJRVRG5jNy2A8DPPxV6Zv0cKwYV68vcAKPWP/+jq5hU3Eypj6KtenxzSO3bG6mWEkQoJZoeARindV/+QybCZq5aHeKD2QxaXbpv6Uf20UwUUHTb2yBiT5/eeT4Ls7ve62cFvf/5ozoTf6Lkqcu3BekYFEkTKhwzRT3Z7CaAOOWSWvs5S4/ToE2dHz55/8xuRUaEom08jQN46N13tr70XDrL1xfNnzr4BY/+9DhLCMOMchcW3NnpWq5UUS9oy0ShRGH6e3GdxZuCgAORQJBDXqAQwhskmVfLwqXkRBdS8tkXa4OYNihNx6fBgjp2F+OWbVJC8eA1JENI4vnkHqWCrn4eQhJPjo2vPvMdbR2v0D6MyiG48FQ4Ed+64woNRGQTPjrf0+tGK+yrnBkynj89jQSAnlFSNyVJOOmTC3rHeoaemIGslL1Fx6Dawishbb85DwYXsb/VI65Xfh8qkiWoVy2+9fAB5+vYESQDx6N3M0jDWyyBAKZMv7/3Rp+kb2mcHIJQzMW0BDP3rZW3yNgE4T27fm9tp0F86kC7AiYFy+MxymDlLIDZSCUvphq0dHtdisLbVkZxeMXCFFBElCJKTTVM/Kp9NDBU1ho1dMhpZPP/XAJwxAUTL0fORVeWlB2tZElIwuw8ZYky2NQWFKJOv/+ynkIGZzNyAvaEqoiy3nkSAvL0+ufoaDrKlK57KjlWETAeoLFbPysap5uZAmI9li7QFM4/n2x/d5/Hs9QtZguQp9UuhLImU90jFYsz7CarkvVvzEEQjrzxFOhYsXI7iDDIiEpfniH4kr2xqkiZ6vLeLNJjo5yHq0ld/+TpDhBNmBsX63Atnvjy8n0g9ni6zPs/t1ue2ZRA8t5J6EVFxn4cGXtVaMiozO9VGSixdvPf6n7rCY1sMtZqeLJ5SpYSaMkVKDG4lijGUy1hF5I135kVFpb81RcbFhbtDZV4gAeznLqAKef725FhIweP3yNIwLneDAB6+/U6lB5SVE+OzS6vNvPgKDqiUMz1BgHXlFd80AOep1Ctit1vxnyu1FBF5kSQUhHr7xMrd8n7I5o90S13kgoDL5y+uANXHwodnaikTT0mefdelYiwjyjT1D96mAFRyfN3Uj8pnUyJUCxt7ZDScZ3ZOgnNto+w+g1fllRfXvywVkJy8T40x2eYYSOZQ/AsMBZA//XvZ+fPnvHHCSlQhoizaTyIgee3iKxiELVymW6q9iYDw7//3LHktQykFRIlSyLe3VnIEVkQfunDCrMpja2Q8V2TCWGaC596mD2Xp019wx81WIRDz2XGqgnf35kXDCLe2Scdk915hoGVqFl5ZtuhH8vr2LwokcXRnG2kwNjsPyDrM9y8QQM3+59/e+40NidpOVqNSJqUez+QZENx+cBMH8examRepPdcnZb/z22WrR9YYaDQa/VIXUY+/bm20QzJRmJXH1gge29S4ueylEhuFWfmmU9YZ5K9z2edlbQfHZPVnf23iaP6bzyMZDy7ccqEOQZ99BVV5+0++BIwy+fWfWWvJrfUoJLAs3nRMBrLiT98v9sw9uhKXW4Ai18wYAXLh93dA+LxJKAu9H77vhd/srEae9/Ika1ijDnjHLIQ4brLfdV24cWzdNmrFwzrZk2aVHzPUrk7+G0nTebptsljbfgqvQPz978yKUbry42ml6d4kCQncThMAtplO92qYlYh+C08QKRXb/4MAuhcA0vtf9wQ0Fj8uA+SdX+julIBBfe+N3x/K6sf+6S09RzzKlyeWCHK4kBogh+7qWjpmbP3cb02MCC//XNRG2MoLEmqdinjxnkVF+MLnh1rKZPjZrXDMXL3Wza2PkdG/FoC52x3sLWWMCajs2bO9LAESsJ67dtATYnDu1W8JQPbiTWplgNe7g18NYGa3B6VHR0bpiFA8GqFWIIZY26WVk/jZUqIb1p5GmuLFmSxgBULyWy+gCmB+NHSl67tYyhY7qzFIAoJdDDCdfnzqtMDKAX+e2kCIKHTrCnVBIHxBAgkrJz5HGfvbI9sDmansvf4bSS5LtT/Y9hCPqpztROQMlNSAhLXfkRPu5O9MipOth9aWx79uW2J52Pa/Jq8Kv3Zc7Sb56i1O6F6fhkAKFuUA8q9+crLhqN7469QOQCIAoix2/4cTpi98NREkDV56/bvT/70vjG3kjXPv9w6ijkVt8R8G8uARlSzN5QB6BqyNeXdlIx0zl3/kV7Ln2su3aYdNPmshdIWisOcmLCpgY7XPSaz/85V0zFy/0s0jJClKn1lUAK43ffPa3W0bubVNLYz3HUKknj2/V3LMeuHaQScSYP/4ZVgfPuU9T1gAUQMi+5mVVIb0SETGnfFClTNewGq/QwP40zu/ydadDyJb8I/zniSLVfL5f+CAYne6YffH/yVt2ekclEAq0+rf2T5MIx/+tlMANWxMp4iUcs1eoo6F9zFEhlJj4flhtM/CB+soPAOlY39+LNsrQkCSVoqMzlOTkVJmng3BolHn9WLJhtz9K+dX9390nXb44j8VknCNSCr/ecGjAvqnL158/1/9KDayXKozkSSi7Prv3qiVAKbAEFq+mExHVlcHgCjz3f/CsfT5L3oVQOXQy40cBDgCdyBltX+9+JadPAkQ2dpIMif/z39etSJF8piBMA6QiEUCXijOYWMQfutvPveN4Y3IQ3f+MABXCXirNqJo1fiZ//j7b1eaxhOhwskEgZV+5/efs2IGSDJn7De+fVQG4Y/llhSYBm7+55V0Iexf2wOFqIAhnHqPUVdgBgilzNK88HlKohJmD0wIzIHl//7dW28Y3c0lMoH0yGwsMMt7J00tZCCj7ePf3khTK9ZfbZwwhbQle6yXm5GM98tl9c5tA4QBLP/V3+/8+rvR96M7WUig+tK//pDRjN85XQaqCUI2rDtwfsQckAGUTz+9J5EkLCQGeEh7c1efv7h07my3I3EfpbKWZQ9bwUdjS9Go98rdUUULgVEZ9cE/vx2IrtIwfLM7UqNFgjRDZ3bLnkNmAlK6SXn0O4f9a4aN2FmeevGFe0P5+727Z6goF+tdZJjCXv+h0knWu9cHT/eQJUCSntV2F5Z2/dywQ69559d+9WJKad+iROpuu9mDKfPd1urCndnFZmnR6yQFssxIEds9ZdZrHnmJ2zLZ391x59Qf/OxG2lqxOMype22ny4GNiG7+C//v8dOD2mtutAun8EK1jCh7ea1AAKkWudRpDndXz0qYFhLSTJm1Zl46c2rI8/bm5st7dMsQuABl/cY3DNTdXKAo8jxPYZaKvAiFGWI+iqF/+pnBzG2UNQ/2r9xsLLW8t3oyPRXzzmffD0DXmQG+tXQ3PRXz5EqvZ4LMBpoZChmGijwFtbqXSFmtlzABKpcmRc3EOoEZJzSU5EKAQbnbLdK+UYmU76UQKwVIUaYypRTCuL+KlHdSEp2NMlm+TZ0G8p2dlY3qKVinr3280VjE/KvL1VOwrq9ubztgNAWowyxzQ5EiRYC5GSgiArFPESEmZTIMHQRJqcwzN4hInV6RxEEjSeUD0/4IhSRx3yNFhKKZxY3V0b63x+ne2fzdgHYwA7yzeZfT3VtuB/uzAUJmNQPUFwwDhJCoFAGEMHFQAxTJDJBUpAjpICglAq0AgSSEEPddUlKEpZEQUVhpSPK91vqlU7lwtRhCWyErVy+eysWNVsclmXFiyaS/OKSolDTF/ZQEmIAQ4sBCChOLRV/xQIVCJlqLZgWo4tCAYzqQDBuuS6SrIKo+DKYDCbKB46ByqgLhyAKEJ24Fq0ULl6yf5DSVYf+zCbhIpi1cOiZlbEXmC3x/KIBQ7M1u4dI+MzZvtiUeSUX75gZkLuhsze4VQgC/NwBZjHZz/LmVJ+i7/Nzl1YJHtli79NxrW4yuPj/ebAf75ftFQbCxeOPf3vS6M43exp0bV1ZyUx87OSIrVq7dvXfr8tLxb/7cv00vboD2fe+YSPK9O5Onhwe82NnaaAr1O6CEmhuXLqz19eirqdt7LvH/K1DCd7yWWZTJLMWjFMkySxc5zHecJIn8HmJRiiRjvxTSoyRFKItKIfH/6ABWUDggICcAABB+AJ0BKnMBYAA+KRCGQiGhC3UrdgwBQlqCHABimO6/o/yA7ZbWHbvyE/o//L/y3zDWR+x/2L84ftp/sueJsHy4OWv9V/hP2h/wf/////31/zH/U/G75Sf2r/P+wF+p3+v/vv5IdxvzBfz7/Bf83/Re7h/yv2g9zn9h/0//W/wH92+QD+Zf1v79Pm79TL+8/9z2B/5J/c/+167P7Q/Bx/W/9p+33wG/r3/6Pz/+QD/zeoB/9eJc/if4U/sl8rvBP7/+M3nP5YPaHtZ67ORvsPza/eb85/gv3P+M33j+KfyO/wvUL/MP57/ffzO/tPqv/4Hdb2T/1PqC+w3z3/D/339w/7f6fX+96I/nn+K9gD+W/zj/PfnB/iflL/R/7nyh/tf+t9gH+Wf1v/af4P/L/sv8iv+f/oP3X/yXt3/Q/8V/zf87+7v+V//////Qb+Rfzj/If2//Hf9r/Af///5/ed7E/2X9ij9bPvUIV+SzvMMO1YlTKusX4U9eGYzvWRpXQ9brtgnA+1l2mESHjEYyWjZnPGUQHXaQopzfhfojSQOQS9syATPaFtF1QHHlHy7iJvkez5VyzQODD3Ab9k9vEGcwZ3wurtaPpwbUds4yQnR7sSr8c/Y5zFyLAu1y+oVAOIoLAybNLa5Ph8/2Rl38eN4y/L0q2EIz2pC5tdZg8z+wTb6rjQlZRYCH7rJiCp9j/0aVh0yIeQq0esXXJDbu/tNlywenwfqqzeQ7pb9/HXwzMeu1S0T4tzsnePzD2//aEoNItQ//vJRxx5CMNUMh6BBh1/0lhUFZQHtVC0GWzTbflWBzm5w928hySFehVG6bL8tS4DTToyJ9t6Xf45sB4yaRxehVzcDAa4oSKctxg2DdR+7NRS6dITJBv+CLRIRQmL75vSvmrEYqagVNmuoi/H69vTmxXu7IusVflh+JCFUPiQoT/gvswEE6W3ILEN2DOcdVTcANy/MjSlxjcAfVbb2AY0q6/f7el/Cyp2Fxk1MhE2q1PXBfxI/vf24hqKwRs5Mt9WHOnQlLEYkWgHS/x60cCQko/ZhsmUDeTeBF/t5fQZF8PdO02ghoh4pHKeZ2UW7IUg+d6J7/3zPpK7pC1S4sDJtnD+ojWaRddUhdiXTXUztlTpwY4UdAw4lBGXMtT7kuHhHISTmFRfHtJp1FJal6RHFIEo3HZ5rIiVDnlLubLxd0hUOJ0pPqf+LDtAZKpPm0UNpbcHHBQ1VEskBmyYBZu47gSHOnZQiglx4rVvkouY+pQeeKaAf/3+RWROl/RSBF36359oUAPvnhM3Pyd8Qwdfh4TKrVXNWhPGci3A/lXoHzaek8jop13RLx0sGPss9LKdmqhNsGAADxpHsDOv1V551jJy4X1F/jxf3PmBAxZfu/v/M1sLAVg1oLAWCaskiun3bJ4rtSHBvev6h+iGNX4CFUgtOdWit1IhWCSRqLK0FnHYleOFPoP8J0tYPYCtpah7YTybwi+k53jSkeYfdKiSlDNBxUzKA93qm+fqJf5+biHYB2Od5TtNJLTkNFyc1c+9SG+xFonP+l+8O8vThXvzqOhpw2EQT2Ba3t2GR1LpJ4X4j4+EUXsIODyyEcgbPN/cXhWARVT8y7PD9In2+T7+u9NPg/sH1VihZrs7Zqs8+F4jmYLHDBApEpblRQXvez1vHjdcrINv0EJRRoO7EOlOEmUi5a8BVDd40HDWnxOz71yo+VuRSAWPM8cwfIjR1K9VULvG7NW5y0vjMkNr3/8eOnUPR6y1iItnT1r7pwak5GUmoTJMaTrW+ZIId6jSqRKOaj+v0dLMxp+NN9gg9AxUKQQZ94tsEenXgrPtH6x2jSI8pNep8VHbFo35+ph0AZcmrizeoPno8vVSTvjiW5Q6oH9ucO4NK/+JEeyQExr1U07NTCyaDcam7XCVoX7tC2h66/WBqBEkYHKlaAgvB7gIHKISbLQ1KAzzzTHiM5dRNcccUVGBSsQnJHCPDpYUl7xrT2xXOmuHxwRnJn0FCI7a3zVWUoDF9E2lK0WYPPKbo4Inezdfhs14Nm0n5v4EKeO7g91ozEC+Biro6s8je6vgqTaUHdtJXIGxRMhQfduTGzFWDacs3PA2j2q+S+HeUyZOcChRcKgug/DoRKTDxQksACUsEZyw4ycDcRcl9AE5KMscS1Wl+pH2zhi/YFHMvaRx5tV+iRzqUCZmR7tN2GYxWhjI9GtYIgVIKCJZbEsSSkrhBwFPecflZVvBYaQGSeVUmC3zKHpTrY3rtnjkjrGdcB9el8yxgKDA908Tm2slZI2BdGqsPRF+nPMHeaWXlSsFypzBrANExDHZ7TaoeA0I45ddUkMHb+RXHm7oZawiZSJuH641wUH4t2y7QPoC1g2+xwY7fFkhh0bHphrxBYdBFUWPzfspCNFmeAnyDoDg8UxfeKTxFXl84nf8AmoE86eSnne8cfbByyo/8N8X8+nSjVRDWB41l3kdhxZuORXSLPY3ss/vCyNbBmMgAIUqQ768SwmvkVhpM/RKHelrABbWb9i+iaCAtkGWKJCxpi6+syLXIu+dtcFZG69cS8E3EVagRINB7UOxzha+NTghjrlrEP+hLQ3jfy/CCnLEY93Ncxi2pN6RpE7W/9I+AefCWdaM8v/V6NsBctzIjyhLHKWdk4AEY4Je5EQYUGCoRGBWmQXA1FxVxhGfMdNpBKxEXnD8aSsl771SXEkjnrWMwozwXPFkkrBkwkvUs5+6eBA3orPQl+8vvMyG+qVB4AoFw2pjV04E2MQvlSyQ4Qqi2yMZFycb9hbroc1irwWVFuvoj/x7NUeye4W7i8VPR40qw1TD08EgdCSdmo9t72AoitfWK/5uxPr5vG1KtwwlhfiJgDJsztOLLAG+exXecyOrqIjiGF4muiXGjGqzrffV/2VIatOkq95KGY0yDhJbbYxYW9RQrjM1dwFUxc+pwZnzJi5wT0MavXgUnBLUVJsN8M/bEapxZryScklI3+/lG7WoPjb0lqL0OodZ+faF8M2FUPuQ/WbSZItPC2agFCz6DBvWeU1sw3y6mae5IemM0D6KS69KUWtLonq7PbOuABI4ikBM/ttWyBAbxrMvLpKhnURIrVnZB/N14tlPKylXn9mqLUkwb5/BKrKFj9UBwxcwG6RSnDLNpZ49VbwS4gkqFjg7YkJ7bPw/3AlJB8roL/QlljA5A6a3mf8Di7nrHpmdfSe+ZMccLkJUGIDhqSYQBOZ5uby3HLNpKej0FXYXfeBTNZXR9NN3e4Ks0PhzFopIwXFz4Gsi/6s3T+2n66zJRmq0uSJ7vt4bj3+5bNFMthgwLbB+j24CcpgzPUkQaZVJm9Jpz8jvvrUWss95E0bVWI8Lrf1AO2hFg0HF5JU8MB6pyP/8tx2FtGStZ9OKz1t2IDuAF5vl5vdkEYVivR7sMt7jhBzANpZzqPXA3Qq7PgThZtbB6/axEfPbBLKMZ3KYAb0ZMGzoDAJqUS5mudXLPwOjmYQijhGltf3alQ2nDaXd2F0YIEGPmAXV62eiV9aYcApBeKVh+X1yd0upoOGLVjZ9cfN8EOd2bwIjaYwHJEUgAYZTHvl0zpjqbUcJ2PDDr7XlG2SCehMfOhEnUHLW0nOZT62Dfzq8/kQl5FLHtMtyjEUMgSybCpgBQQukqpHN8F3fBcn2jcNvll4RwMK1xmSR5x+d1EBaw1RY3wrUlo1BvxoJQuuAEn3vpgEJSBwI3KxaToVRtk+LXo5c3MNPW6JtdpjByUaTqNOgQm6QIujVM68XlL0oZN4YySWKQcy77wqKcJtJxHqyLtzjsvXk+sWHJWi25L60o8wFxk/lItLTj9fJ0zOrnUYyiMpsAqMPXuiPuk/WyldjwZQwxEzh7s/9tCXz9158oSRytM90b7Suk+Aq0i6M4acwAd8wWEDWH57qPSrdx08GEOOnxePN53bozjKC2sB9perIoE4C1Q8chxFwF9qcSAhgh5zpppjYOrlX5M1lV+j8I21DAZnxPwjTYSQCTRK2/cfX/6ZFeIZyhYzr7qQwkfjoRYhhw42oGmbuRI68J/wFmgvRmp1+8lZd3haqXdL7nbFyNi3cYbkv8fUARqqjbL5/7eE6NR9Uv1j0LJXaPNPSZJzddXubA3qQqf6linBToErQNt1grbAsLRIcKPxbAT/DQQ/kGQVuICJSeh5Ev5sPqoRX96alnFhUAD+2ASo+A/lXf2BoAeV4RL4Wui7uhSsGbUQoChIqlKdV7Zf4Vuw0Ql+2zWPSlJ6OHG318hIjgxCBEFXpc0E/JncyZPSJJVy9mp/Ltnb4R4g5p8SuRwFaxgJa8kAAAeSIJfXC00gNU5nnFnog9C5tIBrlPZlsNXF98Guh7YMLQTwiWjgFDSom2HQ4sbCgZKNaOUwMA6VznEMWfgHdoBFmbC0rFMymlt8LCTVg/hwNv5cckK+ZWPnGpAd/jfJsggD1vDR6BXOr+cg3Z6XGLGzF5GYaME+FnT10dCw+mOG3DARxBDZPEffwlzP5gccN2+BMUCz5WTSeWhLzU37Stujnx2H6TmxqzxrH43w/dKU2QovVn8Vw0w2XdaLGfFEr4g0oQ7ATitOOq3rUYghhiDd3FAKQ7m8E4dFvC5NfsQYyDLQS/psu0cuzpxfn8DeleyHWFQlPoDFHyvs/ApeKboPzZN+9zPcBpw9NOYw6QdgD4i1/mvCdwmsP9+SDnfzuKYwgHC/X/cNj5oUez8uUgC03FbX7nrg85Zm4ICMjwzPF9m17kaBXLpBq5KF6o0TXvELCFOEPM94YiNMf19FQUwEo3fyD17LOcn5SWF4SpN4HIEMs/flNchladrXbfDEmALWtpcgmXNzuVtuKymDds5Rjhw1v75RFKHC0uJbbdNDdiLuIO+uhkl8/x+ln0DiuHT4cQqUeAAJu5swZtLn0KrLzZGCAkS2bKrvh76cS1RgwF5jyJndRpy8ZDcPjfecVbhbvfxo4X41ZAek5W0cuE5MgnsWKWevvihtA6+gwh9f89u2ejbPYRqkvxX5q30hvl7opp9IYg3tXvrkhaEbuEV1vl9SvyUbKf6o/uGsvrQUi2d5IWtf/LGXNb7wrjDUw5NMIbn05CtyGjDT/xWVR2Q9PbrEhxzPAvtoR+lBgx3Q7dsNlsYSbzeG71JchWwIHkWDDm7PZvPsVln+Ai0uBYOChXFXwnDfZbNhUBp/9s3SzEPApXzh3/tb6fXQBDKQmRkzzodcHxKK8LL1ZDJ6eRTlbWMAdShhjtgTat2kbVkal7Aqbv/frPDkOCdoAqrbmVN9tTA1vpb+3iLZW0jlWaJeR2zvhRqqQjvT6tdCnU4TiHeie2B+/Sv33xRKd9XMnQUHhsbNho6RA2Lk1BBnq54srlfHGHe5o18mAzTfgTQhJq3QYEz3XCHMekDwYnkZWcSTooBmumbfGcAA0JBv/Up9mM2N2OdyuZULeO6hrluTnSqS2Dhcbu3lcfSaBB3OBZba0O0fglp28Wz3xwv58kym6O1BJ1SH7BGQHhvnmRHGwxJApD1pO7XmgT6dAb706RslhePCHIr0Crr0jRfqIqYWztFZPJ497T3yTCmE/9VQsl0TjHsrRrxifnPJrf+DnRgh9zACwBGAQIQvwqZgZuiQsQia5Jt15KMynOiptD2kX3e+kF66TRZvXKbr5llHmPLeO5QpgHQZDjKW8idxZv50fW0GOdT84PRPipXbM4sMBtCPaTTvnpNfsziJnRDncRxuZBkytALDowG3BTXNgYT4LiWADbNUhu9zgS28kHhh1nn6eJl0LIbSr345PCiV7yynh++DDWZfluNZuD0vzNu09IHWQ/96bG9lXbZZkQLfoIw5pCbzMTneJvmvKoOpRMQ6QfcaKh8/39rv1Vn0GkDlvKT2clPVufRZfc82DeNqxcyM3jrLIccpTDnrIBKR1U+0u/1FGL/tPU9/8xMyPEt4f4he4HzqUSpyHzS3WZP3t6WxfgM2xJYDj5cOT++7jLLxrLvkuYfW9XUaDffwesjHFVfeKgBiT7SYjI2Yx/gmi1wf5DAgntH+PEI2OM8pognI2SFa7yIsVT5KJKdyVp8ENY4JP3JegdRDH+Fkgj8XvpPhokbKtrhdz6p6sxrfn9BZ9BQxPTCqp6R85JXB0w8T/DN2NZI9II40wRzchWY7jpm/V0Ep4nRGqauGlpyN+EvO441Tz4y0uNcj14CeOwaH/xTV00sz1fkK5eLj8DtM947YJZ/3eONyGq3qjRpFGQlg5nv5I+IVC0pTkqg5hFJQVavPqxdkCfraOzqaKkZ4Hyo8naQ+ZWphwiJYC9sMDrP0uXDR2EE5bsto3HSBR1ClfSuC0CdwDXWgXP8bbmj2N2nelitr6BZJizBpV98Wv9q+MwPjCUBr9VMri8V8EGgQxvkmNOasT8e+qTAz3mlNSFA7iTNAccHu58yMY9OXS1SbbncQhh4mCOc8H6v3FhO7a4YW5fcCbPpC493HLAi6eD94bAXiytxDjDBiHzqUxff2VNif9gDAT26fQhwgrJkuFEU170ZwkA1teMYGiBdjzglWY8JfEFmi7Yq2bN1CBk8+izLk8dW6tjRGGCkiNfysp0MA1fSYCgvO625vYlOLJP71DHDzDRlh6lj6GH1DxEeCRVA/lB4efk5A+k7oB5xsGnNtV3WhT0PILVTHNv6AVSGtiH1z3pDItVTenVomr1SY7Ii0SryqT9CM4ftEXfL5dfZCnd4lVa7tsEDynX45EeC55W8zogf2vHxiVI5btn9l1zblXjLbcHKpBBcPb3K0A6NvrnzApex2PRylsFHx9JtDyyxr75yPf3LYjsGOviidJmp8N5lAJ4IrTbun6RLaA2kWhopnhcubtYdWjx6beV2Grtm/WzSk1uMkltrTEudT16nM0CuUUxiFziPaTsepTl2xy35mljYePvDu4Zm+e+0vsQFzazimol+/eKgwVIdW+cZOJMq1DhmYtWdXUIOCUdhRVJTGavQz2Opm2T+MBeIib2X7405Kb73vHdSkfoso1gBFn7S/69Ls6RlNUtue+DsXy4sV/cRlzy+y/PLRHnDMfpnWSrn6CYm3cSJlUU8OFiN4tAunT+98KQTjU/g3VkzhR+MXz1lrc+1Y9eeF6Bv6ul0FbPW3E/YlIUcGTLOR3XSE7AdyuDhO/1YzGwLS75F+0DMFHyg7ma8HG/O6zk+DT76XFujIIJo2YEGC98YIbfGA617VrJYHAoOOnNhmjPlAEYw1lH2PkZPaFRPfyQs6EhKbguMsRQ1rT+9vMQ7SIJQqAXbMlWTyz1y+KtqvL/xbiRCiFmDmXLvbq0InNu1y5kBSL8JDlf9gs2ImS3hCYFw1c/+FZSCclIPewegVxDYXnVRWlgu7T2uwVqdpml7irkgGEZg99WXrUSEmwHmkiIDyzUD168x9ijtf64JnaHbFkq6UCQUBL6e8/e3STWSs8HHSmEPWmm6h/ysA1RCiX9jHEy8FBeBhDZuYG5pxo/P3cnOuOV4bquCYBK9sbBtJL6tJutKx5j0iSudHg/8oWnRqC8DU52dy6oQPBJjmn902ycmUw3OeJVRctiNEnxsP+zr8xIqDnvmLy+n013Ic4v6dq042Y7kUtRYT5AaM/cyd2D8tHoFdwuvHMoeb6D96p0GzclVG+Rs1S0o5rSKQ8a/7d+uVxnRXQnMI3UwKxC/tLvjFEiP19bkrPPJbb0GrlK8M0Dohm9Ss51x6N5OyH+e2qTj+TKAZA/2rhH2I8BsfdnUr3HzbJL/3/XAumunQbsjQ+BPnh4+foBZ2gL2fHOxfg2ncLedaAJvNqKWNx4QoGJRoKpVvH/1YiJQ//9cMJ0tbEB2/lmHYY0j98TfX2v9iZ+6BcM88SsCo4nRljZUhURgovCvJ9qyyelnciORb2Juz4ks7J3IO+vByNaEMdn4/51fTv/fuJS2EVJObz54f5G5T1XXqYPhD57b9xWNZmg1MgxCV4L3PPiXlRazOyZBJEkMYCM2qJaGaqTXgdF02wA0dUt9gPsWB3+xl/rqR59ccxxzGh3qwSAYfK1Zgb8lfzJItv7sMCQOcUi3Fy976wSHzHTPCCmgzIAGFm5uf8w7kOOgB1z0bKF0bcz3nWaLrs/Pqe7ScrefWBdVTBvGGS3oOQRonwxnWEcGdrO7xoCkBfXwJjOchi+zIn9UZ5H4MIKxA8vRw83Rb6C7pv+4UNrclJ5qL5uincguR4ENuWeLFAztNe2l3Uu+vGrA+dZIXfHa6d45eSV7i8wwo5pAIAEEkIegkKCdZvKU9k78C55TDF7SsT573063GwvH5i1JLwZ6BruZvS2kQGeQlXkAHkHCXiZYccUsTuij4rJy7O/6gU8QHxStaL929xTTvcz3pGNWGOBF9aRjZ20ai7BvGWbqKjnGs6xrr2G1MheJv3BAX4yfpqh5ZVJAhA/w53+wDLAC8WwMwykdwiDo0Ey5eJikvGhodKLJFj9BRm4UZNCebBXEVtkpYVJkwXaAcRU/4JtOnaCXRyl2DA24J6JiTrvI79JvzqLnxgPdi9TI5OxKvJHCWb9R76VSNxQZaQs1xnVe7isRqfpttkrVfg4tfPBL/PXBt84tKYN55A5mp9iLMoRrz/S4/WFk/jct5QViZi2LB0bIE1fp6CeqEqkl8TedEfBABHKd3IrL7LYCKjaJVvqf2KCW8QAJMhbAYPn3OzMIIf3bP97zgwUF4TAP+FdQAfLgiAeE4EhVp0evCQpoJ1ovkB6nrM7jgM33Q6f7zoyWyVsE2wAXhYx0V2ahgTEBCSQK4gOm8Ov/62t415Qna0o2RHRz9BfKdd3fS/pgN+2aaTlU/tZnyzhjoyqcF8zePgFnLubPgFsAqPC6c/SQFM8eg51a+n26O9/pgZrwZ5r9BybZRWq5H/j8WwRGPulHq3beYDbuqvioJiBgt5Azb8BsOU8eh/VBbzTdtGeTcMbzaKVYaUIWhoxMZq8z+USUVK/v4hL/QPS5zm7DDmT2LtIPPjfj8jIrnM/OUQUeLCpPP9RC1dec5mOCSQOAVP+4Kq79PMgAHcbHtG9Ma9Ald7ZSBEIQybMMVZKOzkSr9opwx8iMSyVL/GjLwu1C5tZlQ+cKLXHvgxudDVksyvB0XoLX1q/RFH4Nby//Ft+NGTL89jAazN82M1Rt/cz0ROoP2zr2aLxM+kvhm8F2Qz7+evucZ3c4vCDqKXpCkpvWdLfvwQXyuRCvyTPyTynVWTSfaVLg1uIdYX2KH5F0VqjkTx1tPIa4YxUSTSD8hsf054BUr/RnwvBrVaK3+mCQmOoHfjnaokKtZXx9AIp5cCUFsGnUgyF+EM6U9BlzeCnP8wtN2D5k7AylBZM+mo176SWRl1xnr6s1xPkMfOaan22kJuaxxrQ0WCp4gQgQ81vh7rIpEnpwY1pxd2V3d14J1f39rAJDUMz4u0Ow0325bV3xxahV2VE8xB12zppAZEMUJt3DaZhfNgr29LofFXmLWKBHbpyhJgYVnXyM+4rH/idotsTUJB7EmIXjNkVAelJElHSgjO2y0NnkjaoI2bgwEVW2pyq9b4rdpEM5LyrsrUFqIzc5l2oFHgh95HmRuthO0kKhxL8qbUxh9JTf7reWeXT7mPFUoaJXT6ASQwDwbnokaEw/9VZq3qRgbQeNLlenLOFXujb4Sv9G//x7e/HgQlETCGffL+N3BM3Q2/7w07K+KDiGyenrEe4a5byb2RRn6sQyoGPkY0Ls8tuQIH4L42UqBJHceNCagw5+Ct/gbrwrouBeZ/UzK98sJvCw0ps9Wtjqdg+c/kmMxwQkoMj/zdL6uxaS9e0O7hG6tFdTFU3XQK9DSvFOpqaoGFBgwujqnY9tvGb5cyXAIDjriGADzu+nFRF31gY2/BGS0cnDoIGp/3u2un4Yfy1gnG0QhpVnB8mW7lS2WXPWEU1GnEO8b9FkR/2HpDg/yVwKDPVcQfgxjFp2foLrdmTcDqvjj14RvCge1FcI6ofBbHkzzSrpSEZ9Ot7fMDjmtUCcCcuIpq0jfGND0/p3sNjXTgwg0EK4c8QPkEEym7RJsVYV9N866hGbDJy+dtq9pyFIR9kfArvR0JR48FTE+omDASuhhj6uCNm2VIYLR+E/Uy9DoYs7S3DkLAL3OUlu1fbMgZ2Ied3QqO4mVGlHYjeRNRDUp0snK/A4882MAKqakQH05ZLCxQswJBH71o/KYyxvN+gVEnpvaBa18DumCPvYNPPFaEnPZkHGmpFxikhowxhFzw3jbcMYVDymWe/dqszLwgi6xfL1XzMMxS0JRIx/R1ls3PHM5D7fQPMKllcjsg0fasiMOdlbdwuU0m46kkgn+JV9CF7XhYQUJx1Hifa4oOBSotkOIvIc+pqP6Q7MfwcKF2Md8KLuqwRHuKW7Ec8utLP4NKM1LuIO93hGZyLdxnU/WIper7qnBHHPUhfPmZkzIGX/eutG89ue8dijY38A1LklnqUDlm77zeZz5thD/FfT0xYUSGyiZ7nTt6p7igHfP+LjfvU7F2BTcB3vJB/LKf3JThpEv+lSOZzJn1nl4wwzYhJCRlbUUdAbMELz6PMQi+3KZNIwVvp7A8+UF154zhQ3yZEfgi+zrv4uEYxE02LQT6dMmxWqzM7hYkxHuvDiWJSSFiYBLP0Xhv1uvK78ULlLZCzhen3tg2gauRo8PXcQXIc9qffPmUIkwssqaYeO61bOaJe1QRJl8qe4SLmxqKaxsxjMN+D8bUsnuDvMui9PJcg5y8CngzRLMbAAr1AzLRZiUo/FXjA1YllGUO/2xs1PTJk3FuqSQpwo7vx/RzcJi5CXQofbmqyfQMVmSb1+wDTETPypI+/jK+wxTFeAAzhIt1v0GJE0vDSsECJq5nvTvCC01PcuFvRRfe8Rx84RhKoRQcfNGeh09GvkvtahS3Yf+CNakn4XcNMFOzyqYBVhfutTTNwJcJu7FEZG7BubxZS+W4v422cwgxW4a01u3t1Mdj9ooMSbGUFxjhvpPcVBB8WqE6TMdpPo5CwOeOPYgbBOHJ6+zeX//YhonZ4Jx4P4gOocuw7lUI6q1ydz7lko6OI1QAd+hZRoLsa4eNKYFsvvkoA5IyNT+nQM9vHx0Y2uekKQoQY6mGX0xwHg9GrZNMtQDJD8pyNEwpzR+r3Pf8RluPofd56IZsSaNdYxSORgqIS4ljYSEkdL/wd/PHGtznnInIOfSDbHMlkF72a7pVmf4ZYzPkNgg6JKy8SsXzzSB/5b+YbFDjPaD/JLssculqOIEUL3wgrmuvTFPUUbABDRbXz7nvCA9uHktVjZDIL+3IMsyK20N6xnIgY7ScPKXDmsmBWl1KKkab9msZtvuB/uxh0uA4Wf6LzBHNTEMIFqhNpIk7r/wL6zMd0toraX+34wdIUeRjwIfkU+XlLkv5J9RKF3HHtdwOw0m8y5UFiykCSdbrgDO9lRMAIlSPTZcix60sLUOKwLqkkGnhYcSyzM3wGd/LQCJHMDV9iDTmn7V8ibCorMDFC22JaNhadrnxAC1AAqxVWkxPn2QUoIzQMuEmppl0uMu1J1V0uG7i/HV68JhKBgGXDJf4zKAelZk/uXuLYTmo/BmanSZqF+YCIx8IITU95O0ND90p5/Ex1t1XjsLushkku8C4HSFaM86e65q27UuuGBPuU2eDroupEiUC4GXJFC7yOXqdsCxlkHlbq7dx+HUxnOLcdwS9IAXygYR43m7Xh88NLSgYGm3wRZ4VR7Rz0oUbQnvRztB+LjLwO4xqrAz3BOqRPn8O7c99ri9E6UDS+Sc1HAQ8YR+YvoD+xv3wUNeHQeY6UJbjXI1GHWsqXX8nUDLMIxIDf+lX7bCJFbAcW/w0fgpKYVYtgxWNbekMQkzaJb9wXi8UBwl67S9evoLqdhM39mPOFC83gKIT4n/mGlQ0bU+JNGMGxH8C/OwZ3pXNkSLLaCmPfPndR3+IJmBEgzpznxlHmOpflVb6Kw3Ia8eFEVWYmkmu6tEz94OeuyiYXcS1NNpRQCodkDDJ/9qF54cBE2qq34fLNgcKfKVKtnBC0CLWwwHN4Pd6lKBEtf/QpDoNEj2ZjmqL19aSHi01C59CZD2p1t9KpnUViGmb6UgJirLtq5ttMQPC1g1OcTBaXpOVi3KhkgDEpDFnY5BmmWvPvryZBqmNaXnb7ypNszu7/+xLPqkr/8muNEBTJbKgd47T+hq4VjCkxP5NaF49kLHU+af5pEhGrehJjZdkXZNXV50MMqITfepZ6CbTVqlz55L4XQHMzrBi/O0Kk33a0iZMeYfcQnVML3GDnXpoTuVrnL5f+TbmymnF2YusNdBvO3Qn+Y2NCRUYxnt0hFkyfmVyDo2BmniLeVeLw+Sqy6V3MKbSH5HSp15uaEMoaZaaAsa4AuxK38wkm7N+z685y17sWiAh/0lzdVzzILRTAGRC60ersVQ/FXDyx4iUB4yGRqZGEHOANeXrqI15A6QF3gpq5dz0sfaTRtwxd2yJH8AdUO1HEDtafXa3X2LB0gvTZzplD3tm4wVUf4NUeOBHGBD7sOfncxIL5s6ISD/xubI4V7qiF6sJ356P07DvhpoD/aQOuwcxko299Zmk29H9P+G/FLf+LASz5kn3JaQGeU51K7MhX85NKWLSnK2Ogm9g683Lm9U6GZJ/jHk+TcQN1oMxI/sQ5TDiALpb2b0kuMPSQCnxGy3uc8J+9klJMQ72t1ZwQiQ4yH/8Mu+NPsl8vLB6+Tu/2/qsGUVZ0ZCecyuC44faNRUu1B94Uq7C8lmWTPEbGEBYwe2ITJW2iVDIgqrFPUpioplX7bS4RPAkusu4lfV7hfMx/r16K6Ya0WrA72DQth5EDtc4AXrKBxNgJLM4PDtm3e/fIPhiXAQPyfQowb3zj3Rx+n489awm9VeBqv2QkgimF3lHNv8M4xcp1TA0pz+hJVgr9muOvLHf3v4RRqHeaVURRaFErF92sgurHVgjxnm54LOJDre7MYu0Ernuh98sXtmNv5NZy7VaCclAZwhF8iBqz9GP3Zv8ClVXGaZcb/qJk50nosTg9h0TWYxBFSqpFpqHzJD66/sTzXzthvaKdOS4GkGYEupetsXt17U/6erh+wgnOzgN853CfqDnnA1A6Jari5gOgE90RmQXCf9bjyGpXXjAZcSHArfko8mREqfNNqqPNf0k21Wz+4sSQHS3fA1MnEWXocJ1YfJndCl0zoi65a0N1KoAY0tPwKZcX57uj2fQvP7mtoOT7HR4cR3DxPL9R494MCZsYtRZjr+9DTuMo4ABIH4QfiO6v0RtikiSDWxgmjU4sLGuRYg1TX/vuGmjYC+3ZpGQmttM+UBor3Y/0I38KLEDFdwH0TYVNGvpbbcId6TuLkL9XykGd5rxdniqD1N5rJ096O/+7AAAAA" alt="WaveDL" class="brand-logo" />
+    <div class="brand-divider"></div>
+    <div class="brand-titles">
+      <div class="brand-title-main">Experiment Studio</div>
+      <div class="brand-subtitle">Visual Configuration &amp; Training Launcher</div>
+    </div>
+  </div>
+
+  <!-- Centered 4-Step Guided Navigation -->
+  <nav class="stepper" id="stepperNav">
+    <button type="button" class="step-btn active" onclick="goToStep(1)">
+      <span class="step-circle">1</span> Data
+    </button>
+    <button type="button" class="step-btn" onclick="goToStep(2)">
+      <span class="step-circle">2</span> Model
+    </button>
+    <button type="button" class="step-btn" onclick="goToStep(3)">
+      <span class="step-circle">3</span> Training
+    </button>
+    <button type="button" class="step-btn" onclick="goToStep(4)">
+      <span class="step-circle">4</span> Advanced &amp; Run
+    </button>
+  </nav>
+
+  <!-- Right Action Buttons -->
+  <div class="header-actions">
+    <button type="button" onclick="resetDefaults()" title="Reset all settings to WaveDL defaults">↺ Reset</button>
+    <button type="button" class="btn-brand" onclick="saveConfigToFile()" title="Save YAML config file (Ctrl/Cmd+S)">💾 Save YAML</button>
+    <button type="button" class="btn-run" id="runBtn" onclick="startTraining()" title="Save config and run wavedl-train (Ctrl/Cmd+Enter)">▶ Run Training</button>
+    <button type="button" class="btn-stop" id="stopBtn" onclick="stopTraining()" style="display:none;">⏹ Stop</button>
+  </div>
+</header>
+
+<main>
+  <!-- Left Column: Calm, Step-by-Step Guided Wizard -->
+  <section class="wizard-pane">
+
+    <!-- ==================== STEP 1: DATA & QUICK START ==================== -->
+    <div class="step-panel active" id="panel-step-1">
+      <div class="step-card">
+        <div class="step-header">
+          <div class="step-eyebrow">Step 1 of 4</div>
+          <h1 class="step-title">Select Your Dataset &amp; Output Folder</h1>
+          <p class="step-desc">Choose a quick-start template below or select your training data file to get started.</p>
+        </div>
+
+        <div style="margin-bottom:8px;font-weight:600;font-size:13px;color:var(--text-secondary);">
+          ✨ Optional: Start from a Recommended Template
+        </div>
+        <div class="preset-cards">
+          <div class="preset-card" onclick="applyPreset('baseline')">
+            <span class="preset-card-title">🚀 Standard Baseline</span>
+            <span class="preset-card-sub">Fast CNN for 1D, 2D, or 3D vector regression</span>
+          </div>
+          <div class="preset-card" onclick="applyPreset('waveform1d')">
+            <span class="preset-card-title">📈 1D Waveform</span>
+            <span class="preset-card-sub">Temporal ConvNet (TCN) for ultrasonic/seismic signals</span>
+          </div>
+          <div class="preset-card" onclick="applyPreset('convnext')">
+            <span class="preset-card-title">🏆 High-Accuracy 2D/3D</span>
+            <span class="preset-card-sub">ConvNeXt V2 + Cosine schedule + torch.compile</span>
+          </div>
+          <div class="preset-card" onclick="applyPreset('field2d')">
+            <span class="preset-card-title">🗺️ 2D Property Map</span>
+            <span class="preset-card-sub">U-Net Field for dense 2D spatial reconstructions</span>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="field-label">
+            <span>Training Dataset File</span>
+            <span class="field-key" id="dataStatusBadge">data_path</span>
+          </div>
+          <div class="input-row">
+            <input type="text" id="f_data_path" placeholder="Click Browse or type path (e.g. train_data.npz)" oninput="onDataPathChange()" />
+            <button type="button" onclick="openBrowser('f_data_path', 'file')">📁 Browse File...</button>
+          </div>
+          <div class="field-help">Supports <code>.npz</code>, <code>.h5</code> / <code>.hdf5</code>, and MATLAB v7.3 <code>.mat</code> files.</div>
+        </div>
+
+        <div class="field">
+          <div class="field-label">
+            <span>Output Folder for Checkpoints &amp; Results</span>
+            <span class="field-key">output_dir</span>
+          </div>
+          <div class="input-row">
+            <input type="text" id="f_output_dir" placeholder="./experiments" oninput="syncFromForm()" />
+            <button type="button" onclick="openBrowser('f_output_dir', 'dir')">📁 Browse Folder...</button>
+          </div>
+          <div class="field-help">WaveDL saves the best model weights, training curves, and logs here.</div>
+        </div>
+
+        <details class="adv-drawer">
+          <summary>
+            <span>⚙️ Optional: Resume Checkpoint, Seed &amp; DataLoader Settings</span>
+            <span class="field-key" id="advDataSummary">Default settings</span>
+          </summary>
+          <div class="adv-body">
+            <div class="grid-3">
+              <div class="field">
+                <div class="field-label"><span>Save Every N Epochs</span><span class="field-key">save_every</span></div>
+                <input type="number" id="f_save_every" min="0" oninput="syncFromForm()" />
+              </div>
+              <div class="field">
+                <div class="field-label"><span>CPU Workers (-1 = Auto)</span><span class="field-key">workers</span></div>
+                <input type="number" id="f_workers" min="-1" max="128" oninput="syncFromForm()" />
+              </div>
+              <div class="field">
+                <div class="field-label"><span>Random Seed</span><span class="field-key">seed</span></div>
+                <input type="number" id="f_seed" min="0" oninput="syncFromForm()" />
+              </div>
+            </div>
+
+            <div class="grid-2">
+              <div class="field">
+                <div class="field-label"><span>Resume From Checkpoint</span><span class="field-key">resume</span></div>
+                <div class="input-row">
+                  <input type="text" id="f_resume" placeholder="Leave empty unless resuming" oninput="syncFromForm()" />
+                  <button type="button" class="sm" onclick="openBrowser('f_resume', 'dir')">Browse</button>
+                </div>
+              </div>
+              <div class="field">
+                <div class="field-label"><span>Cache Check Mode</span><span class="field-key">cache_validate</span></div>
+                <div class="pills" id="pills_cache_validate">
+                  <span class="pill sm-pill" data-val="sha256" onclick="selectPill('cache_validate', 'sha256')">sha256</span>
+                  <span class="pill sm-pill" data-val="fast" onclick="selectPill('cache_validate', 'fast')">fast</span>
+                  <span class="pill sm-pill" data-val="size" onclick="selectPill('cache_validate', 'size')">size</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="grid-2" style="margin-top:8px;">
+              <label class="toggle-card">
+                <div class="toggle-info">
+                  <span class="toggle-title">Start Fresh</span>
+                  <span class="toggle-sub">Ignore existing checkpoints in output folder</span>
+                </div>
+                <input type="checkbox" id="f_fresh" onchange="syncFromForm()" />
+              </label>
+              <label class="toggle-card">
+                <div class="toggle-info">
+                  <span class="toggle-title">Deterministic Mode</span>
+                  <span class="toggle-sub">Exact reproducibility across runs</span>
+                </div>
+                <input type="checkbox" id="f_deterministic" onchange="syncFromForm()" />
+              </label>
+              <label class="toggle-card">
+                <div class="toggle-info">
+                  <span class="toggle-title">Single-Channel 3D Volume</span>
+                  <span class="toggle-sub">For shallow 3D volumetric inputs</span>
+                </div>
+                <input type="checkbox" id="f_single_channel" onchange="syncFromForm()" />
+              </label>
+              <label class="toggle-card">
+                <div class="toggle-info">
+                  <span class="toggle-title">Allow Pickle</span>
+                  <span class="toggle-sub">For trusted legacy NPZ files only</span>
+                </div>
+                <input type="checkbox" id="f_allow_pickle" onchange="syncFromForm()" />
+              </label>
+            </div>
+          </div>
+        </details>
+
+        <div class="step-footer">
+          <span style="color:var(--muted);font-size:13px;">Step 1 of 4</span>
+          <button type="button" class="btn-brand" onclick="goToStep(2)">Next: Choose Model →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== STEP 2: MODEL ARCHITECTURE ==================== -->
+    <div class="step-panel" id="panel-step-2">
+      <div class="step-card">
+        <div class="step-header">
+          <div class="step-eyebrow">Step 2 of 4</div>
+          <h1 class="step-title">Choose a Model Architecture</h1>
+          <p class="step-desc">Filter by your input data type or search across 72 built-in neural network architectures.</p>
+        </div>
+
+        <div class="field">
+          <div class="field-label"><span>1. Filter by Input Data Type</span></div>
+          <div class="pills" id="dimFilterPills">
+            <span class="pill active" data-dim="all" onclick="setDimFilter('all')">All Models (72)</span>
+            <span class="pill" data-dim="1D" onclick="setDimFilter('1D')">📈 1D Waveforms</span>
+            <span class="pill" data-dim="2D" onclick="setDimFilter('2D')">🖼️ 2D Images / Spectrograms</span>
+            <span class="pill" data-dim="3D" onclick="setDimFilter('3D')">🧊 3D Volumes</span>
+            <span class="pill" data-dim="field" onclick="setDimFilter('field')">🗺️ Dense 2D Field Map</span>
+          </div>
+        </div>
+
+        <div class="grid-2" style="align-items:end;margin-bottom:12px;">
+          <div class="field" style="margin-bottom:0;">
+            <div class="field-label"><span>2. Architecture Family</span></div>
+            <div class="pills" id="modelCatPills"></div>
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <input type="text" id="modelSearch" placeholder="🔍 Search models by name (e.g. resnet, vit, mamba)..." oninput="renderModelGrid()" />
+          </div>
+        </div>
+
+        <div class="model-grid" id="modelGrid"></div>
+
+        <div class="grid-2" style="margin-top:18px;">
+          <div class="field" style="margin-bottom:0;">
+            <div class="field-label"><span>Selected Model</span><span class="field-key">model</span></div>
+            <input type="text" id="f_model" oninput="onModelInput()" style="font-family:var(--mono);font-weight:700;color:var(--brand-dark);" />
+          </div>
+          <label class="toggle-card" style="align-self:end;">
+            <div class="toggle-info">
+              <span class="toggle-title">Use ImageNet Pretrained Weights</span>
+              <span class="toggle-sub">For <code>*_pretrained</code> model variants</span>
+            </div>
+            <input type="checkbox" id="f_pretrained" onchange="syncFromForm()" />
+          </label>
+        </div>
+
+        <details class="adv-drawer">
+          <summary>
+            <span>🔌 Optional: Import Custom Python Model Files</span>
+            <span class="field-key">import_modules</span>
+          </summary>
+          <div class="adv-body">
+            <div class="field" style="margin-bottom:0;">
+              <div class="field-label"><span>Python Module or File Paths (comma-separated)</span></div>
+              <input type="text" id="f_import_modules" placeholder="e.g. ./my_model.py" oninput="syncFromForm()" />
+            </div>
+          </div>
+        </details>
+
+        <div class="step-footer">
+          <button type="button" onclick="goToStep(1)">← Back to Data</button>
+          <button type="button" class="btn-brand" onclick="goToStep(3)">Next: Training Settings →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== STEP 3: TRAINING SETTINGS ==================== -->
+    <div class="step-panel" id="panel-step-3">
+      <div class="step-card">
+        <div class="step-header">
+          <div class="step-eyebrow">Step 3 of 4</div>
+          <h1 class="step-title">Training Hyperparameters</h1>
+          <p class="step-desc">The default values below work well for most inverse problems. Adjust with sliders or quick buttons.</p>
+        </div>
+
+        <div class="grid-2">
+          <div class="field">
+            <div class="field-label"><span>Batch Size (per GPU)</span><span class="field-key">batch_size</span></div>
+            <div class="input-row">
+              <input type="range" min="8" max="512" step="8" id="r_batch_size" oninput="setNum('f_batch_size', this.value)" />
+              <input type="number" id="f_batch_size" min="1" style="width:88px" oninput="setRange('r_batch_size', this.value)" />
+            </div>
+            <div class="pills">
+              <span class="pill sm-pill" onclick="setVal('f_batch_size', 32)">32</span>
+              <span class="pill sm-pill" onclick="setVal('f_batch_size', 64)">64</span>
+              <span class="pill sm-pill" onclick="setVal('f_batch_size', 128)">128 (Default)</span>
+              <span class="pill sm-pill" onclick="setVal('f_batch_size', 256)">256</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="field-label"><span>Learning Rate</span><span class="field-key">lr</span></div>
+            <input type="number" id="f_lr" step="any" min="0" oninput="syncFromForm()" />
+            <div class="pills">
+              <span class="pill sm-pill" onclick="setVal('f_lr', 0.005)">5e-3 (Fast)</span>
+              <span class="pill sm-pill" onclick="setVal('f_lr', 0.001)">1e-3 (Default)</span>
+              <span class="pill sm-pill" onclick="setVal('f_lr', 0.0005)">5e-4</span>
+              <span class="pill sm-pill" onclick="setVal('f_lr', 0.0001)">1e-4 (Gentle)</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="field">
+            <div class="field-label"><span>Maximum Epochs</span><span class="field-key">epochs</span></div>
+            <div class="input-row">
+              <input type="range" min="50" max="2000" step="50" id="r_epochs" oninput="setNum('f_epochs', this.value)" />
+              <input type="number" id="f_epochs" min="1" style="width:92px" oninput="setRange('r_epochs', this.value)" />
+            </div>
+            <div class="pills">
+              <span class="pill sm-pill" onclick="setVal('f_epochs', 200)">200</span>
+              <span class="pill sm-pill" onclick="setVal('f_epochs', 500)">500</span>
+              <span class="pill sm-pill" onclick="setVal('f_epochs', 1000)">1000 (Default)</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="field-label"><span>Early Stopping Patience</span><span class="field-key">patience</span></div>
+            <div class="input-row">
+              <input type="range" min="5" max="150" step="5" id="r_patience" oninput="setNum('f_patience', this.value)" />
+              <input type="number" id="f_patience" min="1" style="width:88px" oninput="setRange('r_patience', this.value)" />
+            </div>
+            <div class="field-help">Stops training automatically if validation loss doesn't improve for this many epochs.</div>
+          </div>
+        </div>
+
+        <hr style="border:none;border-top:1px solid var(--border);margin:20px 0;" />
+
+        <div class="field">
+          <div class="field-label"><span>Loss Function</span><span class="field-key">loss</span></div>
+          <div class="pills" id="pills_loss">
+            <span class="pill" data-val="mse" onclick="selectPill('loss', 'mse')">MSE (Standard L2)</span>
+            <span class="pill" data-val="mae" onclick="selectPill('loss', 'mae')">MAE (L1)</span>
+            <span class="pill" data-val="huber" onclick="selectPill('loss', 'huber')">Huber</span>
+            <span class="pill" data-val="smooth_l1" onclick="selectPill('loss', 'smooth_l1')">Smooth L1</span>
+            <span class="pill" data-val="log_cosh" onclick="selectPill('loss', 'log_cosh')">Log-Cosh</span>
+            <span class="pill" data-val="weighted_mse" onclick="selectPill('loss', 'weighted_mse')">Weighted MSE</span>
+          </div>
+          <div class="context-box" id="lossContextBox" style="display:none;">
+            <div class="field" id="wrap_huber_delta" style="display:none;margin-bottom:0;">
+              <div class="field-label"><span>Huber Delta</span><span class="field-key">huber_delta</span></div>
+              <input type="number" id="f_huber_delta" step="0.1" min="0.0001" style="max-width:180px;" oninput="syncFromForm()" />
+            </div>
+            <div class="field" id="wrap_loss_weights" style="display:none;margin-bottom:0;">
+              <div class="field-label"><span>Target Weights (comma-separated)</span><span class="field-key">loss_weights</span></div>
+              <input type="text" id="f_loss_weights" placeholder="e.g. 1.0, 2.0, 1.0" oninput="syncFromForm()" />
+            </div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="field" style="margin-bottom:0;">
+            <div class="field-label"><span>Optimizer</span><span class="field-key">optimizer</span></div>
+            <div class="pills" id="pills_optimizer">
+              <span class="pill" data-val="adamw" onclick="selectPill('optimizer', 'adamw')">AdamW</span>
+              <span class="pill" data-val="adam" onclick="selectPill('optimizer', 'adam')">Adam</span>
+              <span class="pill" data-val="nadam" onclick="selectPill('optimizer', 'nadam')">NAdam</span>
+              <span class="pill" data-val="radam" onclick="selectPill('optimizer', 'radam')">RAdam</span>
+              <span class="pill" data-val="sgd" onclick="selectPill('optimizer', 'sgd')">SGD</span>
+              <span class="pill" data-val="rmsprop" onclick="selectPill('optimizer', 'rmsprop')">RMSprop</span>
+            </div>
+          </div>
+
+          <div class="field" style="margin-bottom:0;">
+            <div class="field-label"><span>Learning Rate Schedule</span><span class="field-key">scheduler</span></div>
+            <div class="pills" id="pills_scheduler">
+              <span class="pill" data-val="plateau" onclick="selectPill('scheduler', 'plateau')">Plateau</span>
+              <span class="pill" data-val="cosine" onclick="selectPill('scheduler', 'cosine')">Cosine</span>
+              <span class="pill" data-val="onecycle" onclick="selectPill('scheduler', 'onecycle')">OneCycle</span>
+              <span class="pill" data-val="linear_warmup" onclick="selectPill('scheduler', 'linear_warmup')">Warmup</span>
+              <span class="pill" data-val="cosine_restarts" onclick="selectPill('scheduler', 'cosine_restarts')">Restarts</span>
+              <span class="pill" data-val="step" onclick="selectPill('scheduler', 'step')">Step</span>
+              <span class="pill" data-val="multistep" onclick="selectPill('scheduler', 'multistep')">MultiStep</span>
+              <span class="pill" data-val="exponential" onclick="selectPill('scheduler', 'exponential')">Exp</span>
+            </div>
+          </div>
+        </div>
+
+        <details class="adv-drawer">
+          <summary>
+            <span>⚙️ Optional: Fine-Tune Regularization, Gradients &amp; Scheduler Details</span>
+            <span class="field-key">weight_decay · grad_clip · scheduler params</span>
+          </summary>
+          <div class="adv-body">
+            <div class="grid-3">
+              <div class="field">
+                <div class="field-label"><span>Weight Decay</span><span class="field-key">weight_decay</span></div>
+                <input type="number" id="f_weight_decay" step="any" min="0" oninput="syncFromForm()" />
+              </div>
+              <div class="field">
+                <div class="field-label"><span>Grad Clip Norm</span><span class="field-key">grad_clip</span></div>
+                <input type="number" id="f_grad_clip" step="0.1" min="0" oninput="syncFromForm()" />
+              </div>
+              <div class="field">
+                <div class="field-label"><span>Grad Accum Steps</span><span class="field-key">grad_accum_steps</span></div>
+                <input type="number" id="f_grad_accum_steps" min="1" max="256" oninput="syncFromForm()" />
+              </div>
+            </div>
+
+            <div class="grid-3">
+              <div class="field">
+                <div class="field-label"><span>Minimum LR</span><span class="field-key">min_lr</span></div>
+                <input type="number" id="f_min_lr" step="any" min="0" oninput="syncFromForm()" />
+              </div>
+              <div class="field" id="wrap_scheduler_patience">
+                <div class="field-label"><span>Plateau Patience</span><span class="field-key">scheduler_patience</span></div>
+                <input type="number" id="f_scheduler_patience" min="0" oninput="syncFromForm()" />
+              </div>
+              <div class="field" id="wrap_scheduler_factor">
+                <div class="field-label"><span>LR Decay Factor</span><span class="field-key">scheduler_factor</span></div>
+                <input type="number" id="f_scheduler_factor" step="0.05" min="0.01" max="0.99" oninput="syncFromForm()" />
+              </div>
+              <div class="field" id="wrap_warmup_epochs" style="display:none;">
+                <div class="field-label"><span>Warmup Epochs</span><span class="field-key">warmup_epochs</span></div>
+                <input type="number" id="f_warmup_epochs" min="1" oninput="syncFromForm()" />
+              </div>
+              <div class="field" id="wrap_step_size" style="display:none;">
+                <div class="field-label"><span>Step Size</span><span class="field-key">step_size</span></div>
+                <input type="number" id="f_step_size" min="1" oninput="syncFromForm()" />
+              </div>
+              <div class="field" id="wrap_milestones" style="display:none;">
+                <div class="field-label"><span>Milestones</span><span class="field-key">milestones</span></div>
+                <input type="text" id="f_milestones" placeholder="30,60,90" oninput="syncFromForm()" />
+              </div>
+            </div>
+
+            <div class="grid-3">
+              <div class="field" id="wrap_betas" style="margin-bottom:0;">
+                <div class="field-label"><span>Adam Betas</span><span class="field-key">betas</span></div>
+                <input type="text" id="f_betas" placeholder="0.9,0.999" oninput="syncFromForm()" />
+              </div>
+              <div class="field" id="wrap_momentum" style="display:none;margin-bottom:0;">
+                <div class="field-label"><span>Momentum</span><span class="field-key">momentum</span></div>
+                <input type="number" id="f_momentum" step="0.05" min="0" max="1" oninput="syncFromForm()" />
+              </div>
+              <label class="toggle-card" id="wrap_nesterov" style="display:none;">
+                <div class="toggle-info"><span class="toggle-title">Nesterov</span></div>
+                <input type="checkbox" id="f_nesterov" onchange="syncFromForm()" />
+              </label>
+              <div class="field" style="margin-bottom:0;">
+                <div class="field-label"><span>Selection Metric</span><span class="field-key">selection_metric</span></div>
+                <div class="pills" id="pills_selection_metric">
+                  <span class="pill sm-pill" data-val="loss" onclick="selectPill('selection_metric', 'loss')">loss</span>
+                  <span class="pill sm-pill" data-val="mse" onclick="selectPill('selection_metric', 'mse')">mse</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <div class="step-footer">
+          <button type="button" onclick="goToStep(2)">← Back to Model</button>
+          <button type="button" class="btn-brand" onclick="goToStep(4)">Next: Hardware &amp; Run →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== STEP 4: HARDWARE, CV & PHYSICS ==================== -->
+    <div class="step-panel" id="panel-step-4">
+      <div class="step-card">
+        <div class="step-header">
+          <div class="step-eyebrow">Step 4 of 4</div>
+          <h1 class="step-title">Hardware Acceleration &amp; Optional Features</h1>
+          <p class="step-desc">Configure GPU precision or enable optional K-Fold Cross-Validation, Physical Constraints, and Weights &amp; Biases.</p>
+        </div>
+
+        <div class="grid-3" style="margin-bottom:20px;">
+          <div class="field" style="margin-bottom:0;">
+            <div class="field-label"><span>Mixed Precision</span><span class="field-key">precision</span></div>
+            <div class="pills" id="pills_precision">
+              <span class="pill" data-val="bf16" onclick="selectPill('precision', 'bf16')">bf16 (Default)</span>
+              <span class="pill" data-val="fp16" onclick="selectPill('precision', 'fp16')">fp16</span>
+              <span class="pill" data-val="no" onclick="selectPill('precision', 'no')">fp32</span>
+            </div>
+          </div>
+
+          <label class="toggle-card">
+            <div class="toggle-info">
+              <span class="toggle-title">Enable <code>torch.compile</code></span>
+              <span class="toggle-sub">Faster training on PyTorch 2+</span>
+            </div>
+            <input type="checkbox" id="f_compile" onchange="syncFromForm()" />
+          </label>
+
+          <div class="field" style="margin-bottom:0;">
+            <div class="field-label"><span>Number of GPUs</span><span class="field-key">--num_gpus</span></div>
+            <input type="number" id="f_num_gpus" min="0" max="64" placeholder="Auto-detect all GPUs" oninput="syncFromForm()" />
+          </div>
+        </div>
+
+        <!-- Optional Feature 1: Cross-Validation -->
+        <div class="field">
+          <label class="toggle-card">
+            <div class="toggle-info">
+              <span class="toggle-title">🔬 Enable K-Fold Cross-Validation</span>
+              <span class="toggle-sub">Train &amp; evaluate across K dataset splits (leave off for standard train/val split)</span>
+            </div>
+            <input type="checkbox" id="toggle_cv_enabled" onchange="onToggleCV(this.checked)" />
+          </label>
+          <div class="context-box" id="cvDetailsBox" style="display:none;">
+            <div class="grid-3">
+              <div class="field" style="margin-bottom:0;">
+                <div class="field-label"><span>Number of Folds</span><span class="field-key">cv</span></div>
+                <input type="number" id="f_cv" min="0" max="100" oninput="syncFromForm()" />
+              </div>
+              <label class="toggle-card" style="background:var(--surface);">
+                <div class="toggle-info">
+                  <span class="toggle-title">Stratified Split</span>
+                  <span class="toggle-sub">For vector targets</span>
+                </div>
+                <input type="checkbox" id="f_cv_stratify" onchange="syncFromForm()" />
+              </label>
+              <div class="field" style="margin-bottom:0;">
+                <div class="field-label"><span>Stratification Bins</span><span class="field-key">cv_bins</span></div>
+                <input type="number" id="f_cv_bins" min="2" oninput="syncFromForm()" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Optional Feature 2: Physical Constraints -->
+        <div class="field">
+          <label class="toggle-card">
+            <div class="toggle-info">
+              <span class="toggle-title">⚖️ Enforce Physics-Informed Soft Constraints</span>
+              <span class="toggle-sub">Penalize predictions that violate physical equations (e.g. <code>y0 &gt; 0</code>)</span>
+            </div>
+            <input type="checkbox" id="toggle_constraints_enabled" onchange="onToggleConstraints(this.checked)" />
+          </label>
+          <div class="context-box" id="constraintsDetailsBox" style="display:none;">
+            <div class="grid-2">
+              <div class="field">
+                <div class="field-label"><span>Constraint Expressions (comma-separated)</span><span class="field-key">constraint</span></div>
+                <input type="text" id="f_constraint" placeholder="e.g. y0 > 0, y0 - y1*y2" oninput="syncFromForm()" />
+              </div>
+              <div class="field">
+                <div class="field-label"><span>Penalty Weights</span><span class="field-key">constraint_weight</span></div>
+                <input type="text" id="f_constraint_weight" placeholder="0.1" oninput="syncFromForm()" />
+              </div>
+            </div>
+            <div class="grid-2">
+              <div class="field" style="margin-bottom:0;">
+                <div class="field-label"><span>Custom Python Constraint File</span><span class="field-key">constraint_file</span></div>
+                <div class="input-row">
+                  <input type="text" id="f_constraint_file" placeholder="Optional .py file" oninput="syncFromForm()" />
+                  <button type="button" class="sm" onclick="openBrowser('f_constraint_file', 'file')">Browse</button>
+                </div>
+              </div>
+              <div class="field" style="margin-bottom:0;">
+                <div class="field-label"><span>Reduction</span><span class="field-key">constraint_reduction</span></div>
+                <div class="pills" id="pills_constraint_reduction">
+                  <span class="pill sm-pill" data-val="mse" onclick="selectPill('constraint_reduction', 'mse')">mse</span>
+                  <span class="pill sm-pill" data-val="mae" onclick="selectPill('constraint_reduction', 'mae')">mae</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Optional Feature 3: Weights & Biases -->
+        <div class="field" style="margin-bottom:0;">
+          <label class="toggle-card">
+            <div class="toggle-info">
+              <span class="toggle-title">📊 Log to Weights &amp; Biases (W&amp;B)</span>
+              <span class="toggle-sub">Track training curves and scatter plots online or offline</span>
+            </div>
+            <input type="checkbox" id="f_wandb" onchange="syncFromForm()" />
+          </label>
+          <div class="context-box" id="wandbDetailsBox" style="display:none;">
+            <div class="grid-3">
+              <div class="field" style="margin-bottom:0;">
+                <div class="field-label"><span>Project Name</span><span class="field-key">project_name</span></div>
+                <input type="text" id="f_project_name" placeholder="DL-Training" oninput="syncFromForm()" />
+              </div>
+              <div class="field" style="margin-bottom:0;">
+                <div class="field-label"><span>Run Name</span><span class="field-key">run_name</span></div>
+                <input type="text" id="f_run_name" placeholder="Auto-generated" oninput="syncFromForm()" />
+              </div>
+              <label class="toggle-card" style="background:var(--surface);">
+                <div class="toggle-info"><span class="toggle-title">Watch Gradients</span></div>
+                <input type="checkbox" id="f_wandb_watch" onchange="syncFromForm()" />
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="step-footer">
+          <button type="button" onclick="goToStep(3)">← Back to Training Settings</button>
+          <div style="display:flex;gap:10px;">
+            <button type="button" class="btn-brand" onclick="saveConfigToFile()">💾 Save config.yaml</button>
+            <button type="button" class="btn-run" onclick="startTraining()">▶ Save &amp; Run Training</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- Right Sidebar: At-a-Glance Summary + Tabbed YAML / Console -->
+  <aside class="right-pane">
+    <div class="summary-box">
+      <div class="summary-title">
+        <span>Experiment Summary</span>
+        <span class="status-pill status-idle" id="trainStatusBadge">Idle</span>
+      </div>
+      <div class="summary-grid">
+        <div class="summary-item">
+          <span class="summary-label">Dataset</span>
+          <span class="summary-val" id="sumData">Not set</span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-label">Model</span>
+          <span class="summary-val" id="sumModel">cnn</span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-label">Batch / LR / Epochs</span>
+          <span class="summary-val" id="sumHyper">128 · 0.001 · 1000</span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-label">Loss / Optim / Sched</span>
+          <span class="summary-val" id="sumOptim">mse · adamw · plateau</span>
+        </div>
+      </div>
+      <div class="config-path-row">
+        <input type="text" id="configFilePath" value="config.yaml" oninput="renderYamlPreview()" title="Target YAML file path" />
+        <button class="sm" type="button" onclick="loadConfigFromFile()" title="Load this YAML file into the form">📂 Load</button>
+        <button class="sm" type="button" onclick="openBrowser('configFilePath', 'file')">…</button>
+      </div>
+    </div>
+
+    <div class="right-tabs">
+      <button type="button" class="right-tab active" id="tabBtnYaml" onclick="switchRightTab('yaml')">📄 config.yaml</button>
+      <button type="button" class="right-tab" id="tabBtnConsole" onclick="switchRightTab('console')">🖥 Training Console <span id="trainElapsed"></span></button>
+    </div>
+
+    <!-- Tab 1: YAML Preview & Editor -->
+    <div class="right-tab-body active" id="tabBodyYaml">
+      <div class="yaml-toolbar">
+        <span>Updates automatically as you change options</span>
+        <div style="display:flex;gap:6px;">
+          <button class="sm" type="button" onclick="applyYamlToForm()">⇄ Sync to Form</button>
+          <button class="sm" type="button" onclick="copyYaml()">📋 Copy</button>
+        </div>
+      </div>
+      <textarea class="yaml-editor" id="yamlEditor" spellcheck="false"></textarea>
+      <div class="cli-preview-bar">
+        <span id="cliPreview" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">wavedl-train --config config.yaml</span>
+        <button class="sm" type="button" onclick="copyCli()">Copy CLI</button>
+      </div>
+    </div>
+
+    <!-- Tab 2: Live Training Console -->
+    <div class="right-tab-body" id="tabBodyConsole">
+      <div class="yaml-toolbar">
+        <span>Live output from <code>wavedl-train</code></span>
+        <button class="sm" type="button" onclick="clearConsole()">Clear</button>
+      </div>
+      <pre class="console-output" id="consoleOutput">Ready to train. Click "▶ Run Training" to start.</pre>
+    </div>
+  </aside>
+</main>
+
+<!-- File / Folder Browser Modal -->
+<div class="modal-backdrop" id="browserModal" onclick="if(event.target===this)closeBrowser()">
+  <div class="modal">
+    <div class="modal-header">
+      <span id="browserTitle">Select File or Folder</span>
+      <button class="sm" type="button" onclick="closeBrowser()">✕ Close</button>
+    </div>
+    <div class="modal-path">
+      <button class="sm" type="button" onclick="browseUp()">⬆ Up</button>
+      <button class="sm" type="button" onclick="browseRoot()">🏠 Workspace</button>
+      <span id="browserCurrentDir" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-secondary);"></span>
+      <button class="sm btn-brand" id="browserSelectDirBtn" type="button" onclick="chooseCurrentDir()">✓ Choose This Folder</button>
+    </div>
+    <div class="file-list" id="browserList"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const MODEL_CATALOG = [
+  { name: "cnn", cat: "Classic CNN", dims: ["1D", "2D", "3D"], note: "Fast universal baseline" },
+  { name: "resnet18", cat: "Classic CNN", dims: ["1D", "2D", "3D"], note: "Residual network (18 layers)" },
+  { name: "resnet34", cat: "Classic CNN", dims: ["1D", "2D", "3D"], note: "Residual network (34 layers)" },
+  { name: "resnet50", cat: "Classic CNN", dims: ["1D", "2D", "3D"], note: "Bottleneck ResNet (50 layers)" },
+  { name: "resnet18_pretrained", cat: "Classic CNN", dims: ["2D"], note: "ImageNet pretrained ResNet-18" },
+  { name: "resnet50_pretrained", cat: "Classic CNN", dims: ["2D"], note: "ImageNet pretrained ResNet-50" },
+  { name: "densenet121", cat: "Classic CNN", dims: ["1D", "2D", "3D"], note: "Dense feature reuse (121L)" },
+  { name: "densenet169", cat: "Classic CNN", dims: ["1D", "2D", "3D"], note: "Dense feature reuse (169L)" },
+  { name: "densenet121_pretrained", cat: "Classic CNN", dims: ["2D"], note: "ImageNet DenseNet-121" },
+  { name: "mobilenet_v3_small", cat: "Efficient CNN", dims: ["2D"], note: "Ultra-fast lightweight 2D" },
+  { name: "mobilenet_v3_large", cat: "Efficient CNN", dims: ["2D"], note: "MobileNetV3 high capacity" },
+  { name: "efficientnet_b0", cat: "Efficient CNN", dims: ["2D"], note: "Compound-scaled CNN (B0)" },
+  { name: "efficientnet_b2", cat: "Efficient CNN", dims: ["2D"], note: "Compound-scaled CNN (B2)" },
+  { name: "efficientnet_b4", cat: "Efficient CNN", dims: ["2D"], note: "Compound-scaled CNN (B4)" },
+  { name: "efficientnet_b7", cat: "Efficient CNN", dims: ["2D"], note: "Compound-scaled CNN (B7)" },
+  { name: "efficientnet_v2_s", cat: "Efficient CNN", dims: ["2D"], note: "Fast progressive training (S)" },
+  { name: "efficientnet_v2_m", cat: "Efficient CNN", dims: ["2D"], note: "EfficientNetV2 Medium" },
+  { name: "efficientnet_v2_l", cat: "Efficient CNN", dims: ["2D"], note: "EfficientNetV2 Large" },
+  { name: "regnet_y_400mf", cat: "Efficient CNN", dims: ["2D"], note: "RegNetY 400M FLOPs" },
+  { name: "regnet_y_800mf", cat: "Efficient CNN", dims: ["2D"], note: "RegNetY 800M FLOPs" },
+  { name: "regnet_y_1_6gf", cat: "Efficient CNN", dims: ["2D"], note: "RegNetY 1.6G FLOPs" },
+  { name: "regnet_y_3_2gf", cat: "Efficient CNN", dims: ["2D"], note: "RegNetY 3.2G FLOPs" },
+  { name: "regnet_y_8gf", cat: "Efficient CNN", dims: ["2D"], note: "RegNetY 8.0G FLOPs" },
+  { name: "convnext_tiny", cat: "Modern CNN", dims: ["1D", "2D", "3D"], note: "7x7 depthwise modern CNN" },
+  { name: "convnext_small", cat: "Modern CNN", dims: ["1D", "2D", "3D"], note: "ConvNeXt Small" },
+  { name: "convnext_base", cat: "Modern CNN", dims: ["1D", "2D", "3D"], note: "ConvNeXt Base" },
+  { name: "convnext_tiny_pretrained", cat: "Modern CNN", dims: ["2D"], note: "ImageNet ConvNeXt-Tiny" },
+  { name: "convnext_v2_tiny", cat: "Modern CNN", dims: ["1D", "2D", "3D"], note: "GRN-enhanced ConvNeXt V2" },
+  { name: "convnext_v2_small", cat: "Modern CNN", dims: ["1D", "2D", "3D"], note: "ConvNeXt V2 Small" },
+  { name: "convnext_v2_base", cat: "Modern CNN", dims: ["1D", "2D", "3D"], note: "ConvNeXt V2 Base" },
+  { name: "convnext_v2_tiny_pretrained", cat: "Modern CNN", dims: ["2D"], note: "ImageNet ConvNeXt-V2" },
+  { name: "unireplknet_tiny", cat: "Modern CNN", dims: ["2D"], note: "Large-kernel re-param CNN" },
+  { name: "unireplknet_small", cat: "Modern CNN", dims: ["2D"], note: "UniRepLKNet Small" },
+  { name: "unireplknet_base", cat: "Modern CNN", dims: ["2D"], note: "UniRepLKNet Base" },
+  { name: "vit_tiny", cat: "Transformer", dims: ["1D", "2D"], note: "Patch Vision Transformer" },
+  { name: "vit_small", cat: "Transformer", dims: ["1D", "2D"], note: "ViT Small" },
+  { name: "vit_base", cat: "Transformer", dims: ["1D", "2D"], note: "ViT Base" },
+  { name: "swin_t", cat: "Transformer", dims: ["2D"], note: "Shifted-window Transformer" },
+  { name: "swin_s", cat: "Transformer", dims: ["2D"], note: "Swin Small" },
+  { name: "swin_b", cat: "Transformer", dims: ["2D"], note: "Swin Base" },
+  { name: "maxvit_tiny", cat: "Transformer", dims: ["2D"], note: "Multi-axis attention (Tiny)" },
+  { name: "maxvit_small", cat: "Transformer", dims: ["2D"], note: "MaxViT Small" },
+  { name: "maxvit_base", cat: "Transformer", dims: ["2D"], note: "MaxViT Base" },
+  { name: "fastvit_t8", cat: "Hybrid", dims: ["2D"], note: "Reparam hybrid ViT (T8)" },
+  { name: "fastvit_t12", cat: "Hybrid", dims: ["2D"], note: "FastViT T12" },
+  { name: "fastvit_s12", cat: "Hybrid", dims: ["2D"], note: "FastViT S12" },
+  { name: "fastvit_sa12", cat: "Hybrid", dims: ["2D"], note: "FastViT SA12" },
+  { name: "caformer_s18", cat: "Hybrid", dims: ["2D"], note: "Conv + Attention MetaFormer" },
+  { name: "caformer_s36", cat: "Hybrid", dims: ["2D"], note: "CAFormer S36" },
+  { name: "caformer_m36", cat: "Hybrid", dims: ["2D"], note: "CAFormer M36" },
+  { name: "poolformer_s12", cat: "Hybrid", dims: ["2D"], note: "Pooling MetaFormer S12" },
+  { name: "efficientvit_m1", cat: "Hybrid", dims: ["2D"], note: "Cascaded group attention" },
+  { name: "efficientvit_b1", cat: "Hybrid", dims: ["2D"], note: "EfficientViT B1" },
+  { name: "efficientvit_b2", cat: "Hybrid", dims: ["2D"], note: "EfficientViT B2" },
+  { name: "efficientvit_l2", cat: "Hybrid", dims: ["2D"], note: "EfficientViT L2" },
+  { name: "mamba_1d", cat: "SSM / Mamba", dims: ["1D"], note: "Selective State Space (1D)" },
+  { name: "vim_tiny", cat: "SSM / Mamba", dims: ["2D"], note: "Bidirectional Vision Mamba" },
+  { name: "vim_small", cat: "SSM / Mamba", dims: ["2D"], note: "Vision Mamba Small" },
+  { name: "vim_base", cat: "SSM / Mamba", dims: ["2D"], note: "Vision Mamba Base" },
+  { name: "s4d_small", cat: "SSM / Mamba", dims: ["1D"], note: "Diagonal State Space (1D)" },
+  { name: "s4d", cat: "SSM / Mamba", dims: ["1D"], note: "S4D Standard (long 1D)" },
+  { name: "s4d_large", cat: "SSM / Mamba", dims: ["1D"], note: "S4D Large" },
+  { name: "tcn_small", cat: "Specialized", dims: ["1D"], note: "Dilated causal TCN (Small)" },
+  { name: "tcn", cat: "Specialized", dims: ["1D"], note: "Temporal ConvNet for 1D waves" },
+  { name: "tcn_large", cat: "Specialized", dims: ["1D"], note: "Temporal ConvNet (Large)" },
+  { name: "wavenet_small", cat: "Specialized", dims: ["1D"], note: "Gated dilated WaveNet (Small)" },
+  { name: "wavenet", cat: "Specialized", dims: ["1D"], note: "WaveNet for ultrasonic/audio" },
+  { name: "wavenet_large", cat: "Specialized", dims: ["1D"], note: "WaveNet (Large)" },
+  { name: "resnet3d_18", cat: "Specialized", dims: ["3D"], note: "3D volumetric ResNet-18" },
+  { name: "mc3_18", cat: "Specialized", dims: ["3D"], note: "Mixed 3D/2D spatio-temporal" },
+  { name: "unet_regression", cat: "Specialized", dims: ["2D"], note: "U-Net encoder-decoder → Vector" },
+  { name: "unet_field", cat: "Specialized", dims: ["2D", "field"], note: "Dense 2D field map (N,H,W)" }
+];
+
+const DEFAULTS = {
+  model: "cnn",
+  pretrained: false,
+  import_modules: [],
+  batch_size: 128,
+  lr: 0.001,
+  epochs: 1000,
+  patience: 20,
+  weight_decay: 0.0001,
+  grad_clip: 1.0,
+  grad_accum_steps: 1,
+  loss: "mse",
+  selection_metric: "loss",
+  huber_delta: 1.0,
+  loss_weights: "",
+  optimizer: "adamw",
+  momentum: 0.9,
+  nesterov: false,
+  betas: "0.9,0.999",
+  scheduler: "plateau",
+  scheduler_factor: 0.5,
+  scheduler_patience: 10,
+  min_lr: 0.000001,
+  warmup_epochs: 5,
+  step_size: 30,
+  milestones: "",
+  cv: 0,
+  cv_stratify: false,
+  cv_bins: 10,
+  data_path: "",
+  output_dir: "./experiments",
+  resume: "",
+  save_every: 50,
+  fresh: false,
+  workers: -1,
+  seed: 2025,
+  deterministic: false,
+  cache_validate: "sha256",
+  single_channel: false,
+  allow_pickle: false,
+  precision: "bf16",
+  compile: false,
+  wandb: false,
+  wandb_watch: false,
+  project_name: "DL-Training",
+  run_name: "",
+  constraint: [],
+  constraint_file: "",
+  constraint_weight: [0.1],
+  constraint_reduction: "mse"
+};
+
+let state = JSON.parse(JSON.stringify(DEFAULTS));
+let activeModelCat = "All";
+let activeDimFilter = "all";
+let dataFileCheck = { exists: false, is_file: false, size_mb: null };
+let pollTimer = null;
+let logOffset = 0;
+
+function init() {
+  const cats = ["All", ...new Set(MODEL_CATALOG.map(m => m.cat))];
+  document.getElementById("modelCatPills").innerHTML = cats.map(c =>
+    `<span class="pill sm-pill ${c === activeModelCat ? 'active' : ''}" onclick="setModelCat('${c}')">${c}</span>`
+  ).join("");
+
+  applyStateToDOM();
+  loadConfigFromFile(true);
+  checkTrainingStatus();
+}
+
+function goToStep(stepNum) {
+  for (let i = 1; i <= 4; i++) {
+    document.getElementById(`panel-step-${i}`).classList.toggle("active", i === stepNum);
+  }
+  const btns = document.querySelectorAll("#stepperNav .step-btn");
+  btns.forEach((b, idx) => b.classList.toggle("active", idx + 1 === stepNum));
+  document.querySelector(".wizard-pane").scrollTop = 0;
+}
+
+function switchRightTab(tab) {
+  document.getElementById("tabBtnYaml").classList.toggle("active", tab === "yaml");
+  document.getElementById("tabBtnConsole").classList.toggle("active", tab === "console");
+  document.getElementById("tabBodyYaml").classList.toggle("active", tab === "yaml");
+  document.getElementById("tabBodyConsole").classList.toggle("active", tab === "console");
+}
+
+function applyPreset(name) {
+  if (name === "baseline") {
+    Object.assign(state, {
+      model: "cnn", pretrained: false, batch_size: 128, lr: 0.001,
+      optimizer: "adamw", scheduler: "plateau", loss: "mse", precision: "bf16", compile: false, cv: 0
+    });
+    showToast("Template applied: 🚀 Standard Baseline (CNN)");
+  } else if (name === "convnext") {
+    Object.assign(state, {
+      model: "convnext_v2_tiny", pretrained: false, batch_size: 64, lr: 0.0005,
+      optimizer: "adamw", scheduler: "cosine", loss: "mse", precision: "bf16", compile: true, cv: 0
+    });
+    showToast("Template applied: 🏆 ConvNeXt V2 + Cosine");
+  } else if (name === "waveform1d") {
+    Object.assign(state, {
+      model: "tcn", pretrained: false, batch_size: 128, lr: 0.003,
+      optimizer: "adamw", scheduler: "onecycle", loss: "mse", precision: "bf16", cv: 0
+    });
+    showToast("Template applied: 📈 1D Waveform (TCN)");
+  } else if (name === "field2d") {
+    Object.assign(state, {
+      model: "unet_field", pretrained: false, batch_size: 32, lr: 0.001,
+      optimizer: "adamw", scheduler: "cosine", loss: "mse", precision: "bf16", cv: 0
+    });
+    showToast("Template applied: 🗺️ 2D Property Map (U-Net Field)");
+  }
+  applyStateToDOM();
+}
+
+function setDimFilter(dim) {
+  activeDimFilter = dim;
+  document.querySelectorAll("#dimFilterPills .pill").forEach(p => {
+    p.classList.toggle("active", p.getAttribute("data-dim") === dim);
+  });
+  renderModelGrid();
+}
+
+function setModelCat(cat) {
+  activeModelCat = cat;
+  document.querySelectorAll("#modelCatPills .pill").forEach(p => {
+    p.classList.toggle("active", p.textContent === cat);
+  });
+  renderModelGrid();
+}
+
+function renderModelGrid() {
+  const q = (document.getElementById("modelSearch").value || "").toLowerCase().trim();
+  const grid = document.getElementById("modelGrid");
+  const filtered = MODEL_CATALOG.filter(m => {
+    const matchCat = activeModelCat === "All" || m.cat === activeModelCat;
+    const matchDim = activeDimFilter === "all" || m.dims.includes(activeDimFilter);
+    const matchQ = !q || m.name.toLowerCase().includes(q) || m.cat.toLowerCase().includes(q) || m.note.toLowerCase().includes(q);
+    return matchCat && matchDim && matchQ;
+  });
+
+  if (filtered.length === 0) {
+    grid.innerHTML = `<div style="padding:14px;color:var(--muted);grid-column:1/-1;">No models match this filter. Click "All Models (72)" above.</div>`;
+    return;
+  }
+
+  grid.innerHTML = filtered.map(m => {
+    const dimLabel = m.dims.includes("field") ? "Dense 2D" : m.dims.join("·");
+    return `
+      <div class="model-card ${state.model === m.name ? 'active' : ''}" onclick="chooseModel('${m.name}')">
+        <div class="model-card-top">
+          <span class="model-id">${m.name}</span>
+          <span class="dim-badge">${dimLabel}</span>
+        </div>
+        <div class="model-meta">${m.note}</div>
+      </div>
+    `;
+  }).join("");
+}
+
+function chooseModel(name) {
+  state.model = name;
+  document.getElementById("f_model").value = name;
+  if (name.endsWith("_pretrained")) {
+    state.pretrained = true;
+    document.getElementById("f_pretrained").checked = true;
+  }
+  renderModelGrid();
+  syncFromForm();
+}
+
+function onModelInput() {
+  state.model = document.getElementById("f_model").value.trim() || "cnn";
+  renderModelGrid();
+  syncFromForm();
+}
+
+let pathCheckTimer = null;
+function onDataPathChange() {
+  syncFromForm();
+  clearTimeout(pathCheckTimer);
+  const p = (document.getElementById("f_data_path").value || "").trim();
+  if (!p) {
+    dataFileCheck = { exists: false, is_file: false, size_mb: null };
+    updateSummaryAndBadges();
+    return;
+  }
+  pathCheckTimer = setTimeout(() => verifyDataPath(p), 220);
+}
+
+async function verifyDataPath(pathStr) {
+  try {
+    const res = await fetch(`/api/check_path?path=${encodeURIComponent(pathStr)}`);
+    if (!res.ok) {
+      dataFileCheck = { exists: true, is_file: true, size_mb: null };
+    } else {
+      dataFileCheck = await res.json();
+    }
+    updateSummaryAndBadges();
+  } catch (_) {}
+}
+
+function selectPill(field, val) {
+  state[field] = val;
+  const container = document.getElementById(`pills_${field}`);
+  if (container) {
+    container.querySelectorAll(".pill").forEach(p => {
+      p.classList.toggle("active", p.getAttribute("data-val") === val);
+    });
+  }
+  updateConditionalFields();
+  syncFromForm();
+}
+
+function setVal(id, val) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.value = val;
+    const rangeId = id.replace(/^f_/, "r_");
+    const rEl = document.getElementById(rangeId);
+    if (rEl && val !== "") rEl.value = val;
+    syncFromForm();
+  }
+}
+
+function setNum(numId, val) {
+  document.getElementById(numId).value = val;
+  syncFromForm();
+}
+
+function setRange(rangeId, val) {
+  const r = document.getElementById(rangeId);
+  if (r) r.value = val;
+  syncFromForm();
+}
+
+function onToggleCV(enabled) {
+  state.cv = enabled ? Math.max(2, state.cv || 5) : 0;
+  document.getElementById("f_cv").value = state.cv;
+  updateConditionalFields();
+  syncFromForm();
+}
+
+function onToggleConstraints(enabled) {
+  document.getElementById("constraintsDetailsBox").style.display = enabled ? "" : "none";
+  if (!enabled) {
+    document.getElementById("f_constraint").value = "";
+    document.getElementById("f_constraint_file").value = "";
+  }
+  syncFromForm();
+}
+
+function updateConditionalFields() {
+  const isHuber = state.loss === "huber";
+  const isWeighted = state.loss === "weighted_mse";
+  document.getElementById("lossContextBox").style.display = (isHuber || isWeighted) ? "" : "none";
+  document.getElementById("wrap_huber_delta").style.display = isHuber ? "" : "none";
+  document.getElementById("wrap_loss_weights").style.display = isWeighted ? "" : "none";
+
+  const isSgd = state.optimizer === "sgd";
+  const isRms = state.optimizer === "rmsprop";
+  const isAdam = ["adamw", "adam", "nadam", "radam"].includes(state.optimizer);
+  document.getElementById("wrap_momentum").style.display = (isSgd || isRms) ? "" : "none";
+  document.getElementById("wrap_nesterov").style.display = isSgd ? "" : "none";
+  document.getElementById("wrap_betas").style.display = isAdam ? "" : "none";
+
+  const sc = state.scheduler;
+  document.getElementById("wrap_scheduler_patience").style.display = sc === "plateau" ? "" : "none";
+  document.getElementById("wrap_scheduler_factor").style.display = (sc === "plateau" || sc === "step") ? "" : "none";
+  document.getElementById("wrap_warmup_epochs").style.display = sc === "linear_warmup" ? "" : "none";
+  document.getElementById("wrap_step_size").style.display = sc === "step" ? "" : "none";
+  document.getElementById("wrap_milestones").style.display = sc === "multistep" ? "" : "none";
+
+  const cvOn = state.cv >= 2;
+  document.getElementById("toggle_cv_enabled").checked = cvOn;
+  document.getElementById("cvDetailsBox").style.display = cvOn ? "" : "none";
+
+  const hasConstraints = (Array.isArray(state.constraint) && state.constraint.length > 0) || Boolean(state.constraint_file);
+  const cToggle = document.getElementById("toggle_constraints_enabled");
+  if (hasConstraints) cToggle.checked = true;
+  document.getElementById("constraintsDetailsBox").style.display = cToggle.checked ? "" : "none";
+
+  document.getElementById("wandbDetailsBox").style.display = state.wandb ? "" : "none";
+}
+
+function updateSummaryAndBadges() {
+  document.getElementById("sumData").textContent = state.data_path || "Not selected";
+  document.getElementById("sumModel").textContent = state.model;
+  document.getElementById("sumHyper").textContent = `${state.batch_size} · ${state.lr} · ${state.epochs}ep`;
+  document.getElementById("sumOptim").textContent = `${state.loss} · ${state.optimizer} · ${state.scheduler}`;
+
+  const dataBadge = document.getElementById("dataStatusBadge");
+  if (!state.data_path) {
+    dataBadge.textContent = "Required for training";
+  } else if (dataFileCheck.is_file) {
+    const sz = dataFileCheck.size_mb !== null ? ` (${dataFileCheck.size_mb} MB)` : "";
+    dataBadge.textContent = `✓ File found${sz}`;
+  } else {
+    dataBadge.textContent = "data_path";
+  }
+
+  const wLabel = state.workers === -1 ? "auto" : state.workers;
+  document.getElementById("advDataSummary").textContent =
+    `workers: ${wLabel} · seed: ${state.seed} · save_every: ${state.save_every}`;
+}
+
+function applyStateToDOM() {
+  const numOrText = [
+    "model", "batch_size", "lr", "epochs", "patience", "weight_decay",
+    "grad_clip", "grad_accum_steps", "huber_delta", "loss_weights",
+    "momentum", "betas", "scheduler_factor", "scheduler_patience",
+    "min_lr", "warmup_epochs", "step_size", "milestones", "cv", "cv_bins",
+    "data_path", "output_dir", "resume", "save_every", "workers", "seed",
+    "project_name", "run_name", "constraint_file"
+  ];
+  numOrText.forEach(k => {
+    const el = document.getElementById(`f_${k}`);
+    if (el) el.value = state[k] !== undefined && state[k] !== null ? state[k] : "";
+    const rEl = document.getElementById(`r_${k}`);
+    if (rEl && state[k] !== undefined) rEl.value = state[k];
+  });
+
+  document.getElementById("f_import_modules").value = Array.isArray(state.import_modules)
+    ? state.import_modules.join(", ")
+    : (state.import_modules || "");
+
+  document.getElementById("f_constraint").value = Array.isArray(state.constraint)
+    ? state.constraint.join(", ")
+    : (state.constraint || "");
+
+  document.getElementById("f_constraint_weight").value = Array.isArray(state.constraint_weight)
+    ? state.constraint_weight.join(", ")
+    : (state.constraint_weight !== undefined ? state.constraint_weight : "0.1");
+
+  const bools = [
+    "pretrained", "nesterov", "cv_stratify", "fresh", "deterministic",
+    "single_channel", "allow_pickle", "compile", "wandb", "wandb_watch"
+  ];
+  bools.forEach(k => {
+    const el = document.getElementById(`f_${k}`);
+    if (el) el.checked = Boolean(state[k]);
+  });
+
+  ["loss", "selection_metric", "optimizer", "scheduler", "cache_validate", "precision", "constraint_reduction"].forEach(k => {
+    const container = document.getElementById(`pills_${k}`);
+    if (container) {
+      container.querySelectorAll(".pill").forEach(p => {
+        p.classList.toggle("active", p.getAttribute("data-val") === String(state[k]));
+      });
+    }
+  });
+
+  updateConditionalFields();
+  renderModelGrid();
+  renderYamlPreview();
+  if (state.data_path) verifyDataPath(state.data_path);
+  else updateSummaryAndBadges();
+}
+
+function readDOMToState() {
+  const getNum = (id, fallback) => {
+    const v = parseFloat(document.getElementById(id).value);
+    return Number.isFinite(v) ? v : fallback;
+  };
+  const getInt = (id, fallback) => {
+    const v = parseInt(document.getElementById(id).value, 10);
+    return Number.isFinite(v) ? v : fallback;
+  };
+  const getStr = (id) => (document.getElementById(id).value || "").trim();
+  const getBool = (id) => Boolean(document.getElementById(id).checked);
+
+  state.model = getStr("f_model") || "cnn";
+  state.pretrained = getBool("f_pretrained");
+  state.import_modules = getStr("f_import_modules")
+    ? getStr("f_import_modules").split(",").map(s => s.trim()).filter(Boolean)
+    : [];
+
+  state.batch_size = getInt("f_batch_size", 128);
+  state.lr = getNum("f_lr", 0.001);
+  state.epochs = getInt("f_epochs", 1000);
+  state.patience = getInt("f_patience", 20);
+  state.weight_decay = getNum("f_weight_decay", 0.0001);
+  state.grad_clip = getNum("f_grad_clip", 1.0);
+  state.grad_accum_steps = getInt("f_grad_accum_steps", 1);
+
+  state.huber_delta = getNum("f_huber_delta", 1.0);
+  state.loss_weights = getStr("f_loss_weights");
+
+  state.momentum = getNum("f_momentum", 0.9);
+  state.nesterov = getBool("f_nesterov");
+  state.betas = getStr("f_betas") || "0.9,0.999";
+
+  state.scheduler_factor = getNum("f_scheduler_factor", 0.5);
+  state.scheduler_patience = getInt("f_scheduler_patience", 10);
+  state.min_lr = getNum("f_min_lr", 1e-6);
+  state.warmup_epochs = getInt("f_warmup_epochs", 5);
+  state.step_size = getInt("f_step_size", 30);
+  state.milestones = getStr("f_milestones");
+
+  state.cv = document.getElementById("toggle_cv_enabled").checked
+    ? Math.max(2, getInt("f_cv", 5))
+    : 0;
+  state.cv_stratify = getBool("f_cv_stratify");
+  state.cv_bins = getInt("f_cv_bins", 10);
+
+  state.data_path = getStr("f_data_path");
+  state.output_dir = getStr("f_output_dir");
+  state.resume = getStr("f_resume");
+  state.save_every = getInt("f_save_every", 50);
+  state.fresh = getBool("f_fresh");
+  state.workers = getInt("f_workers", -1);
+  state.seed = getInt("f_seed", 2025);
+  state.deterministic = getBool("f_deterministic");
+  state.single_channel = getBool("f_single_channel");
+  state.allow_pickle = getBool("f_allow_pickle");
+
+  state.compile = getBool("f_compile");
+  state.wandb = getBool("f_wandb");
+  state.wandb_watch = getBool("f_wandb_watch");
+  state.project_name = getStr("f_project_name");
+  state.run_name = getStr("f_run_name");
+
+  state.constraint = getStr("f_constraint")
+    ? getStr("f_constraint").split(",").map(s => s.trim()).filter(Boolean)
+    : [];
+  state.constraint_file = getStr("f_constraint_file");
+  const cwRaw = getStr("f_constraint_weight");
+  state.constraint_weight = cwRaw
+    ? cwRaw.split(",").map(s => parseFloat(s.trim())).filter(Number.isFinite)
+    : [0.1];
+}
+
+function buildEffectiveConfig() {
+  const cfg = {
+    model: state.model,
+    pretrained: state.pretrained,
+    batch_size: state.batch_size,
+    lr: state.lr,
+    epochs: state.epochs,
+    patience: state.patience,
+    weight_decay: state.weight_decay,
+    grad_clip: state.grad_clip,
+    grad_accum_steps: state.grad_accum_steps,
+    loss: state.loss,
+    optimizer: state.optimizer,
+    scheduler: state.scheduler,
+    cv: state.cv,
+    cv_stratify: state.cv_stratify,
+    cv_bins: state.cv_bins,
+    workers: state.workers,
+    seed: state.seed,
+    deterministic: state.deterministic,
+    cache_validate: state.cache_validate,
+    precision: state.precision,
+    compile: state.compile
+  };
+
+  if (state.import_modules && state.import_modules.length > 0) cfg.import_modules = state.import_modules;
+  if (state.selection_metric && state.selection_metric !== "loss") cfg.selection_metric = state.selection_metric;
+  if (state.loss === "huber") cfg.huber_delta = state.huber_delta;
+  if (state.loss === "weighted_mse" && state.loss_weights) cfg.loss_weights = state.loss_weights;
+
+  if (state.optimizer === "sgd" || state.optimizer === "rmsprop") cfg.momentum = state.momentum;
+  if (state.optimizer === "sgd" && state.nesterov) cfg.nesterov = true;
+  if (["adamw", "adam", "nadam", "radam"].includes(state.optimizer) && state.betas !== "0.9,0.999") {
+    cfg.betas = state.betas;
+  }
+
+  if (state.scheduler === "plateau" || state.scheduler === "step") cfg.scheduler_factor = state.scheduler_factor;
+  if (state.scheduler === "plateau") cfg.scheduler_patience = state.scheduler_patience;
+  if (state.min_lr !== 1e-6) cfg.min_lr = state.min_lr;
+  if (state.scheduler === "linear_warmup") cfg.warmup_epochs = state.warmup_epochs;
+  if (state.scheduler === "step") cfg.step_size = state.step_size;
+  if (state.scheduler === "multistep" && state.milestones) cfg.milestones = state.milestones;
+
+  if (state.data_path) cfg.data_path = state.data_path;
+  if (state.output_dir) cfg.output_dir = state.output_dir;
+  if (state.resume) cfg.resume = state.resume;
+  if (state.save_every !== 50) cfg.save_every = state.save_every;
+  if (state.fresh) cfg.fresh = true;
+  if (state.single_channel) cfg.single_channel = true;
+  if (state.allow_pickle) cfg.allow_pickle = true;
+
+  if (state.wandb) {
+    cfg.wandb = true;
+    if (state.wandb_watch) cfg.wandb_watch = true;
+    if (state.project_name) cfg.project_name = state.project_name;
+    if (state.run_name) cfg.run_name = state.run_name;
+  }
+
+  if (state.constraint && state.constraint.length > 0) {
+    cfg.constraint = state.constraint;
+    cfg.constraint_weight = state.constraint_weight;
+    cfg.constraint_reduction = state.constraint_reduction;
+  }
+  if (state.constraint_file) {
+    cfg.constraint_file = state.constraint_file;
+    cfg.constraint_weight = state.constraint_weight;
+    cfg.constraint_reduction = state.constraint_reduction;
+  }
+
+  return cfg;
+}
+
+function renderYamlPreview() {
+  const c = buildEffectiveConfig();
+  const fmtVal = (v) => {
+    if (Array.isArray(v)) return `[${v.map(x => typeof x === "string" ? JSON.stringify(x) : x).join(", ")}]`;
+    if (typeof v === "string") return /^[a-zA-Z0-9_./-]+$/.test(v) ? v : JSON.stringify(v);
+    return String(v);
+  };
+
+  const groups = [
+    ["MODEL", ["model", "pretrained", "import_modules"]],
+    ["TRAINING HYPERPARAMETERS", ["batch_size", "lr", "epochs", "patience", "weight_decay", "grad_clip", "grad_accum_steps"]],
+    ["LOSS FUNCTION", ["loss", "huber_delta", "loss_weights", "selection_metric"]],
+    ["OPTIMIZER", ["optimizer", "momentum", "nesterov", "betas"]],
+    ["LEARNING RATE SCHEDULER", ["scheduler", "scheduler_factor", "scheduler_patience", "min_lr", "warmup_epochs", "step_size", "milestones"]],
+    ["CROSS-VALIDATION", ["cv", "cv_stratify", "cv_bins"]],
+    ["DATA & OUTPUT", ["data_path", "output_dir", "resume", "save_every", "fresh", "workers", "seed", "deterministic", "cache_validate", "single_channel", "allow_pickle"]],
+    ["PERFORMANCE OPTIMIZATION", ["precision", "compile"]],
+    ["LOGGING & MONITORING", ["wandb", "wandb_watch", "project_name", "run_name"]],
+    ["PHYSICAL CONSTRAINTS", ["constraint", "constraint_file", "constraint_weight", "constraint_reduction"]]
+  ];
+
+  const lines = [
+    "# WaveDL Configuration",
+    "# Generated by WaveDL Studio",
+    ""
+  ];
+  for (const [title, keys] of groups) {
+    const present = keys.filter(k => c[k] !== undefined && c[k] !== "" && !(Array.isArray(c[k]) && c[k].length === 0));
+    if (present.length === 0) continue;
+    lines.push(`# ${"=".repeat(65)}`);
+    lines.push(`# ${title}`);
+    lines.push(`# ${"=".repeat(65)}`);
+    for (const k of present) {
+      lines.push(`${k}: ${fmtVal(c[k])}`);
+    }
+    lines.push("");
+  }
+
+  document.getElementById("yamlEditor").value = lines.join("\n").trimEnd() + "\n";
+
+  const cfgPath = (document.getElementById("configFilePath").value || "config.yaml").trim();
+  const gpus = (document.getElementById("f_num_gpus").value || "").trim();
+  const gpuFlag = gpus && parseInt(gpus, 10) > 0 ? ` --num_gpus ${parseInt(gpus, 10)}` : "";
+  document.getElementById("cliPreview").textContent = `wavedl-train${gpuFlag} --config ${cfgPath}`;
+}
+
+function syncFromForm() {
+  readDOMToState();
+  updateConditionalFields();
+  updateSummaryAndBadges();
+  renderYamlPreview();
+}
+
+async function loadConfigFromFile(silent = false) {
+  const path = document.getElementById("configFilePath").value.trim() || "config.yaml";
+  try {
+    const res = await fetch(`/api/config?path=${encodeURIComponent(path)}`);
+    const data = await res.json();
+    if (!res.ok) {
+      if (!silent) showToast(data.error || "Could not load config", true);
+      return;
+    }
+    state = Object.assign(JSON.parse(JSON.stringify(DEFAULTS)), data.config || {});
+    applyStateToDOM();
+    if (!silent) showToast(`Loaded ${path}`);
+  } catch (e) {
+    if (!silent) showToast(`Error loading config: ${e}`, true);
+  }
+}
+
+async function saveConfigToFile() {
+  const path = document.getElementById("configFilePath").value.trim() || "config.yaml";
+  const rawYaml = document.getElementById("yamlEditor").value;
+  try {
+    const res = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, raw_yaml: rawYaml })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showToast(data.error || "Failed to save config", true);
+      return false;
+    }
+    showToast(`Saved config to ${data.path}`);
+    return true;
+  } catch (e) {
+    showToast(`Error saving config: ${e}`, true);
+    return false;
+  }
+}
+
+async function applyYamlToForm() {
+  const rawYaml = document.getElementById("yamlEditor").value;
+  try {
+    const res = await fetch("/api/config/parse", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ raw_yaml: rawYaml })
+    });
+    if (res.status === 404) {
+      const saved = await saveConfigToFile();
+      if (saved) await loadConfigFromFile(true);
+      return;
+    }
+    const data = await res.json();
+    if (!res.ok) {
+      showToast(data.error || "Invalid YAML", true);
+      return;
+    }
+    state = Object.assign(JSON.parse(JSON.stringify(DEFAULTS)), data.config || {});
+    applyStateToDOM();
+    showToast("Synced YAML edits into form");
+  } catch (e) {
+    showToast(`Failed to parse YAML: ${e}`, true);
+  }
+}
+
+function resetDefaults() {
+  state = JSON.parse(JSON.stringify(DEFAULTS));
+  document.getElementById("toggle_constraints_enabled").checked = false;
+  applyStateToDOM();
+  showToast("Reset to WaveDL default configuration");
+}
+
+function copyYaml() {
+  navigator.clipboard.writeText(document.getElementById("yamlEditor").value);
+  showToast("Copied YAML to clipboard");
+}
+
+function copyCli() {
+  navigator.clipboard.writeText(document.getElementById("cliPreview").textContent);
+  showToast("Copied CLI command to clipboard");
+}
+
+async function startTraining() {
+  const path = document.getElementById("configFilePath").value.trim() || "config.yaml";
+  const rawYaml = document.getElementById("yamlEditor").value;
+  const gpus = parseInt(document.getElementById("f_num_gpus").value, 10);
+
+  switchRightTab("console");
+  try {
+    const res = await fetch("/api/train/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path,
+        raw_yaml: rawYaml,
+        num_gpus: Number.isFinite(gpus) && gpus > 0 ? gpus : null
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showToast(data.error || "Failed to start training", true);
+      return;
+    }
+    logOffset = 0;
+    document.getElementById("consoleOutput").textContent = "";
+    showToast("Saved config & started wavedl-train!");
+    checkTrainingStatus();
+  } catch (e) {
+    showToast(`Launch failed: ${e}`, true);
+  }
+}
+
+async function stopTraining() {
+  try {
+    await fetch("/api/train/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    });
+    showToast("Stopping training process...");
+    checkTrainingStatus();
+  } catch (e) {
+    showToast(`Failed to stop: ${e}`, true);
+  }
+}
+
+async function checkTrainingStatus() {
+  if (pollTimer) clearTimeout(pollTimer);
+  try {
+    const res = await fetch(`/api/train/status?offset=${logOffset}`);
+    const data = await res.json();
+    const consoleEl = document.getElementById("consoleOutput");
+
+    if (data.logs && data.logs.length > 0) {
+      if (logOffset === 0) consoleEl.textContent = "";
+      consoleEl.textContent += data.logs.join("\n") + "\n";
+      consoleEl.scrollTop = consoleEl.scrollHeight;
+      logOffset = data.next_offset;
+    }
+
+    const badge = document.getElementById("trainStatusBadge");
+    const runBtn = document.getElementById("runBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const elapsedEl = document.getElementById("trainElapsed");
+
+    elapsedEl.textContent = data.elapsed !== null ? `(${data.elapsed}s)` : "";
+
+    if (data.running) {
+      badge.className = "status-pill status-running";
+      badge.textContent = `Running (PID ${data.pid})`;
+      runBtn.style.display = "none";
+      stopBtn.style.display = "inline-flex";
+      pollTimer = setTimeout(checkTrainingStatus, 600);
+    } else {
+      runBtn.style.display = "inline-flex";
+      stopBtn.style.display = "none";
+      if (data.exit_code === 0) {
+        badge.className = "status-pill status-ok";
+        badge.textContent = "Completed";
+      } else if (data.exit_code !== null && data.exit_code !== undefined) {
+        badge.className = "status-pill status-err";
+        badge.textContent = `Failed (${data.exit_code})`;
+      } else {
+        badge.className = "status-pill status-idle";
+        badge.textContent = "Idle";
+      }
+    }
+  } catch (_) {}
+}
+
+function clearConsole() {
+  document.getElementById("consoleOutput").textContent = "";
+}
+
+// File / Directory Browser Modal
+let browserTargetInput = null;
+let browserMode = "file";
+let currentBrowseDir = "";
+let parentBrowseDir = "";
+let workspaceRootDir = "";
+
+async function openBrowser(inputId, mode) {
+  browserTargetInput = inputId;
+  browserMode = mode;
+  document.getElementById("browserTitle").textContent =
+    mode === "dir" ? "Select Folder" : "Select File";
+  document.getElementById("browserSelectDirBtn").style.display =
+    mode === "dir" ? "inline-flex" : "none";
+  document.getElementById("browserModal").classList.add("open");
+  const curVal = document.getElementById(inputId).value.trim();
+  await fetchBrowse(curVal || "");
+}
+
+function closeBrowser() {
+  document.getElementById("browserModal").classList.remove("open");
+}
+
+async function fetchBrowse(dir) {
+  const res = await fetch(`/api/browse?dir=${encodeURIComponent(dir)}`);
+  const data = await res.json();
+  currentBrowseDir = data.current_dir;
+  parentBrowseDir = data.parent_dir;
+  workspaceRootDir = data.workspace_root;
+  document.getElementById("browserCurrentDir").textContent = currentBrowseDir;
+
+  const list = document.getElementById("browserList");
+  if (!data.entries || data.entries.length === 0) {
+    list.innerHTML = `<div style="padding:14px;color:var(--muted);">No files or folders found.</div>`;
+    return;
+  }
+  list.innerHTML = data.entries.map(item => {
+    const icon = item.is_dir ? "📁" : "📄";
+    const safePath = item.path.replace(/'/g, "\\'");
+    const safeAbs = item.abs_path.replace(/'/g, "\\'");
+    if (item.is_dir) {
+      return `<div class="file-row" onclick="fetchBrowse('${safeAbs}')">
+        <span>${icon} <strong>${item.name}/</strong></span>
+        <span style="color:var(--muted);font-size:12px;">Open →</span>
+      </div>`;
+    }
+    return `<div class="file-row" onclick="pickFile('${safePath}')">
+      <span>${icon} ${item.name}</span>
+      <span style="color:var(--brand-dark);font-weight:600;font-size:12px;">Select</span>
+    </div>`;
+  }).join("");
+}
+
+function browseUp() {
+  if (parentBrowseDir) fetchBrowse(parentBrowseDir);
+}
+
+function browseRoot() {
+  if (workspaceRootDir) fetchBrowse(workspaceRootDir);
+}
+
+function pickFile(path) {
+  if (browserTargetInput) {
+    document.getElementById(browserTargetInput).value = path;
+    if (browserTargetInput === "f_data_path") onDataPathChange();
+    else syncFromForm();
+  }
+  closeBrowser();
+}
+
+function chooseCurrentDir() {
+  if (browserTargetInput && currentBrowseDir) {
+    const rel = currentBrowseDir.startsWith(workspaceRootDir + "/")
+      ? currentBrowseDir.slice(workspaceRootDir.length + 1)
+      : (currentBrowseDir === workspaceRootDir ? "." : currentBrowseDir);
+    document.getElementById(browserTargetInput).value = rel;
+    syncFromForm();
+  }
+  closeBrowser();
+}
+
+function showToast(msg, isErr = false) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.style.background = isErr ? "var(--danger)" : "var(--brand-dark)";
+  t.style.display = "block";
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => { t.style.display = "none"; }, 2600);
+}
+
+window.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+    e.preventDefault();
+    saveConfigToFile();
+  } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "o") {
+    e.preventDefault();
+    loadConfigFromFile();
+  } else if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    e.preventDefault();
+    startTraining();
+  } else if (e.key === "Escape") {
+    closeBrowser();
+  }
+});
+
+init();
+</script>
+</body>
+</html>
