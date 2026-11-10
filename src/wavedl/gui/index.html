@@ -834,6 +834,9 @@
     <button type="button" class="step-btn" onclick="goToStep(4)">
       <span class="step-circle">4</span> Advanced &amp; Run
     </button>
+    <button type="button" class="step-btn" onclick="goToStep(5)">
+      <span class="step-circle">5</span> Test &amp; Export
+    </button>
   </nav>
 
   <!-- Right Action Buttons -->
@@ -853,7 +856,7 @@
     <div class="step-panel active" id="panel-step-1">
       <div class="step-card">
         <div class="step-header">
-          <div class="step-eyebrow">Step 1 of 4</div>
+          <div class="step-eyebrow">Step 1 of 5</div>
           <h1 class="step-title">Select Your Dataset &amp; Output Folder</h1>
           <p class="step-desc">Choose a quick-start template below or select your training data file to get started.</p>
         </div>
@@ -977,7 +980,7 @@
         </details>
 
         <div class="step-footer">
-          <span style="color:var(--muted);font-size:13px;">Step 1 of 4</span>
+          <span style="color:var(--muted);font-size:13px;">Step 1 of 5</span>
           <button type="button" class="btn-brand" onclick="goToStep(2)">Next: Choose Model →</button>
         </div>
       </div>
@@ -987,7 +990,7 @@
     <div class="step-panel" id="panel-step-2">
       <div class="step-card">
         <div class="step-header">
-          <div class="step-eyebrow">Step 2 of 4</div>
+          <div class="step-eyebrow">Step 2 of 5</div>
           <h1 class="step-title">Choose a Model Architecture</h1>
           <p class="step-desc">Filter by your input data type or search across 72 built-in neural network architectures.</p>
         </div>
@@ -1053,7 +1056,7 @@
     <div class="step-panel" id="panel-step-3">
       <div class="step-card">
         <div class="step-header">
-          <div class="step-eyebrow">Step 3 of 4</div>
+          <div class="step-eyebrow">Step 3 of 5</div>
           <h1 class="step-title">Training Hyperparameters</h1>
           <p class="step-desc">The default values below work well for most inverse problems. Adjust with sliders or quick buttons.</p>
         </div>
@@ -1244,7 +1247,7 @@
     <div class="step-panel" id="panel-step-4">
       <div class="step-card">
         <div class="step-header">
-          <div class="step-eyebrow">Step 4 of 4</div>
+          <div class="step-eyebrow">Step 4 of 5</div>
           <h1 class="step-title">Hardware Acceleration &amp; Optional Features</h1>
           <p class="step-desc">Configure GPU precision or enable optional K-Fold Cross-Validation, Physical Constraints, and Weights &amp; Biases.</p>
         </div>
@@ -1374,6 +1377,53 @@
           <div style="display:flex;gap:10px;">
             <button type="button" class="btn-brand" onclick="saveConfigToFile()">💾 Save config.yaml</button>
             <button type="button" class="btn-run" onclick="startTraining()">▶ Save &amp; Run Training</button>
+            <button type="button" onclick="goToStep(5)">Next: Test &amp; Export →</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== STEP 5: TEST & EXPORT ==================== -->
+    <div class="step-panel" id="panel-step-5">
+      <div class="step-card">
+        <div class="step-header">
+          <div class="step-eyebrow">Step 5 of 5</div>
+          <h1 class="step-title">Test &amp; Export a Trained Model</h1>
+          <p class="step-desc">Evaluate a checkpoint on held-out data, or export it to ONNX for MATLAB, LabVIEW, C++, or Python deployment.</p>
+        </div>
+
+        <div class="field">
+          <div class="field-label"><span>Checkpoint Folder</span><span class="field-key">--checkpoint</span></div>
+          <div class="input-row">
+            <input type="text" id="t_checkpoint" placeholder="./experiments/best_checkpoint" />
+            <button type="button" onclick="openBrowser('t_checkpoint', 'dir')">📁 Browse Folder...</button>
+          </div>
+          <div class="field-help">Usually <code>best_checkpoint</code> inside your training output folder.</div>
+        </div>
+
+        <div class="field">
+          <div class="field-label"><span>Test Data File</span><span class="field-key">--data_path</span></div>
+          <div class="input-row">
+            <input type="text" id="t_data_path" placeholder="e.g. test_data.npz" />
+            <button type="button" onclick="openBrowser('t_data_path', 'file')">📁 Browse File...</button>
+          </div>
+          <div class="field-help">Same format as training data. Export only reads one sample to trace the model.</div>
+        </div>
+
+        <div class="field">
+          <div class="field-label"><span>Results Folder</span><span class="field-key">--output_dir</span></div>
+          <div class="input-row">
+            <input type="text" id="t_output_dir" value="test_results" />
+            <button type="button" onclick="openBrowser('t_output_dir', 'dir')">📁 Browse Folder...</button>
+          </div>
+          <div class="field-help">Test saves metrics, plots, and a predictions CSV here. Export saves <code>&lt;model&gt;_model.onnx</code> here.</div>
+        </div>
+
+        <div class="step-footer">
+          <button type="button" onclick="goToStep(4)">← Back</button>
+          <div style="display:flex;gap:10px;">
+            <button type="button" class="btn-brand" onclick="startTest('export')">📦 Export ONNX</button>
+            <button type="button" class="btn-run" onclick="startTest('test')">▶ Run Test</button>
           </div>
         </div>
       </div>
@@ -1415,7 +1465,7 @@
 
     <div class="right-tabs">
       <button type="button" class="right-tab active" id="tabBtnYaml" onclick="switchRightTab('yaml')">📄 config.yaml</button>
-      <button type="button" class="right-tab" id="tabBtnConsole" onclick="switchRightTab('console')">🖥 Training Console <span id="trainElapsed"></span></button>
+      <button type="button" class="right-tab" id="tabBtnConsole" onclick="switchRightTab('console')">🖥 Console <span id="trainElapsed"></span></button>
     </div>
 
     <!-- Tab 1: YAML Preview & Editor -->
@@ -1437,10 +1487,10 @@
     <!-- Tab 2: Live Training Console -->
     <div class="right-tab-body" id="tabBodyConsole">
       <div class="yaml-toolbar">
-        <span>Live output from <code>wavedl-train</code></span>
+        <span>Live output from <code>wavedl-train</code> / <code>wavedl-test</code></span>
         <button class="sm" type="button" onclick="clearConsole()">Clear</button>
       </div>
-      <pre class="console-output" id="consoleOutput">Ready to train. Click "▶ Run Training" to start.</pre>
+      <pre class="console-output" id="consoleOutput">Ready. Click "▶ Run Training", or test/export a model in step 5.</pre>
     </div>
   </aside>
 </main>
@@ -1611,7 +1661,11 @@ function init() {
 }
 
 function goToStep(stepNum) {
-  for (let i = 1; i <= 4; i++) {
+  const ckpt = document.getElementById("t_checkpoint");
+  if (stepNum === 5 && !ckpt.value.trim()) {
+    ckpt.value = `${(state.output_dir || ".").replace(/\/+$/, "")}/best_checkpoint`;
+  }
+  for (let i = 1; i <= 5; i++) {
     document.getElementById(`panel-step-${i}`).classList.toggle("active", i === stepNum);
   }
   const btns = document.querySelectorAll("#stepperNav .step-btn");
@@ -2209,6 +2263,34 @@ async function startTraining() {
   }
 }
 
+async function startTest(mode) {
+  const val = id => document.getElementById(id).value.trim();
+  switchRightTab("console");
+  try {
+    const res = await fetch("/api/test/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode,
+        checkpoint: val("t_checkpoint"),
+        data_path: val("t_data_path"),
+        output_dir: val("t_output_dir")
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showToast(data.error || `Failed to start ${mode}`, true);
+      return;
+    }
+    logOffset = 0;
+    document.getElementById("consoleOutput").textContent = "";
+    showToast(mode === "export" ? "Exporting model to ONNX..." : "Started wavedl-test!");
+    checkTrainingStatus();
+  } catch (e) {
+    showToast(`Launch failed: ${e}`, true);
+  }
+}
+
 async function stopTraining() {
   try {
     await fetch("/api/train/stop", {
@@ -2358,7 +2440,7 @@ function showToast(msg, isErr = false) {
   t.style.background = isErr ? "var(--danger)" : "var(--brand-dark)";
   t.style.display = "block";
   clearTimeout(t._timer);
-  t._timer = setTimeout(() => { t.style.display = "none"; }, 2600);
+  t._timer = setTimeout(() => { t.style.display = "none"; }, isErr ? 5000 : 2600);
 }
 
 window.addEventListener("keydown", (e) => {
