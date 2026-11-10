@@ -137,6 +137,21 @@ def parse_yaml_text(text: str) -> dict[str, Any]:
     return result
 
 
+# PyYAML follows YAML 1.1, where bare yes/no/on/off load as booleans.
+YAML_RESERVED_WORDS = {
+    "true",
+    "false",
+    "yes",
+    "no",
+    "on",
+    "off",
+    "y",
+    "n",
+    "null",
+    "none",
+}
+
+
 def _dump_yaml_kv(key: str, val: Any) -> str:
     """Serialize a single key-value pair to clean YAML."""
     if isinstance(val, bool):
@@ -152,7 +167,7 @@ def _dump_yaml_kv(key: str, val: Any) -> str:
     if (
         s != ""
         and all(c.isalnum() or c in "_./-" for c in s)
-        and s.lower() not in ("true", "false", "null", "none")
+        and s.lower() not in YAML_RESERVED_WORDS
     ):
         return f"{key}: {s}"
     return f"{key}: {json.dumps(s)}"

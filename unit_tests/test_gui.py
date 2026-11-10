@@ -69,12 +69,17 @@ class TestGUIWorkspace(unittest.TestCase):
         self.assertEqual(listing["current_dir"], str(self.root))
         self.assertEqual(listing["entries"][0]["path"], "dataset.npz")
         result = json.loads(
-            self.request("/api/config", {"config": {"model": "cnn", "epochs": 2}})
+            self.request(
+                "/api/config",
+                {"config": {"model": "cnn", "epochs": 2, "precision": "no"}},
+            )
         )
         self.assertEqual(result["resolved_path"], str(self.root / "config.yaml"))
         self.assertIn("model: cnn", (self.root / "config.yaml").read_text())
         loaded = json.loads(self.request("/api/config"))
-        self.assertEqual(loaded["config"], {"model": "cnn", "epochs": 2})
+        self.assertEqual(
+            loaded["config"], {"model": "cnn", "epochs": 2, "precision": "no"}
+        )
 
     def test_training_inherits_workspace_and_environment(self):
         # A real child process records its launch context in place of costly training.

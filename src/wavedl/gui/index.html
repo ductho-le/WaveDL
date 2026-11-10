@@ -2102,7 +2102,10 @@ function renderYamlPreview() {
   const c = buildEffectiveConfig();
   const fmtVal = (v) => {
     if (Array.isArray(v)) return `[${v.map(x => typeof x === "string" ? JSON.stringify(x) : x).join(", ")}]`;
-    if (typeof v === "string") return /^[a-zA-Z0-9_./-]+$/.test(v) ? v : JSON.stringify(v);
+    if (typeof v === "string") {
+      const reserved = /^(true|false|yes|no|on|off|y|n|null|none)$/i.test(v);
+      return /^[a-zA-Z0-9_./-]+$/.test(v) && !reserved ? v : JSON.stringify(v);
+    }
     return String(v);
   };
 
