@@ -1407,7 +1407,7 @@
             <input type="text" id="t_data_path" placeholder="e.g. test_data.npz" />
             <button type="button" onclick="openBrowser('t_data_path', 'file')">📁 Browse File...</button>
           </div>
-          <div class="field-help">Same format as training data. Export only reads one sample to trace the model.</div>
+          <div class="field-help">Same format as training data. Export loads the dataset, then uses one sample to trace the model.</div>
         </div>
 
         <div class="field">
@@ -1416,7 +1416,7 @@
             <input type="text" id="t_output_dir" value="test_results" />
             <button type="button" onclick="openBrowser('t_output_dir', 'dir')">📁 Browse Folder...</button>
           </div>
-          <div class="field-help">Test saves metrics, plots, and a predictions CSV here. Export saves <code>&lt;model&gt;_model.onnx</code> here.</div>
+          <div class="field-help">Test saves metrics, plots, and predictions here (CSV for vector outputs, NPZ for dense fields). Export saves <code>&lt;model&gt;_model.onnx</code> here.</div>
         </div>
 
         <div class="step-footer">

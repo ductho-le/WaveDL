@@ -151,6 +151,61 @@ class TestGUIWorkspace(unittest.TestCase):
             ],
         )
 
+    def test_failed_launch_preserves_state_and_allows_retry(self):
+        finished = threading.Event()
+        stream_output = self.trainer._stream_output
+
+        def capture_output(process):
+            try:
+                stream_output(process)
+            finally:
+                finished.set()
+
+        with patch.object(self.trainer, "_stream_output", side_effect=capture_output):
+            # Cover both a failed first launch and failure after a completed job.
+            for previous_job in (False, True):
+                with self.subTest(previous_job=previous_job):
+                    before = self.trainer.status()
+                    with (
+                        patch.object(
+                            app,
+                            "_resolve_wavedl_command",
+                            return_value=[str(self.root / "missing-executable")],
+                        ),
+                        self.assertRaises(HTTPError) as error,
+                    ):
+                        self.request("/api/train/start", {"config": {"model": "cnn"}})
+                    self.assertEqual(error.exception.code, 400)
+                    error.exception.close()
+                    status = json.loads(self.request("/api/train/status"))
+                    self.assertFalse(status["running"])
+                    for key in ("pid", "exit_code", "cmd", "logs", "next_offset"):
+                        self.assertEqual(status[key], before[key])
+                    self.assertFalse(
+                        json.loads(self.request("/api/train/stop", {}))["running"]
+                    )
+
+                    finished.clear()
+                    with patch.object(
+                        app,
+                        "_resolve_wavedl_command",
+                        return_value=[sys.executable, "-c", "print('retry completed')"],
+                    ):
+                        self.request("/api/train/start", {"config": {"model": "cnn"}})
+                    process = self.trainer.process
+                    try:
+                        self.assertTrue(finished.wait(timeout=10))
+                    finally:
+                        if process.poll() is None:
+                            process.kill()
+                            process.wait(timeout=5)
+                            finished.wait(timeout=5)
+                    status = json.loads(self.request("/api/train/status"))
+                    self.assertFalse(status["running"])
+                    self.assertEqual(status["exit_code"], 0)
+                    self.assertIn("retry completed", status["logs"])
+                    self.assertEqual(status["logs"][-1], "[Process exited with code 0]")
+
     def test_stop_when_idle_returns_without_deadlocking(self):
         status = json.loads(self.request("/api/train/stop", {}))
         self.assertFalse(status["running"])

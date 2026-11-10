@@ -351,12 +351,6 @@ class TrainingManager:
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
 
-            self.logs = [f"$ {' '.join(cmd)}", ""]
-            self.cmd = cmd
-            self.exit_code = None
-            self.start_time = time.time()
-            self.end_time = None
-
             popen_kwargs: dict[str, Any] = {
                 "cwd": str(WORKSPACE_ROOT),
                 "env": env,
@@ -372,8 +366,15 @@ class TrainingManager:
                     subprocess, "CREATE_NEW_PROCESS_GROUP", 0
                 )
 
-            self.process = subprocess.Popen(cmd, **popen_kwargs)
-            proc = self.process
+            # Publish the new job only after launch succeeds. A failed Popen must
+            # preserve the previous completed/idle state so the user can retry.
+            proc = subprocess.Popen(cmd, **popen_kwargs)
+            self.process = proc
+            self.logs = [f"$ {' '.join(cmd)}", ""]
+            self.cmd = cmd
+            self.exit_code = None
+            self.start_time = time.time()
+            self.end_time = None
 
         thread = threading.Thread(target=self._stream_output, args=(proc,), daemon=True)
         thread.start()

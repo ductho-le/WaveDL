@@ -9,10 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add GUI testing and ONNX export with a shared job runner and live console
 - Bundle WaveDL Studio as `wavedl-gui` (also `python -m wavedl.gui`), with a packaged HTML interface, current-directory workspaces, YAML editing, and training subprocess logs; no additional dependencies
 
 ### Fixed
 
+- Preserve GUI job state after failed process launches so users can retry; quote YAML reserved strings and fall back from LaTeX plotting when dvipng is unavailable
 - Preserve positional compatibility in `train_single_trial()` while adding keyword-only gradient clipping; record the best validation loss before returning a pruned trial
 - Validate diagnostic plot inputs consistently and support dense-field targets; render relative-error boxplot percent labels correctly with and without LaTeX
 - Export all built-in registered model classes and detect YAML-configured WandB logging in the launcher summary
