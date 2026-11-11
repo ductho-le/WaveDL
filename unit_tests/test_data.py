@@ -325,9 +325,9 @@ class TestDataFormatValidation:
         np.savez(valid_path, input_train=X, output_train=y)
 
         # Load and verify
-        data = np.load(valid_path)
-        assert "input_train" in data
-        assert "output_train" in data
+        with np.load(valid_path) as data:
+            assert "input_train" in data
+            assert "output_train" in data
 
     def test_input_output_sample_count_match(self, temp_dir):
         """Test that input and output must have matching sample counts."""
@@ -349,8 +349,8 @@ class TestDataFormatValidation:
         path = os.path.join(temp_dir, "1d_data.npz")
         np.savez(path, input_train=X, output_train=y)
 
-        data = np.load(path)
-        assert data["input_train"].ndim == 2  # (N, L)
+        with np.load(path) as data:
+            assert data["input_train"].ndim == 2  # (N, L)
 
     def test_supports_2d_input(self, temp_dir):
         """Test that 2D input shapes are valid."""
@@ -360,8 +360,8 @@ class TestDataFormatValidation:
         path = os.path.join(temp_dir, "2d_data.npz")
         np.savez(path, input_train=X, output_train=y)
 
-        data = np.load(path)
-        assert data["input_train"].ndim == 3  # (N, H, W)
+        with np.load(path) as data:
+            assert data["input_train"].ndim == 3  # (N, H, W)
 
     def test_supports_3d_input(self, temp_dir):
         """Test that 3D input shapes are valid."""
@@ -371,8 +371,8 @@ class TestDataFormatValidation:
         path = os.path.join(temp_dir, "3d_data.npz")
         np.savez(path, input_train=X, output_train=y)
 
-        data = np.load(path)
-        assert data["input_train"].ndim == 4  # (N, D, H, W)
+        with np.load(path) as data:
+            assert data["input_train"].ndim == 4  # (N, D, H, W)
 
     def test_float32_dtype(self, temp_dir):
         """Test that float32 dtype is preferred."""
@@ -382,9 +382,9 @@ class TestDataFormatValidation:
         path = os.path.join(temp_dir, "float32_data.npz")
         np.savez(path, input_train=X, output_train=y)
 
-        data = np.load(path)
-        assert data["input_train"].dtype == np.float32
-        assert data["output_train"].dtype == np.float32
+        with np.load(path) as data:
+            assert data["input_train"].dtype == np.float32
+            assert data["output_train"].dtype == np.float32
 
 
 # ==============================================================================

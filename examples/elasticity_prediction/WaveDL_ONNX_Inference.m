@@ -23,9 +23,12 @@ INPUT_SIZE      = [500, 500];  % Expected [H, W] for network initialization
 fprintf('📦 Loading ONNX model: %s\n', ONNX_MODEL_PATH);
 
 % Keep importer warnings visible: unsupported operators need user attention.
-net = importNetworkFromONNX(ONNX_MODEL_PATH);
+net = importNetworkFromONNX( ...
+    ONNX_MODEL_PATH, ...
+    InputDataFormats="BCSS", ...
+    OutputDataFormats="BC");
 
-exampleInput = dlarray(single(zeros([INPUT_SIZE, 1])), 'SSC');
+exampleInput = dlarray(single(zeros([INPUT_SIZE, 1, 1])), 'SSCB');
 if ~net.Initialized
     net = initialize(net, exampleInput);
 end
@@ -45,8 +48,8 @@ validateattributes(X_raw, {'numeric'}, {'real', 'finite', 'nonempty'}, ...
 
 fprintf('   Raw shape: [%s]\n', join(string(size(X_raw)), ' × '));
 
-% Preprocess: handle MATLAB/Python dimension ordering differences
-X = preprocessData(X_raw, size(Y, 1));
+% Normalize target layout: handle transposed (T, N) or (1, N) arrays from HDF5/MAT
+[X, Y] = preprocessData(X_raw, Y, INPUT_SIZE);
 if size(X, 1) ~= size(Y, 1) || size(X, 2) ~= 1 || ...
         ~isequal([size(X, 3), size(X, 4)], INPUT_SIZE)
     error('WaveDL:InputShape', ...
@@ -66,7 +69,7 @@ predictions = zeros(N, numOutputs, 'single');
 tic;
 for i = 1:N
     sample = prepareSample(X, i);
-    dlSample = dlarray(sample, 'SSC');
+    dlSample = dlarray(sample, 'SSCB');
     dlPred = predict(net, dlSample);
     values = gather(extractdata(dlPred));
     if numel(values) ~= numOutputs || ~isreal(values) || any(~isfinite(values), 'all')
@@ -128,22 +131,42 @@ sgtitle('WaveDL ONNX Model - Predictions vs Ground Truth', 'FontWeight', 'bold')
 
 % Disable interactive toolbar before export to avoid warning
 set(fig, 'ToolBar', 'none');
-exportgraphics(fig, 'onnx_results.png', 'Resolution', 300);
+outputPlotPath = fullfile(EXAMPLE_DIR, 'onnx_results.png');
+exportgraphics(fig, outputPlotPath, 'Resolution', 300);
 
-fprintf('   ✔ Saved: onnx_results.png\n');
+fprintf('   ✔ Saved: %s\n', outputPlotPath);
 fprintf('\n✅ Inference Complete\n');
 
 %% ========================= HELPER FUNCTIONS =============================
 
-function X = preprocessData(X_raw, numSamples)
+function [X, Y] = preprocessData(X_raw, Y, inputSize)
 % Handle dimension transposition from Python/MATLAB format differences
 dims = size(X_raw);
 
-if dims(end) == numSamples && numel(dims) >= 2
-    % Data is transposed: (H, W, N) or (H, W, C, N)
-    if numel(dims) == 3
+% Detect transposed Y (T x N or 1 x N) by matching against X_raw sample axis
+if size(Y, 1) ~= dims(1) && size(Y, 1) ~= dims(end)
+    if size(Y, 2) == dims(1) || size(Y, 2) == dims(end)
+        Y = Y.';
+    end
+elseif size(Y, 1) == 1 && size(Y, 2) > 1 && (dims(1) == size(Y, 2) || dims(end) == size(Y, 2))
+    Y = Y.';
+end
+
+numSamples = size(Y, 1);
+
+if numel(dims) == 3
+    % Disambiguate (H, W, N) vs (N, H, W), including when N == H
+    isTransposed = (dims(1) ~= numSamples && dims(3) == numSamples) || ...
+        (dims(1) == numSamples && dims(3) == numSamples && ...
+         isequal(dims(1:2), inputSize) && ~isequal(dims(2:3), inputSize));
+    if isTransposed
         X_raw = permute(X_raw, [3, 1, 2]);
-    elseif numel(dims) == 4
+    end
+elseif numel(dims) == 4
+    isTransposed = (dims(1) ~= numSamples && dims(4) == numSamples) || ...
+        (dims(1) == numSamples && dims(4) == numSamples && ...
+         isequal(dims(1:2), inputSize) && ~isequal(dims(3:4), inputSize));
+    if isTransposed
         X_raw = permute(X_raw, [4, 3, 1, 2]);
     end
 end
@@ -157,17 +180,9 @@ X = X_raw;
 end
 
 function sample = prepareSample(X, idx)
-% Extract and format single sample for dlarray
-sample = squeeze(X(idx, :, :, :));
-
-if ismatrix(sample)
-    % 2D: transpose for row-major ordering, add channel
-    sample = single(sample');
-    sample = reshape(sample, [size(sample, 1), size(sample, 2), 1]);
-else
-    % 3D: permute (C, H, W) -> (H, W, C)
-    sample = single(permute(sample, [2, 3, 1]));
-end
+% Extract and format single sample (1, C, H, W) as (H, W, C, 1) for 'SSCB' dlarray
+% using explicit permute so singleton N/C/H/W dimensions are never collapsed.
+sample = permute(single(X(idx, :, :, :)), [3, 4, 2, 1]);
 end
 
 function r2 = computeR2(y_true, y_pred)

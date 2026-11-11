@@ -58,15 +58,11 @@ class MaxViTBase(BaseModel):
     2D only due to attention structure.
 
     Note:
-        MaxViT ``_tf_`` models use window_size=7 with 32× total downsampling
-        (4× stem + 4 stages of 2×), requiring input dimensions that are multiples
-        of the model's native size (e.g. 224, 384, 512).
-        This implementation automatically resizes inputs to the nearest compatible size.
+        Inputs are rounded up to multiples of the model's native size (e.g. 224).
+        This preserves the attention partitions and relative-position parameter
+        shapes used by existing WaveDL checkpoints.
     """
 
-    # Map model name suffixes to their native input size.
-    # MaxViT _tf_ models require input divisible by native_size because:
-    #   window_size=7, total_downsample=32 → 7 × 32 = 224 (or scaled variants)
     _NATIVE_SIZES: ClassVar[dict[str, int]] = {
         "224": 224,
         "384": 384,
@@ -91,43 +87,39 @@ class MaxViTBase(BaseModel):
         self.pretrained = pretrained
         self.freeze_backbone = freeze_backbone
         self.model_name = model_name
+        self.dropout_rate = dropout_rate
 
-        # Determine the divisor from the model's native size
+        # Preserve the native-size rounding policy used by saved checkpoints.
         self._divisor = self._get_native_size(model_name)
-
-        # Compute compatible input size for MaxViT attention windows
-        self._target_size = self._compute_compatible_size(in_shape)
+        self._target_size = self._compute_compatible_size(self.in_shape)
 
         # Try to load from timm
         try:
             import timm
+        except ImportError as e:
+            raise ImportError(
+                "timm is required for MaxViT. Install with: pip install timm"
+            ) from e
 
+        try:
             self.backbone = timm.create_model(
                 model_name,
                 pretrained=pretrained,
                 num_classes=0,  # Remove classifier
                 img_size=self._target_size,  # Configure for actual input size
             )
-
-            # Get feature dimension using compatible size (eval mode to preserve pretrained BN stats)
-            with torch.no_grad():
-                self.backbone.eval()
-                dummy = torch.zeros(1, 3, *self._target_size)
-                features = self.backbone(dummy)
-                in_features = features.shape[-1]
-                self.backbone.train()
-
-        except ImportError:
-            raise ImportError(
-                "timm is required for MaxViT. Install with: pip install timm"
-            )
         except Exception as e:
             raise RuntimeError(
                 f"Failed to load MaxViT model '{model_name}': {e}"
             ) from e
 
-        # Adapt input channels (3 -> 1)
+        # Adapt input channels (3 -> 1) before probing actual output width
         self._adapt_input_channels()
+        from wavedl.models._pretrained_utils import infer_backbone_features
+
+        in_features = infer_backbone_features(
+            self.backbone, self._target_size, in_channels=1
+        )
 
         # Regression head
         self.head = build_regression_head(in_features, out_size, dropout_rate)
@@ -141,7 +133,6 @@ class MaxViTBase(BaseModel):
         for suffix, size in cls._NATIVE_SIZES.items():
             if model_name.endswith(suffix):
                 return size
-        # Default: 224 (most common MaxViT variant)
         return 224
 
     def _adapt_input_channels(self):
@@ -153,10 +144,8 @@ class MaxViTBase(BaseModel):
         )
 
         if adapted_count == 0:
-            import warnings
-
-            warnings.warn(
-                "Could not adapt MaxViT input channels. Model may fail.", stacklevel=2
+            raise RuntimeError(
+                f"Could not adapt input channels for MaxViT model '{self.model_name}'."
             )
 
     def _freeze_backbone(self):
@@ -165,17 +154,9 @@ class MaxViTBase(BaseModel):
 
     def _compute_compatible_size(self, in_shape: tuple[int, int]) -> tuple[int, int]:
         """
-        Compute the nearest input size compatible with MaxViT attention windows.
+        Compute the nearest input size compatible with MaxViT attention partitions.
 
-        MaxViT ``_tf_`` models require input dimensions that are multiples of
-        their native size (e.g. 224 for ``_tf_224``).
-        This rounds up to the nearest compatible size.
-
-        Args:
-            in_shape: Original (H, W) input shape
-
-        Returns:
-            Compatible (H, W) shape divisible by native size
+        Rounds each axis up to the nearest multiple of the model's native size.
         """
         import math
 
@@ -213,6 +194,10 @@ class MaxViTBase(BaseModel):
             )
         features = self.backbone(x)
         return self.head(features)
+
+    @classmethod
+    def get_default_config(cls) -> dict[str, bool | float]:
+        return {"pretrained": True, "freeze_backbone": False, "dropout_rate": 0.3}
 
 
 # =============================================================================

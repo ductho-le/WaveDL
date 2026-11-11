@@ -111,12 +111,16 @@ class WeightedMSELoss(nn.Module):
         self.reduction = reduction
 
         if weights is not None:
-            if isinstance(weights, list):
-                weights = torch.tensor(weights, dtype=torch.float32)
+            if not isinstance(weights, torch.Tensor):
+                weights = torch.as_tensor(weights, dtype=torch.float32)
+            else:
+                weights = weights.to(dtype=torch.float32)
             if weights.ndim != 1 or weights.numel() == 0:
                 raise ValueError("Loss weights must be a non-empty 1D sequence.")
             if not torch.isfinite(weights).all() or (weights < 0).any():
                 raise ValueError("Loss weights must be finite and non-negative.")
+            if not (weights > 0).any():
+                raise ValueError("At least one loss weight must be strictly positive.")
             self.register_buffer("weights", weights)
         else:
             self.weights = None
@@ -140,7 +144,11 @@ class WeightedMSELoss(nn.Module):
                 f"Prediction shape {tuple(pred.shape)} does not match target shape "
                 f"{tuple(target.shape)}."
             )
-        mse = (pred - target) ** 2
+        work_pred = (
+            pred.float() if pred.dtype in (torch.float16, torch.bfloat16) else pred
+        )
+        work_target = target.to(work_pred.dtype)
+        mse = (work_pred - work_target) ** 2
 
         if self.weights is not None:
             # Targets/channels live on axis 1 for both (N,T) vectors and
@@ -234,6 +242,15 @@ def get_loss(
 
     # Special handling for specific loss types
     if name_lower == "huber":
+        if (
+            isinstance(delta, bool)
+            or not isinstance(delta, (int, float))
+            or not math.isfinite(delta)
+            or delta <= 0
+        ):
+            raise ValueError(
+                f"Huber delta must be a finite positive number, got {delta!r}."
+            )
         return loss_cls(delta=delta, **kwargs)
     elif name_lower == "weighted_mse":
         return loss_cls(weights=weights, **kwargs)

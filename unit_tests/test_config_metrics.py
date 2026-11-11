@@ -72,59 +72,37 @@ class TestFlattenConfig:
 class TestLoadConfig:
     """Tests for YAML config loading."""
 
-    def test_load_valid_yaml(self):
+    def test_load_valid_yaml(self, tmp_path):
         """Test loading a valid YAML config file."""
         from wavedl.utils.config import load_config
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write("model: cnn\nlr: 0.001\nepochs: 100\n")
-            f.flush()
+        cfg_path = tmp_path / "valid.yaml"
+        cfg_path.write_text("model: cnn\nlr: 0.001\nepochs: 100\n", encoding="utf-8")
+        config = load_config(str(cfg_path))
+        assert config["model"] == "cnn"
+        assert config["lr"] == 0.001
+        assert config["epochs"] == 100
 
-            try:
-                config = load_config(f.name)
-                assert config["model"] == "cnn"
-                assert config["lr"] == 0.001
-                assert config["epochs"] == 100
-            finally:
-                try:
-                    os.unlink(f.name)
-                except PermissionError:
-                    pass  # Windows file locking - cleanup later
-
-    def test_load_empty_yaml(self):
+    def test_load_empty_yaml(self, tmp_path):
         """Test loading an empty YAML file returns empty dict."""
         from wavedl.utils.config import load_config
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write("")
-            f.flush()
+        cfg_path = tmp_path / "empty.yaml"
+        cfg_path.write_text("", encoding="utf-8")
+        config = load_config(str(cfg_path))
+        assert config == {}
 
-            try:
-                config = load_config(f.name)
-                assert config == {}
-            finally:
-                try:
-                    os.unlink(f.name)
-                except PermissionError:
-                    pass  # Windows file locking - cleanup later
-
-    def test_load_nested_yaml(self):
+    def test_load_nested_yaml(self, tmp_path):
         """Test that nested YAML is flattened."""
         from wavedl.utils.config import load_config
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write("optimizer:\n  lr: 0.001\n  weight_decay: 0.01\n")
-            f.flush()
-
-            try:
-                config = load_config(f.name)
-                assert config["optimizer_lr"] == 0.001
-                assert config["optimizer_weight_decay"] == 0.01
-            finally:
-                try:
-                    os.unlink(f.name)
-                except PermissionError:
-                    pass  # Windows file locking - cleanup later
+        cfg_path = tmp_path / "nested.yaml"
+        cfg_path.write_text(
+            "optimizer:\n  lr: 0.001\n  weight_decay: 0.01\n", encoding="utf-8"
+        )
+        config = load_config(str(cfg_path))
+        assert config["optimizer_lr"] == 0.001
+        assert config["optimizer_weight_decay"] == 0.01
 
     def test_load_missing_file_raises(self):
         """Test that loading missing file raises FileNotFoundError."""
@@ -136,6 +114,42 @@ class TestLoadConfig:
 
 class TestValidateConfig:
     """Tests for config validation."""
+
+    @pytest.mark.parametrize("key_source", ["fallback", "parser", "known_keys"])
+    @pytest.mark.parametrize(
+        ("config", "message"),
+        [
+            ({"scheduler_patience": 0}, None),
+            ({"scheduler_scheduler_patience": 0}, None),
+            ({"scheduler_factor": -0.5}, "Scheduler factor"),
+            ({"cv_bins": 0}, "CV bins"),
+            ({"cross_validation_cv_bins": 0}, "CV bins"),
+            ({"optimizer_lr": -1}, "Learning rate"),
+            ({"optimizer_lr": -1, "lr": 0.01}, None),
+            ({"scheduler_patience": 0, "patience": 2}, None),
+        ],
+    )
+    def test_flat_keys_take_priority_over_section_prefixes(
+        self, key_source, config, message
+    ):
+        from wavedl.utils.config import validate_config
+
+        keys = ["scheduler_patience", "scheduler_factor", "cv_bins", "lr", "patience"]
+        kwargs = {}
+        if key_source == "parser":
+            parser = argparse.ArgumentParser()
+            for key in keys:
+                parser.add_argument(
+                    f"--{key}", type=float if key in {"lr", "scheduler_factor"} else int
+                )
+            kwargs["parser"] = parser
+        elif key_source == "known_keys":
+            kwargs["known_keys"] = keys
+        issues = validate_config(config, **kwargs)
+        if message is None:
+            assert issues == []
+        else:
+            assert any(message in issue for issue in issues)
 
     def test_valid_config_no_warnings(self):
         """Test that valid config produces no warnings."""
@@ -320,65 +334,68 @@ class TestMergeConfigWithArgs:
         assert merged.model == "cnn"
         assert not hasattr(merged, "unknown_key")
 
+    def test_preserves_data_path_from_yaml_when_cli_omits_it(self, monkeypatch):
+        """Regression test: YAML data_path applies when CLI omits --data_path, while typos do not."""
+        import sys
+
+        from wavedl.utils.config import merge_config_with_args
+
+        monkeypatch.setattr(sys, "argv", ["wavedl-train"])
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--data_path", type=str, default="train_data.npz")
+        parser.add_argument("--model", type=str, default="cnn")
+        args = parser.parse_args([])
+
+        # A flat non-section prefix like `test_data_path` must NOT overwrite `data_path`
+        merged_typo = merge_config_with_args(
+            {"test_data_path": "eval_only.npz"},
+            args,
+            parser=parser,
+            ignore_unknown=True,
+        )
+        assert merged_typo.data_path == "train_data.npz"
+
+        # Valid `data_path` from YAML applies cleanly
+        config = {"data_path": "datasets/custom_train.h5", "model": "resnet18"}
+        merged = merge_config_with_args(config, args, parser=parser)
+        assert merged.data_path == "datasets/custom_train.h5"
+        assert merged.model == "resnet18"
+
 
 class TestGradAccumStepsYAMLIntegration:
     """Integration tests for grad_accum_steps loaded from YAML config."""
 
-    def test_yaml_grad_accum_steps_applied(self):
+    def test_yaml_grad_accum_steps_applied(self, tmp_path):
         """Test that grad_accum_steps from YAML is applied to args."""
         from wavedl.utils.config import load_config, merge_config_with_args
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write("model: cnn\ngrad_accum_steps: 4\n")
-            f.flush()
+        cfg_path = tmp_path / "grad_accum.yaml"
+        cfg_path.write_text("model: cnn\ngrad_accum_steps: 4\n", encoding="utf-8")
+        config = load_config(str(cfg_path))
+        args = argparse.Namespace(model="cnn", grad_accum_steps=1)
+        merged = merge_config_with_args(config, args)
+        assert merged.grad_accum_steps == 4
 
-            try:
-                config = load_config(f.name)
-                args = argparse.Namespace(model="cnn", grad_accum_steps=1)
-                merged = merge_config_with_args(config, args)
-                assert merged.grad_accum_steps == 4
-            finally:
-                try:
-                    os.unlink(f.name)
-                except PermissionError:
-                    pass
-
-    def test_yaml_grad_accum_steps_validated(self):
+    def test_yaml_grad_accum_steps_validated(self, tmp_path):
         """Test that invalid grad_accum_steps in YAML produces warning."""
         from wavedl.utils.config import load_config, validate_config
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write("model: cnn\ngrad_accum_steps: 0\n")
-            f.flush()
+        cfg_path = tmp_path / "grad_accum_invalid.yaml"
+        cfg_path.write_text("model: cnn\ngrad_accum_steps: 0\n", encoding="utf-8")
+        config = load_config(str(cfg_path))
+        warnings = validate_config(config)
+        assert any("Gradient accumulation" in w for w in warnings)
 
-            try:
-                config = load_config(f.name)
-                warnings = validate_config(config)
-                assert any("Gradient accumulation" in w for w in warnings)
-            finally:
-                try:
-                    os.unlink(f.name)
-                except PermissionError:
-                    pass
-
-    def test_yaml_grad_accum_steps_no_spurious_unknown_key_warning(self):
+    def test_yaml_grad_accum_steps_no_spurious_unknown_key_warning(self, tmp_path):
         """Test that grad_accum_steps in YAML does not produce unknown key warning."""
         from wavedl.utils.config import load_config, validate_config
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write("model: cnn\ngrad_accum_steps: 4\n")
-            f.flush()
-
-            try:
-                config = load_config(f.name)
-                warnings = validate_config(config)
-                unknown_warnings = [w for w in warnings if "Unknown config key" in w]
-                assert unknown_warnings == []
-            finally:
-                try:
-                    os.unlink(f.name)
-                except PermissionError:
-                    pass
+        cfg_path = tmp_path / "grad_accum_valid.yaml"
+        cfg_path.write_text("model: cnn\ngrad_accum_steps: 4\n", encoding="utf-8")
+        config = load_config(str(cfg_path))
+        warnings = validate_config(config)
+        unknown_warnings = [w for w in warnings if "Unknown config key" in w]
+        assert unknown_warnings == []
 
 
 # ==============================================================================

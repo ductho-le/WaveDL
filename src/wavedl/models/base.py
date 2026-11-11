@@ -58,13 +58,21 @@ def compute_num_groups(num_channels: int, preferred_groups: int = 32) -> int:
         if not isinstance(value, Integral) or isinstance(value, bool) or value <= 0:
             raise ValueError(f"{name} must be a positive integer.")
 
-    # Preserve established group choices while respecting the requested maximum.
-    for groups in [preferred_groups, 16, 8, 4, 2, 1]:
-        if groups <= min(num_channels, preferred_groups) and num_channels % groups == 0:
+    # Preserve established power-of-2 group choices while respecting the requested maximum.
+    cap = min(int(num_channels), int(preferred_groups))
+    candidates = [int(preferred_groups)]
+    power = 1 << (cap.bit_length() - 1)
+    while power >= 2:
+        if power not in candidates:
+            candidates.append(power)
+        power >>= 1
+
+    for groups in candidates:
+        if 2 <= groups <= cap and num_channels % groups == 0:
             return groups
 
-    # Fallback: find any valid divisor (always returns at least 1)
-    for groups in range(min(32, num_channels), 0, -1):
+    # Fallback: find largest valid divisor <= cap (returns 1 for prime channel counts)
+    for groups in range(cap, 0, -1):
         if num_channels % groups == 0:
             return groups
 
@@ -171,7 +179,13 @@ class BaseModel(nn.Module, ABC):
         """
         pass
 
-    def validate_input_shape(self, x: torch.Tensor) -> None:
+    def validate_input_shape(
+        self,
+        x: torch.Tensor,
+        *,
+        in_channels: int | None = None,
+        strict_spatial: bool = True,
+    ) -> None:
         """
         Validate input tensor shape against model's expected shape.
 
@@ -180,6 +194,8 @@ class BaseModel(nn.Module, ABC):
 
         Args:
             x: Input tensor to validate
+            in_channels: Expected channel count on axis 1 (optional)
+            strict_spatial: Require spatial dimensions to match ``self.in_shape``
 
         Raises:
             ValueError: If shape doesn't match expected dimensions
@@ -206,15 +222,22 @@ class BaseModel(nn.Module, ABC):
                 f"Hint: Check your data preprocessing - you may need to add/remove dimensions."
             )
 
-        # Validate spatial dimensions match
-        spatial_dims = tuple(x.shape[2:])  # Skip batch and channel
-        if spatial_dims != tuple(self.in_shape):
+        if in_channels is not None and x.shape[1] != in_channels:
             raise ValueError(
-                f"Spatial dimension mismatch: model expects {self.in_shape}, "
-                f"got {spatial_dims}.\n"
-                f"Full input shape: {tuple(x.shape)} (B={x.shape[0]}, C={x.shape[1]})\n"
-                f"Hint: Ensure your data dimensions match the model's in_shape."
+                f"Input channel mismatch: model expects C={in_channels}, "
+                f"got C={x.shape[1]} with shape {tuple(x.shape)}."
             )
+
+        # Validate spatial dimensions match
+        if strict_spatial:
+            spatial_dims = tuple(x.shape[2:])  # Skip batch and channel
+            if spatial_dims != tuple(self.in_shape):
+                raise ValueError(
+                    f"Spatial dimension mismatch: model expects {self.in_shape}, "
+                    f"got {spatial_dims}.\n"
+                    f"Full input shape: {tuple(x.shape)} (B={x.shape[0]}, C={x.shape[1]})\n"
+                    f"Hint: Ensure your data dimensions match the model's in_shape."
+                )
 
     def _freeze_backbone_modules(self, trainable_heads: tuple[str, ...] = ()) -> None:
         """Freeze feature extraction, including running statistics and dropout.
@@ -265,11 +288,12 @@ class BaseModel(nn.Module, ABC):
         """
         total = self.count_parameters(trainable_only=False)
         trainable = self.count_parameters(trainable_only=True)
+        total_bytes = sum(p.numel() * p.element_size() for p in self.parameters())
         return {
             "total_parameters": total,
             "trainable_parameters": trainable,
             "frozen_parameters": total - trainable,
-            "total_mb": total * 4 / (1024 * 1024),  # Assuming float32
+            "total_mb": total_bytes / (1024 * 1024),
         }
 
     @classmethod
@@ -295,25 +319,72 @@ class BaseModel(nn.Module, ABC):
         Returns:
             List of parameter group dictionaries
         """
-        # Default: no weight decay on bias and normalization layers
+        # Default: no weight decay on bias, normalization, 1D/scale, positional,
+        # and state-space model pole/step-size parameters.
+        norm_param_ids: set[int] = set()
+        norm_types = (
+            nn.modules.batchnorm._NormBase,
+            nn.GroupNorm,
+            nn.LayerNorm,
+        )
+        for module in self.modules():
+            cls_name = type(module).__name__
+            if isinstance(module, norm_types) or cls_name.endswith(
+                ("Norm", "Norm1d", "Norm2d", "Norm3d", "NormNd")
+            ):
+                for p in module.parameters(recurse=False):
+                    norm_param_ids.add(id(p))
+
+        no_decay_tokens = {
+            "bias",
+            "norm",
+            "bn",
+            "ln",
+            "gn",
+            "gamma",
+            "beta",
+        }
+        no_decay_suffixes = (
+            "bias",
+            "gamma",
+            "beta",
+            "res_scale",
+            "layer_scale",
+            "block_scale",
+            "pos_embed",
+            "cls_token",
+            "relative_position_bias_table",
+            "attention_biases",
+            "a_log",
+            "log_dt",
+            "a_real",
+            "a_imag",
+        )
+        explicit_no_decay: set[str] = set()
+        no_wd_fn = getattr(self, "no_weight_decay", None)
+        if callable(no_wd_fn):
+            explicit_no_decay.update(s.lower() for s in no_wd_fn())
+
         decay_params = []
         no_decay_params = []
+        checkpoint_params = getattr(self, "_optimizer_checkpoint_parameters", ())
 
         for name, param in self.named_parameters():
-            if not param.requires_grad and name not in getattr(
-                self, "_optimizer_checkpoint_parameters", ()
-            ):
+            if not param.requires_grad and name not in checkpoint_params:
                 continue
-            # Skip weight decay for bias, normalization, and per-channel
-            # scaling parameters (LayerScale gamma, GRN gamma/beta,
-            # ConvNeXt V2 res_scale, etc.)
+            name_lower = name.lower()
+            parts = name_lower.split(".")
+            leaf = parts[-1]
+            tokens = set(name_lower.replace(".", "_").split("_"))
             if (
-                "bias" in name
-                or "norm" in name
-                or "bn" in name
-                or "gamma" in name
-                or "beta" in name
-                or "res_scale" in name
+                id(param) in norm_param_ids
+                or getattr(param, "_no_weight_decay", False)
+                or param.ndim <= 1
+                or name_lower in explicit_no_decay
+                or leaf in explicit_no_decay
+                or bool(tokens & no_decay_tokens)
+                or name_lower in no_decay_suffixes
+                or any(name_lower.endswith(f".{sfx}") for sfx in no_decay_suffixes)
             ):
                 no_decay_params.append(param)
             else:
@@ -335,9 +406,9 @@ class BaseModel(nn.Module, ABC):
             if groups
             else [
                 {
-                    "params": self.parameters(),
+                    "params": [p for p in self.parameters() if p.requires_grad],
                     "lr": base_lr,
-                    "weight_decay": weight_decay,
+                    "weight_decay": 0.0,
                 }
             ]
         )

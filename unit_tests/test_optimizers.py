@@ -118,30 +118,57 @@ class TestGetOptimizerWithParamGroups:
         return SimpleModel()
 
     def test_creates_param_groups(self, model):
-        """Should create separate parameter groups."""
+        """Should create separate decay and no-decay parameter groups."""
         optimizer = get_optimizer_with_param_groups(
             "adamw", model, lr=1e-3, weight_decay=1e-4
         )
 
-        # Should have at least one param group
-        assert len(optimizer.param_groups) >= 1
+        assert len(optimizer.param_groups) == 2
+        assert {g["weight_decay"] for g in optimizer.param_groups} == {0.0, 1e-4}
 
     def test_no_decay_on_bias(self, model):
-        """Bias parameters should have no weight decay."""
+        """Bias and normalization parameters should have zero weight decay."""
         optimizer = get_optimizer_with_param_groups(
             "adamw", model, lr=1e-3, weight_decay=1e-4
         )
 
-        # Find the no-decay group
-        no_decay_group = None
-        for group in optimizer.param_groups:
-            if group["weight_decay"] == 0.0:
-                no_decay_group = group
-                break
+        groups_by_wd = {
+            group["weight_decay"]: {id(p) for p in group["params"]}
+            for group in optimizer.param_groups
+        }
+        assert 0.0 in groups_by_wd
+        assert 1e-4 in groups_by_wd
 
-        # Should have a no-decay group for biases
-        if no_decay_group:
-            assert no_decay_group["weight_decay"] == 0.0
+        assert id(model.fc1.bias) in groups_by_wd[0.0]
+        assert id(model.fc2.bias) in groups_by_wd[0.0]
+        assert id(model.bn.weight) in groups_by_wd[0.0]
+        assert id(model.bn.bias) in groups_by_wd[0.0]
+        assert id(model.fc1.weight) in groups_by_wd[1e-4]
+        assert id(model.fc2.weight) in groups_by_wd[1e-4]
+
+    def test_norm_modules_without_norm_in_attribute_name(self):
+        """Norm modules named e.g. 'downsample.1' or 'stage' must still skip decay."""
+
+        class CustomNamedNormModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.proj = nn.Linear(8, 8)
+                self.stage_scale = nn.GroupNorm(2, 8)
+                self.post_block = nn.LayerNorm(8)
+                self.pos_embed = nn.Parameter(torch.zeros(1, 4, 8))
+
+        m = CustomNamedNormModel()
+        optimizer = get_optimizer_with_param_groups(
+            "adamw", m, lr=1e-3, weight_decay=1e-2
+        )
+        groups_by_wd = {
+            group["weight_decay"]: {id(p) for p in group["params"]}
+            for group in optimizer.param_groups
+        }
+        assert id(m.proj.weight) in groups_by_wd[1e-2]
+        assert id(m.stage_scale.weight) in groups_by_wd[0.0]
+        assert id(m.post_block.weight) in groups_by_wd[0.0]
+        assert id(m.pos_embed) in groups_by_wd[0.0]
 
     def test_custom_no_decay_keywords(self, model):
         """Should accept custom no_decay_keywords."""

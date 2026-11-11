@@ -57,17 +57,27 @@ def broadcast_early_stop(should_stop: bool, accelerator: Accelerator) -> bool:
         if broadcast_early_stop(should_stop, accelerator):
             break  # All ranks exit loop together
     """
-    stop_tensor = torch.tensor(
-        1 if should_stop else 0, device=accelerator.device, dtype=torch.int32
+    if accelerator.num_processes <= 1:
+        return bool(should_stop)
+
+    backend = (
+        dist.get_backend() if dist.is_available() and dist.is_initialized() else None
     )
-
-    if accelerator.num_processes > 1:
-        dist.broadcast(stop_tensor, src=0)
-
+    comm_device = (
+        torch.device("cpu")
+        if backend == "gloo" or accelerator.device.type == "mps"
+        else accelerator.device
+    )
+    stop_tensor = torch.tensor(
+        1 if should_stop else 0, device=comm_device, dtype=torch.int32
+    )
+    dist.broadcast(stop_tensor, src=0)
     return stop_tensor.item() == 1
 
 
-def broadcast_value(value: int | float, accelerator: Accelerator) -> int | float:
+def broadcast_value(
+    value: bool | int | float, accelerator: Accelerator
+) -> bool | int | float:
     """
     Broadcast a scalar value from rank 0 to all processes.
 
@@ -80,18 +90,35 @@ def broadcast_value(value: int | float, accelerator: Accelerator) -> int | float
     Returns:
         Value from rank 0 (synchronized across all ranks)
     """
-    if accelerator.num_processes == 1:
-        return value
-    is_int = isinstance(value, int)
-    dtype = torch.int64 if is_int else torch.float64
+    is_bool = isinstance(value, bool)
+    is_int = not is_bool and (isinstance(value, int) or hasattr(value, "__index__"))
 
-    tensor = torch.tensor(value, device=accelerator.device, dtype=dtype)
+    if accelerator.num_processes <= 1:
+        if is_bool:
+            return bool(value)
+        return int(value) if is_int else float(value)
 
-    if accelerator.num_processes > 1:
+    backend = (
+        dist.get_backend() if dist.is_available() and dist.is_initialized() else None
+    )
+    comm_device = (
+        torch.device("cpu")
+        if backend == "gloo" or accelerator.device.type == "mps"
+        else accelerator.device
+    )
+
+    if is_bool:
+        tensor = torch.tensor(1 if value else 0, device=comm_device, dtype=torch.int32)
         dist.broadcast(tensor, src=0)
+        return bool(tensor.item() == 1)
+
+    dtype = torch.int64 if is_int else torch.float64
+    scalar_val = int(value) if is_int else float(value)
+    tensor = torch.tensor(scalar_val, device=comm_device, dtype=dtype)
+    dist.broadcast(tensor, src=0)
 
     result = tensor.item()
-    return int(result) if is_int else result
+    return int(result) if is_int else float(result)
 
 
 def sync_tensor(

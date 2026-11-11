@@ -53,32 +53,34 @@ def _setup_per_rank_compile_cache() -> None:
 
     When using torch.compile with multiple GPUs, all processes try to write to
     the same cache directory, causing 'Directory is not empty - skipping!' warnings.
-    This gives each GPU rank its own isolated cache subdirectory.
+    This gives each GPU rank its own isolated cache subdirectory, keyed by both
+    hostname and global rank so multi-node shared filesystems remain collision-free.
     """
-    # Get local rank from environment (set by accelerate/torchrun)
-    local_rank = os.environ.get("LOCAL_RANK", "0")
+    import socket
+    import tempfile
 
-    # Get cache base from environment or use CWD
-    cache_base = os.environ.get(
-        "TRITON_CACHE_DIR", os.path.join(os.getcwd(), ".triton_cache")
-    )
+    host = socket.gethostname().split(".")[0] or "node"
+    rank = os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0"))
+    rank_suffix = f"{host}_rank_{rank}"
 
-    # Set per-rank cache directories
-    os.environ["TRITON_CACHE_DIR"] = os.path.join(cache_base, f"rank_{local_rank}")
-    os.environ["TORCHINDUCTOR_CACHE_DIR"] = os.path.join(
-        os.environ.get(
-            "TORCHINDUCTOR_CACHE_DIR", os.path.join(os.getcwd(), ".inductor_cache")
-        ),
-        f"rank_{local_rank}",
-    )
+    for env_var, default_dir in (
+        ("TRITON_CACHE_DIR", ".triton_cache"),
+        ("TORCHINDUCTOR_CACHE_DIR", ".inductor_cache"),
+    ):
+        base = os.environ.get(env_var, os.path.join(os.getcwd(), default_dir))
+        if os.path.basename(os.path.normpath(base)) != rank_suffix:
+            target = os.path.join(base, rank_suffix)
+        else:
+            target = base
+        try:
+            os.makedirs(target, exist_ok=True)
+        except OSError:
+            target = os.path.join(
+                tempfile.gettempdir(), f"wavedl_{default_dir.lstrip('.')}", rank_suffix
+            )
+            os.makedirs(target, exist_ok=True)
+        os.environ[env_var] = target
 
-    # Create directories
-    os.makedirs(os.environ["TRITON_CACHE_DIR"], exist_ok=True)
-    os.makedirs(os.environ["TORCHINDUCTOR_CACHE_DIR"], exist_ok=True)
-
-
-# Setup per-rank compile caches (before torch imports)
-_setup_per_rank_compile_cache()
 
 # =============================================================================
 # Standard imports (after environment setup)
@@ -335,7 +337,7 @@ def _finalize_accumulation_window(
     nonfinite: torch.Tensor,
     nominal_batch_size: int,
     accelerator: Accelerator,
-) -> None:
+) -> bool:
     """Validate and rescale one optimizer update's accumulated gradients.
 
     Micro-batch losses are back-propagated with weight ``batch / nominal``, so
@@ -343,6 +345,10 @@ def _finalize_accumulation_window(
     per update checks every rank's losses and counts samples, before the
     optimizer can consume non-finite gradients. Only partial windows (e.g. the
     last batch of an epoch) need rescaling to the true sample mean.
+
+    Returns:
+        True if ``accelerator.unscale_gradients()`` was already invoked before
+        rescaling a partial window (so gradient clipping must not unscale again).
     """
     stats = torch.stack(
         [
@@ -359,10 +365,15 @@ def _finalize_accumulation_window(
         * nominal_batch_size
     )
     if total != expected:
+        # Unscale FP16 gradients BEFORE multiplying by factor > 1 so large
+        # GradScaler factors cannot overflow FP16/FP32 gradient buffers.
+        accelerator.unscale_gradients()
         factor = expected / total
         for parameter in model.parameters():
             if parameter.grad is not None:
                 parameter.grad.mul_(factor)
+        return True
+    return False
 
 
 def _archive_previous_run(output_dir):
@@ -620,6 +631,12 @@ def parse_args() -> tuple[argparse.Namespace, argparse.ArgumentParser]:
         "--output_dir", type=str, default=".", help="Output directory for checkpoints"
     )
     parser.add_argument(
+        "--cache_dir",
+        type=str,
+        default=None,
+        help="Directory for memmap dataset cache (default: --output_dir)",
+    )
+    parser.add_argument(
         "--fresh",
         action="store_true",
         help="Force fresh training, ignore existing checkpoints",
@@ -693,6 +710,82 @@ def parse_args() -> tuple[argparse.Namespace, argparse.ArgumentParser]:
     return args, parser  # Returns (Namespace, ArgumentParser)
 
 
+def _unwrap_compiled_model(accelerator, model):
+    """Unwrap DDP and torch.compile wrappers to access clean base nn.Module."""
+    try:
+        unwrapped = accelerator.unwrap_model(model)
+    except (KeyError, AttributeError):
+        unwrapped = model
+    seen: set[int] = set()
+    while id(unwrapped) not in seen:
+        seen.add(id(unwrapped))
+        orig_mod = getattr(unwrapped, "_orig_mod", None)
+        if isinstance(orig_mod, torch.nn.Module):
+            unwrapped = orig_mod
+            continue
+        if isinstance(
+            unwrapped,
+            (torch.nn.parallel.DistributedDataParallel, torch.nn.DataParallel),
+        ):
+            unwrapped = unwrapped.module
+            continue
+        break
+    return unwrapped
+
+
+def _atomic_pickle_dump(obj: Any, path: str) -> None:
+    """Atomically serialize ``obj`` with pickle via temporary file replacement."""
+    tmp_path = f"{path}.tmp.{os.getpid()}"
+    try:
+        with open(tmp_path, "wb") as f:
+            pickle.dump(obj, f)
+        os.replace(tmp_path, path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+
+
+def _atomic_torch_save(obj: Any, path: str) -> None:
+    """Atomically save a PyTorch object via temporary file replacement."""
+    tmp_path = f"{path}.tmp.{os.getpid()}"
+    try:
+        torch.save(obj, tmp_path)
+        os.replace(tmp_path, path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+
+
+def _remove_stale_safetensors(ckpt_dir: str) -> None:
+    """Remove stale model.safetensors when saving with safe_serialization=False."""
+    stale = os.path.join(ckpt_dir, "model.safetensors")
+    if os.path.exists(stale):
+        try:
+            os.remove(stale)
+        except OSError:
+            pass
+
+
+def _clean_state_dict_prefixes(state_dict: dict[str, Any]) -> dict[str, Any]:
+    """Strip DDP ('module.') and torch.compile ('_orig_mod.') prefixes from keys."""
+    cleaned: dict[str, Any] = {}
+    for k, v in state_dict.items():
+        key = k
+        changed = True
+        while changed:
+            changed = False
+            if key.startswith("module."):
+                key = key[7:]
+                changed = True
+            if key.startswith("_orig_mod."):
+                key = key[10:]
+                changed = True
+        cleaned[key] = v
+    return cleaned
+
+
 def _save_best_checkpoint(
     accelerator,
     model,
@@ -703,6 +796,7 @@ def _save_best_checkpoint(
     out_dim: int,
     scaler,
     logger,
+    target_shape: tuple | None = None,
 ) -> None:
     """
     Save best checkpoint with metadata.
@@ -717,36 +811,36 @@ def _save_best_checkpoint(
         out_dim: Number of vector targets or dense field channels
         scaler: Fitted vector or spatial target scaler
         logger: Logger instance
+        target_shape: Canonical per-sample target shape (derived from scaler if omitted)
     """
     ckpt_dir = os.path.join(args.output_dir, "best_checkpoint")
     with suppress_accelerate_logging():
         accelerator.save_state(ckpt_dir, safe_serialization=False)
 
     if accelerator.is_main_process:
-        with open(os.path.join(ckpt_dir, "training_meta.pkl"), "wb") as f:
-            pickle.dump(
-                {
-                    "epoch": epoch + 1,
-                    "best_val_loss": best_val_loss,
-                    "patience_ctr": 0,
-                    "model_name": args.model,
-                    "in_shape": in_shape,
-                    "out_dim": out_dim,
-                    "target_shape": scaler_target_shape(scaler, out_dim),
-                },
-                f,
-            )
+        _remove_stale_safetensors(ckpt_dir)
+        resolved_target_shape = (
+            target_shape
+            if target_shape is not None
+            else scaler_target_shape(scaler, out_dim)
+        )
+        _atomic_pickle_dump(
+            {
+                "epoch": epoch + 1,
+                "best_val_loss": best_val_loss,
+                "patience_ctr": 0,
+                "model_name": args.model,
+                "in_shape": in_shape,
+                "out_dim": out_dim,
+                "target_shape": resolved_target_shape,
+            },
+            os.path.join(ckpt_dir, "training_meta.pkl"),
+        )
 
-        # Save standalone weights
-        try:
-            unwrapped = accelerator.unwrap_model(model)
-        except KeyError:
-            unwrapped = model.module if hasattr(model, "module") else model
-            if hasattr(unwrapped, "_orig_mod"):
-                unwrapped = unwrapped._orig_mod
-
-        torch.save(
-            unwrapped.state_dict(),
+        # Save standalone weights (clean of DDP / torch.compile prefixes)
+        unwrapped = _unwrap_compiled_model(accelerator, model)
+        _atomic_torch_save(
+            _clean_state_dict_prefixes(unwrapped.state_dict()),
             os.path.join(args.output_dir, "best_model_weights.pth"),
         )
 
@@ -754,7 +848,11 @@ def _save_best_checkpoint(
         scaler_src = os.path.join(args.output_dir, "scaler.pkl")
         scaler_dst = os.path.join(ckpt_dir, "scaler.pkl")
         if os.path.exists(scaler_src):
-            shutil.copy2(scaler_src, scaler_dst)
+            tmp_scaler = f"{scaler_dst}.tmp.{os.getpid()}"
+            shutil.copy2(scaler_src, tmp_scaler)
+            os.replace(tmp_scaler, scaler_dst)
+        elif scaler is not None:
+            _atomic_pickle_dump(scaler, scaler_dst)
 
         logger.info(f"   💾 Best model saved (val_loss: {best_val_loss:.6f})")
 
@@ -787,6 +885,7 @@ def train_single_trial(
     timeout_seconds: float | None = None,
     *,
     grad_clip: float = 1.0,
+    cache_dir: str | None = None,
 ) -> dict:
     """
     Single-trial training function for in-process HPO.
@@ -822,32 +921,61 @@ def train_single_trial(
             - final_val_loss: Validation loss at last epoch
             - pruned: Whether trial was pruned
     """
+    import contextlib
     import tempfile
 
     import torch
-    from torch.utils.data import DataLoader, TensorDataset
 
-    from wavedl.models import build_model
-    from wavedl.utils import get_loss, get_optimizer, get_scheduler, prepare_data
+    from wavedl.utils import (
+        get_loss,
+        get_optimizer,
+        get_scheduler,
+        is_epoch_based,
+        prepare_data,
+    )
 
     deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
 
     # Set seed for reproducibility
     set_seed(seed)
 
-    # Device setup
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Device setup (honor ACCELERATE_USE_CPU for reproducible CPU testing)
+    force_cpu = os.environ.get("ACCELERATE_USE_CPU", "").lower() in ("1", "true", "yes")
+    if not force_cpu and torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif (
+        not force_cpu
+        and hasattr(torch.backends, "mps")
+        and torch.backends.mps.is_available()
+    ):
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
 
-    # Mixed precision setup
-    use_amp = precision != "no" and torch.cuda.is_available()
-    amp_dtype = torch.bfloat16 if precision == "bf16" else torch.float16
-    scaler = torch.amp.GradScaler("cuda", enabled=use_amp and precision == "fp16")
+    # Mixed precision setup (fall back from bf16 to fp16 on pre-Ampere CUDA GPUs)
+    effective_precision = precision
+    if (
+        device.type == "cuda"
+        and effective_precision == "bf16"
+        and hasattr(torch.cuda, "is_bf16_supported")
+        and not torch.cuda.is_bf16_supported()
+    ):
+        effective_precision = "fp16"
+    use_amp = effective_precision != "no" and device.type == "cuda"
+    amp_dtype = torch.bfloat16 if effective_precision == "bf16" else torch.float16
+    use_grad_scaler = use_amp and effective_precision == "fp16"
+    scaler = torch.amp.GradScaler("cuda", enabled=use_grad_scaler)
 
-    # Load and prepare data using temporary directory.
+    # Load and prepare data using caller-provided cache_dir or temporary directory.
     # ignore_cleanup_errors: on Windows the memmap cache (.dat) may still be held
     # open by the dataloaders when the block exits; tolerate the cleanup race
     # (the OS reclaims the temp dir) instead of crashing the trial.
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+    cache_ctx = (
+        contextlib.nullcontext(cache_dir)
+        if cache_dir is not None
+        else tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    )
+    with cache_ctx as tmpdir:
         from types import SimpleNamespace
 
         args = SimpleNamespace(
@@ -862,16 +990,19 @@ def train_single_trial(
 
         # Create a dummy logger
         class DummyLogger:
-            def info(self, msg):
-                if verbose:
-                    print(msg)
+            def debug(self, msg, *args, **kwargs):
+                pass
 
-            def warning(self, msg):
+            def info(self, msg, *args, **kwargs):
                 if verbose:
-                    print(f"WARNING: {msg}")
+                    print(msg % args if args else msg)
 
-            def error(self, msg):
-                print(f"ERROR: {msg}")
+            def warning(self, msg, *args, **kwargs):
+                if verbose:
+                    print(f"WARNING: {msg % args if args else msg}")
+
+            def error(self, msg, *args, **kwargs):
+                print(f"ERROR: {msg % args if args else msg}")
 
         # Create a dummy accelerator for prepare_data compatibility
         # Note: explicit device capture needed since class body scope differs from function scope
@@ -886,107 +1017,64 @@ def train_single_trial(
             def wait_for_everyone():
                 pass  # No-op for single-process
 
-        train_dl, val_dl, target_scaler, in_shape, out_dim = prepare_data(
-            args, DummyLogger(), DummyAccelerator(), cache_dir=tmpdir
-        )
+        import gc
 
-        # Build model
-        model, _target_shape = _build_model_for_targets(
-            model_name, in_shape, out_dim, target_scaler, pretrained=False
-        )
-        model = model.to(device)
+        train_dl = val_dl = model = optimizer = scheduler = criterion = None
+        try:
+            train_dl, val_dl, target_scaler, in_shape, out_dim = prepare_data(
+                args, DummyLogger(), DummyAccelerator(), cache_dir=tmpdir
+            )
 
-        # Create optimizer
-        optimizer = get_optimizer(
-            name=optimizer_name,
-            params=model.get_optimizer_groups(lr, weight_decay),
-            lr=lr,
-            weight_decay=weight_decay,
-            momentum=momentum,
-        )
+            # Build model
+            model, _target_shape = _build_model_for_targets(
+                model_name, in_shape, out_dim, target_scaler, pretrained=False
+            )
+            model = model.to(device)
 
-        # Create loss function
-        criterion = get_loss(name=loss_name, delta=huber_delta)
-        criterion = criterion.to(device)
-        validation_criterion = (
-            torch.nn.MSELoss() if selection_metric == "mse" else criterion
-        )
+            # Create optimizer
+            optimizer = get_optimizer(
+                name=optimizer_name,
+                params=model.get_optimizer_groups(lr, weight_decay),
+                lr=lr,
+                weight_decay=weight_decay,
+                momentum=momentum,
+            )
 
-        # Create scheduler
-        scheduler = get_scheduler(
-            name=scheduler_name,
-            optimizer=optimizer,
-            epochs=epochs,
-            steps_per_epoch=len(train_dl),
-            patience=patience // 2,  # Zero is valid: reduce after the first bad epoch
-        )
-        scheduler_step_per_batch = scheduler_name == "onecycle"
+            # Create loss function
+            criterion = get_loss(name=loss_name, delta=huber_delta)
+            criterion = criterion.to(device)
+            validation_criterion = (
+                torch.nn.MSELoss() if selection_metric == "mse" else criterion
+            )
 
-        # Training state
-        best_val_loss = float("inf")
-        patience_ctr = 0
-        epochs_trained = 0
-        final_val_loss = float("inf")
+            # Create scheduler
+            scheduler = get_scheduler(
+                name=scheduler_name,
+                optimizer=optimizer,
+                epochs=epochs,
+                steps_per_epoch=len(train_dl),
+                patience=patience
+                // 2,  # Zero is valid: reduce after the first bad epoch
+                gamma=0.95 if scheduler_name == "exponential" else 0.5,
+            )
+            scheduler_step_per_batch = not is_epoch_based(scheduler_name)
 
-        # Training loop
-        for epoch in range(epochs):
-            epochs_trained = epoch + 1
+            # Training state
+            best_val_loss = float("inf")
+            patience_ctr = 0
+            epochs_trained = 0
+            final_val_loss = float("inf")
 
-            # === Training Phase ===
-            model.train()
-            train_loss_sum = 0.0
-            train_samples = 0
+            # Training loop
+            for epoch in range(epochs):
+                epochs_trained = epoch + 1
 
-            for x, y in train_dl:
-                if deadline is not None and time.monotonic() >= deadline:
-                    raise TimeoutError(f"Trial exceeded {timeout_seconds} seconds.")
-                x, y = x.to(device), y.to(device)
+                # === Training Phase ===
+                model.train()
+                train_loss_sum = 0.0
+                train_samples = 0
 
-                with torch.amp.autocast(
-                    device_type="cuda", dtype=amp_dtype, enabled=use_amp
-                ):
-                    pred = model(x)
-                    if pred.shape != y.shape:
-                        raise ValueError(
-                            f"Model output shape {tuple(pred.shape)} does not match "
-                            f"target shape {tuple(y.shape)}."
-                        )
-                    loss = criterion(pred, y)
-                _require_finite_loss(loss, "Training")
-
-                optimizer.zero_grad(set_to_none=True)
-
-                if use_amp and precision == "fp16":
-                    scaler.scale(loss).backward()
-                    if grad_clip > 0:
-                        scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-                    old_scale = scaler.get_scale()
-                    scaler.step(optimizer)
-                    scaler.update()
-                    optimizer_was_skipped = scaler.get_scale() < old_scale
-                else:
-                    loss.backward()
-                    if grad_clip > 0:
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-                    optimizer.step()
-                    optimizer_was_skipped = False
-
-                if scheduler_step_per_batch and not optimizer_was_skipped:
-                    scheduler.step()
-
-                train_loss_sum += loss.item() * x.size(0)
-                train_samples += x.size(0)
-
-            avg_train_loss = train_loss_sum / train_samples
-
-            # === Validation Phase ===
-            model.eval()
-            val_loss_sum = 0.0
-            val_samples = 0
-
-            with torch.inference_mode():
-                for x, y in val_dl:
+                for x, y in train_dl:
                     if deadline is not None and time.monotonic() >= deadline:
                         raise TimeoutError(f"Trial exceeded {timeout_seconds} seconds.")
                     x, y = x.to(device), y.to(device)
@@ -1000,60 +1088,120 @@ def train_single_trial(
                                 f"Model output shape {tuple(pred.shape)} does not match "
                                 f"target shape {tuple(y.shape)}."
                             )
-                        loss = validation_criterion(pred, y)
-                    _require_finite_loss(loss, "Validation")
+                        loss = criterion(pred, y)
+                    _require_finite_loss(loss, "Training")
 
-                    val_loss_sum += loss.item() * x.size(0)
-                    val_samples += x.size(0)
+                    optimizer.zero_grad(set_to_none=True)
 
-            avg_val_loss = val_loss_sum / val_samples
-            final_val_loss = avg_val_loss
+                    if use_grad_scaler:
+                        scaler.scale(loss).backward()
+                        if grad_clip > 0:
+                            scaler.unscale_(optimizer)
+                            torch.nn.utils.clip_grad_norm_(
+                                model.parameters(), grad_clip
+                            )
+                        old_scale = scaler.get_scale()
+                        scaler.step(optimizer)
+                        scaler.update()
+                        optimizer_was_skipped = scaler.get_scale() < old_scale
+                    else:
+                        loss.backward()
+                        if grad_clip > 0:
+                            torch.nn.utils.clip_grad_norm_(
+                                model.parameters(), grad_clip
+                            )
+                        optimizer.step()
+                        optimizer_was_skipped = False
 
-            # === Early Stopping Tracking (update best_val_loss before pruning check) ===
-            if avg_val_loss < best_val_loss:
-                best_val_loss = avg_val_loss
-                patience_ctr = 0
-            else:
-                patience_ctr += 1
+                    if scheduler_step_per_batch and not optimizer_was_skipped:
+                        scheduler.step()
 
-            # === Optuna Integration ===
-            if trial is not None:
-                # Report intermediate result
-                trial.report(avg_val_loss, epoch)
+                    train_loss_sum += loss.item() * x.size(0)
+                    train_samples += x.size(0)
 
-                # Check if trial should be pruned
-                if trial.should_prune():
-                    return {
-                        "best_val_loss": best_val_loss,
-                        "epochs_trained": epochs_trained,
-                        "final_val_loss": final_val_loss,
-                        "pruned": True,
-                    }
+                avg_train_loss = train_loss_sum / train_samples
 
-            if patience_ctr >= patience:
-                if verbose:
-                    print(f"Early stopping at epoch {epoch + 1}")
-                break
+                # === Validation Phase ===
+                model.eval()
+                val_loss_sum = 0.0
+                val_samples = 0
 
-            # === LR Scheduling ===
-            if not scheduler_step_per_batch:
-                if scheduler_name == "plateau":
-                    scheduler.step(avg_val_loss)  # type: ignore[arg-type]
+                with torch.inference_mode():
+                    for x, y in val_dl:
+                        if deadline is not None and time.monotonic() >= deadline:
+                            raise TimeoutError(
+                                f"Trial exceeded {timeout_seconds} seconds."
+                            )
+                        x, y = x.to(device), y.to(device)
+
+                        with torch.amp.autocast(
+                            device_type="cuda", dtype=amp_dtype, enabled=use_amp
+                        ):
+                            pred = model(x)
+                            if pred.shape != y.shape:
+                                raise ValueError(
+                                    f"Model output shape {tuple(pred.shape)} does not match "
+                                    f"target shape {tuple(y.shape)}."
+                                )
+                            loss = validation_criterion(pred, y)
+                        _require_finite_loss(loss, "Validation")
+
+                        val_loss_sum += loss.item() * x.size(0)
+                        val_samples += x.size(0)
+
+                avg_val_loss = val_loss_sum / val_samples
+                final_val_loss = avg_val_loss
+
+                # === Early Stopping Tracking (update best_val_loss before pruning check) ===
+                if avg_val_loss < best_val_loss:
+                    best_val_loss = avg_val_loss
+                    patience_ctr = 0
                 else:
-                    scheduler.step()
+                    patience_ctr += 1
 
-            if verbose:
-                print(
-                    f"Epoch {epoch + 1}/{epochs}: "
-                    f"train_loss={avg_train_loss:.6f}, val_loss={avg_val_loss:.6f}"
-                )
+                # === Optuna Integration ===
+                if trial is not None:
+                    # Report intermediate result
+                    trial.report(avg_val_loss, epoch)
 
-        return {
-            "best_val_loss": best_val_loss,
-            "epochs_trained": epochs_trained,
-            "final_val_loss": final_val_loss,
-            "pruned": False,
-        }
+                    # Check if trial should be pruned
+                    if trial.should_prune():
+                        return {
+                            "best_val_loss": best_val_loss,
+                            "epochs_trained": epochs_trained,
+                            "final_val_loss": final_val_loss,
+                            "pruned": True,
+                        }
+
+                if patience_ctr >= patience:
+                    if verbose:
+                        print(f"Early stopping at epoch {epoch + 1}")
+                    break
+
+                # === LR Scheduling ===
+                if not scheduler_step_per_batch:
+                    if scheduler_name == "plateau":
+                        scheduler.step(avg_val_loss)  # type: ignore[arg-type]
+                    else:
+                        scheduler.step()
+
+                if verbose:
+                    print(
+                        f"Epoch {epoch + 1}/{epochs}: "
+                        f"train_loss={avg_train_loss:.6f}, val_loss={avg_val_loss:.6f}"
+                    )
+
+            return {
+                "best_val_loss": best_val_loss,
+                "epochs_trained": epochs_trained,
+                "final_val_loss": final_val_loss,
+                "pruned": False,
+            }
+        finally:
+            del model, optimizer, scheduler, criterion, train_dl, val_dl
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
 
 # ==============================================================================
@@ -1061,6 +1209,15 @@ def train_single_trial(
 # ==============================================================================
 def main():
     args, parser = parse_args()
+
+    # Track whether --scheduler_factor was explicitly supplied via CLI or config.
+    # ExponentialLR needs a gentle per-epoch decay (0.95) by default rather than
+    # ReduceLROnPlateau's 0.5 step factor.
+    raw_config: dict[str, Any] = {}
+    cli_has_scheduler_factor = any(
+        arg == "--scheduler_factor" or arg.startswith("--scheduler_factor=")
+        for arg in sys.argv[1:]
+    )
 
     # Load and merge config file if provided
     if args.config:
@@ -1071,10 +1228,16 @@ def main():
         )
 
         print(f"📄 Loading config from: {args.config}")
-        config = load_config(args.config)
+        raw_config = load_config(args.config)
 
-        # Merge config with CLI args (CLI takes precedence via parser defaults detection)
-        args = merge_config_with_args(config, args, parser=parser)
+        # Merge config with CLI args (CLI takes precedence; warn on unknown YAML keys)
+        args = merge_config_with_args(
+            raw_config, args, parser=parser, ignore_unknown=False
+        )
+
+    args._explicit_scheduler_factor = cli_has_scheduler_factor or (
+        "scheduler_factor" in raw_config or "scheduler_scheduler_factor" in raw_config
+    )
 
     from wavedl.models import import_model_modules
 
@@ -1106,7 +1269,12 @@ def main():
 
     from wavedl.utils.config import validate_config
 
-    invalid_options = validate_config(vars(args), parser=parser)
+    invalid_options = []
+    if raw_config:
+        invalid_options.extend(validate_config(raw_config, parser=parser))
+    for issue in validate_config(vars(args), parser=parser):
+        if issue not in invalid_options:
+            invalid_options.append(issue)
     if invalid_options:
         parser.error("; ".join(invalid_options))
     if args.fresh and args.resume:
@@ -1132,6 +1300,14 @@ def main():
                 "Cross-validation does not support gradient accumulation. "
                 "Use --grad_accum_steps 1 or standard training."
             )
+        set_seed(args.seed)
+        if args.deterministic:
+            torch.backends.cudnn.benchmark = False
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
+            torch.use_deterministic_algorithms(True, warn_only=True)
+            print("🔒 Deterministic mode enabled (slower but reproducible)")
         print(f"🔄 Cross-Validation Mode: {args.cv} folds")
         from wavedl.utils.cross_validation import run_cross_validation
 
@@ -1151,8 +1327,22 @@ def main():
 
         try:
             # Handle sparse matrices (must materialize for CV shuffling)
-            if hasattr(X, "__getitem__") and len(X) > 0 and hasattr(X[0], "toarray"):
+            from scipy.sparse import issparse
+
+            if issparse(X):
+                X = X.toarray()
+            elif hasattr(X, "__getitem__") and len(X) > 0 and hasattr(X[0], "toarray"):
                 X = np.stack([x.toarray() for x in X])
+
+            # Normalize MATLAB v7.3 (1, N) row-vector targets to (N, 1)
+            if data_format == "mat" and getattr(y, "ndim", 0) == 2:
+                y_arr = np.asarray(y[:])
+                if (y_arr.shape[0] == 1 and y_arr.shape[1] == len(X)) or (
+                    y_arr.shape[1] == 1 and y_arr.shape[0] != len(X)
+                ):
+                    y = y_arr.T
+                else:
+                    y = y_arr
 
             y = canonicalize_targets(y)
             cv_target_shape = tuple(y.shape[1:])
@@ -1212,7 +1402,12 @@ def main():
                 optimizer_name=args.optimizer,
                 scheduler_name=args.scheduler,
                 scheduler_patience=args.scheduler_patience,
-                scheduler_factor=args.scheduler_factor,
+                scheduler_factor=(
+                    0.95
+                    if args.scheduler == "exponential"
+                    and not getattr(args, "_explicit_scheduler_factor", False)
+                    else args.scheduler_factor
+                ),
                 min_lr=args.min_lr,
                 betas=cv_betas,
                 momentum=args.momentum,
@@ -1389,23 +1584,22 @@ def _run_training(args, accelerator):
     # The interrupted checkpoint captures the latest state after Ctrl+C.
     # Periodic checkpoints may be newer than best_checkpoint after a
     # non-KeyboardInterrupt crash (e.g., OOM, hardware failure).
+    # Evaluate on rank 0 and broadcast to prevent DDP divergence under NFS cache lag.
     training_already_complete = False
-    if not args.fresh and args.resume is None:
+    if not args.fresh and args.resume is None and accelerator.is_main_process:
         if os.path.exists(complete_flag_path):
             # Training already completed — will exit after entering try block
             # so the finally block runs cleanup (WandB, DDP process group)
             training_already_complete = True
-            if accelerator.is_main_process:
-                logger.info(
-                    "✅ Training already completed (early stopping). Use --fresh to retrain."
-                )
+            logger.info(
+                "✅ Training already completed (early stopping). Use --fresh to retrain."
+            )
         elif os.path.exists(interrupted_ckpt_path):
             # Prefer interrupted checkpoint (most recent optimizer/scheduler state)
             args.resume = interrupted_ckpt_path
-            if accelerator.is_main_process:
-                logger.info(
-                    f"🔄 Auto-resuming from interrupted checkpoint: {interrupted_ckpt_path}"
-                )
+            logger.info(
+                f"🔄 Auto-resuming from interrupted checkpoint: {interrupted_ckpt_path}"
+            )
         else:
             # Find the latest checkpoint by epoch number across best and
             # periodic checkpoints.  A crash after a periodic save should
@@ -1446,11 +1640,15 @@ def _run_training(args, accelerator):
 
             if latest_ckpt is not None:
                 args.resume = latest_ckpt
-                if accelerator.is_main_process:
-                    logger.info(
-                        f"🔄 Auto-resuming from latest checkpoint: {latest_ckpt} "
-                        f"(epoch {latest_epoch})"
-                    )
+                logger.info(
+                    f"🔄 Auto-resuming from latest checkpoint: {latest_ckpt} "
+                    f"(epoch {latest_epoch})"
+                )
+
+    if accelerator.num_processes > 1 and dist.is_available() and dist.is_initialized():
+        resume_sync = [training_already_complete, args.resume]
+        dist.broadcast_object_list(resume_sync, src=0)
+        training_already_complete, args.resume = resume_sync
 
     if training_already_complete:
         return
@@ -1493,13 +1691,20 @@ def _run_training(args, accelerator):
     # ==========================================================================
     # DATA & MODEL LOADING
     # ==========================================================================
+    effective_cache_dir = getattr(args, "cache_dir", None) or args.output_dir
     train_dl, val_dl, scaler, in_shape, out_dim = prepare_data(
         args,
         logger,
         accelerator,
-        cache_dir=args.output_dir,
+        cache_dir=effective_cache_dir,
         expected_scaler=resume_scaler,
     )
+    if (
+        accelerator.is_main_process
+        and scaler is not None
+        and os.path.abspath(effective_cache_dir) != os.path.abspath(args.output_dir)
+    ):
+        _atomic_pickle_dump(scaler, os.path.join(args.output_dir, "scaler.pkl"))
 
     # Build model using registry
     model, target_shape = _build_model_for_targets(
@@ -1529,6 +1734,7 @@ def _run_training(args, accelerator):
 
     # Torch 2.0 compilation (requires compatible Triton on GPU)
     if args.compile:
+        _setup_per_rank_compile_cache()
         try:
             # Test if Triton is available - just import the package
             # Different Triton versions have different internal APIs, so just check base import
@@ -1596,8 +1802,6 @@ def _run_training(args, accelerator):
         weights=loss_weights,
         delta=args.huber_delta,
     )
-    # Move criterion to device (important for WeightedMSELoss buffer)
-    criterion = criterion.to(accelerator.device)
 
     # ==========================================================================
     # PHYSICAL CONSTRAINTS INTEGRATION
@@ -1636,6 +1840,10 @@ def _run_training(args, accelerator):
                     "   📐 Constraints evaluated in physical space (denormalized)"
                 )
 
+    # Move criterion to device AFTER constraint wrapping so denormalization
+    # buffers and WeightedMSELoss weights reside on accelerator.device.
+    criterion = criterion.to(accelerator.device)
+
     validation_criterion = (
         torch.nn.MSELoss()
         if args.selection_metric == "mse"
@@ -1646,6 +1854,12 @@ def _run_training(args, accelerator):
 
     # Track if scheduler should step per batch (OneCycleLR) or per epoch
     scheduler_step_per_batch = not is_epoch_based(args.scheduler)
+    scheduler_gamma = (
+        0.95
+        if args.scheduler == "exponential"
+        and not getattr(args, "_explicit_scheduler_factor", False)
+        else args.scheduler_factor
+    )
 
     # ==========================================================================
     # DDP Preparation Strategy:
@@ -1670,7 +1884,7 @@ def _run_training(args, accelerator):
             min_lr=args.min_lr,
             patience=args.scheduler_patience,
             factor=args.scheduler_factor,
-            gamma=args.scheduler_factor,  # For Step/MultiStep/Exponential schedulers
+            gamma=scheduler_gamma,  # For Step/MultiStep/Exponential schedulers
             step_size=args.step_size,
             milestones=milestones,
             warmup_epochs=args.warmup_epochs,
@@ -1690,7 +1904,7 @@ def _run_training(args, accelerator):
             min_lr=args.min_lr,
             patience=args.scheduler_patience,
             factor=args.scheduler_factor,
-            gamma=args.scheduler_factor,  # For Step/MultiStep/Exponential schedulers
+            gamma=scheduler_gamma,  # For Step/MultiStep/Exponential schedulers
             step_size=args.step_size,
             milestones=milestones,
             warmup_epochs=args.warmup_epochs,
@@ -1727,12 +1941,11 @@ def _run_training(args, accelerator):
             standalone_weights = os.path.join(args.resume, "model_weights.pth")
             if os.path.exists(standalone_weights):
                 # Standalone format: model_weights.pth + optimizer.pt
-                unwrapped = accelerator.unwrap_model(model)
-                unwrapped.load_state_dict(
-                    torch.load(
-                        standalone_weights, map_location="cpu", weights_only=True
-                    )
+                unwrapped = _unwrap_compiled_model(accelerator, model)
+                raw_state = torch.load(
+                    standalone_weights, map_location="cpu", weights_only=True
                 )
+                unwrapped.load_state_dict(_clean_state_dict_prefixes(raw_state))
                 standalone_optim = os.path.join(args.resume, "optimizer.pt")
                 if os.path.exists(standalone_optim):
                     optimizer.load_state_dict(
@@ -1759,7 +1972,60 @@ def _run_training(args, accelerator):
                         "LR schedule will restart from scratch"
                     )
             else:
-                accelerator.load_state(args.resume)
+                try:
+                    accelerator.load_state(args.resume)
+                except (RuntimeError, FileNotFoundError, KeyError) as load_err:
+                    # Fallback for cross-topology (DDP/compile <-> single-GPU) or
+                    # cross-precision (fp16 <-> bf16/no where scaler.pt is absent).
+                    logger.warning(
+                        f"   ⚠️ Exact accelerator.load_state failed ({load_err}); "
+                        "falling back to prefix-cleaned component restoration."
+                    )
+                    unwrapped = _unwrap_compiled_model(accelerator, model)
+                    ckpt_weights = None
+                    for w_name in (
+                        "pytorch_model.bin",
+                        "model.safetensors",
+                        "model.bin",
+                        "model.pth",
+                    ):
+                        candidate = os.path.join(args.resume, w_name)
+                        if os.path.isfile(candidate):
+                            ckpt_weights = candidate
+                            break
+                    if ckpt_weights is None:
+                        raise
+                    if ckpt_weights.endswith(".safetensors"):
+                        from safetensors.torch import load_file as _load_st
+
+                        raw_state = _load_st(ckpt_weights)
+                    else:
+                        raw_state = torch.load(
+                            ckpt_weights, map_location="cpu", weights_only=True
+                        )
+                    unwrapped.load_state_dict(_clean_state_dict_prefixes(raw_state))
+                    for opt_name in ("optimizer.bin", "optimizer.pt"):
+                        opt_path = os.path.join(args.resume, opt_name)
+                        if os.path.isfile(opt_path):
+                            optimizer.load_state_dict(
+                                torch.load(
+                                    opt_path, map_location="cpu", weights_only=True
+                                )
+                            )
+                            break
+                    for sched_name in (
+                        "scheduler.bin",
+                        "scheduler.pt",
+                        "custom_checkpoint_0.pkl",
+                    ):
+                        sched_path = os.path.join(args.resume, sched_name)
+                        if os.path.isfile(sched_path):
+                            scheduler.load_state_dict(
+                                torch.load(
+                                    sched_path, map_location="cpu", weights_only=False
+                                )
+                            )
+                            break
 
             # Restore training metadata
             if resume_meta is not None:
@@ -1773,6 +2039,24 @@ def _run_training(args, accelerator):
                 logger.warning(
                     "   ⚠️ training_meta.pkl not found, starting from epoch 0"
                 )
+
+            # OneCycle is a fixed-budget schedule. Preserve its saved phases;
+            # changing only total_steps would extrapolate beyond the final phase.
+            if scheduler_step_per_batch:
+                base_sched = getattr(scheduler, "scheduler", scheduler)
+                remaining_steps = max(0, args.epochs - start_epoch) * math.ceil(
+                    len(train_dl) / args.grad_accum_steps
+                )
+                if (
+                    isinstance(base_sched, torch.optim.lr_scheduler.OneCycleLR)
+                    and base_sched.last_epoch + remaining_steps > base_sched.total_steps
+                ):
+                    raise ValueError(
+                        "Cannot extend a resumed OneCycleLR beyond its saved update "
+                        "budget. Resume with the original --epochs and update count "
+                        "per epoch (batch size, gradient accumulation, and world size), "
+                        "or use --fresh to start a new schedule."
+                    )
 
             # Restore history, truncating to start_epoch to avoid duplicate
             # rows for epochs that will be re-run from the best checkpoint.
@@ -1822,7 +2106,9 @@ def _run_training(args, accelerator):
         if training_already_complete:
             return
 
-        total_training_time = 0.0
+        total_training_time = (
+            float(history[-1].get("total_time", 0.0)) if history else 0.0
+        )
 
         for epoch in range(start_epoch, args.epochs):
             epoch_start_time = time.time()
@@ -1868,7 +2154,7 @@ def _run_training(args, accelerator):
                     accelerator.backward(loss * (x.size(0) / args.batch_size))
 
                     if accelerator.sync_gradients:
-                        _finalize_accumulation_window(
+                        already_unscaled = _finalize_accumulation_window(
                             model,
                             accumulated_samples,
                             window_nonfinite,
@@ -1877,12 +2163,21 @@ def _run_training(args, accelerator):
                         )
                         accumulated_samples = 0
                         window_nonfinite = torch.zeros_like(window_nonfinite)
-                        grad_norm = accelerator.clip_grad_norm_(
-                            model.parameters(),
-                            args.grad_clip if args.grad_clip > 0 else float("inf"),
+                        max_norm = (
+                            args.grad_clip if args.grad_clip > 0 else float("inf")
                         )
+                        if already_unscaled:
+                            grad_norm = torch.nn.utils.clip_grad_norm_(
+                                model.parameters(), max_norm
+                            )
+                        else:
+                            grad_norm = accelerator.clip_grad_norm_(
+                                model.parameters(), max_norm
+                            )
                         if grad_norm is not None:
-                            grad_norm_tracker.update(grad_norm.item())
+                            grad_norm_val = float(grad_norm.item())
+                            if math.isfinite(grad_norm_val):
+                                grad_norm_tracker.update(grad_norm_val)
 
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)  # Faster than zero_grad()
@@ -2091,8 +2386,10 @@ def _run_training(args, accelerator):
                         real_true = flatten_targets_by_channel(real_true)
                         real_pred = flatten_targets_by_channel(real_pred)
                         fig = plot_scientific_scatter(real_true, real_pred)
-                        log_dict["plots/scatter_analysis"] = wandb.Image(fig)
-                        plt.close(fig)
+                        try:
+                            log_dict["plots/scatter_analysis"] = wandb.Image(fig)
+                        finally:
+                            plt.close(fig)
 
                     accelerator.log(log_dict)
 
@@ -2118,56 +2415,22 @@ def _run_training(args, accelerator):
 
             # Step 3: Save checkpoint with all ranks participating
             if is_best_epoch:
-                ckpt_dir = os.path.join(args.output_dir, "best_checkpoint")
-                with suppress_accelerate_logging():
-                    accelerator.save_state(ckpt_dir, safe_serialization=False)
-
-                # Step 4: Rank 0 handles metadata and updates tracking variables
                 if accelerator.is_main_process:
-                    best_val_loss = avg_val_loss  # Update AFTER checkpoint saved
+                    best_val_loss = avg_val_loss
                     patience_ctr = 0
-
-                    with open(os.path.join(ckpt_dir, "training_meta.pkl"), "wb") as f:
-                        pickle.dump(
-                            {
-                                "epoch": epoch + 1,
-                                "best_val_loss": best_val_loss,
-                                "patience_ctr": patience_ctr,
-                                # Model info for auto-detection during inference
-                                "model_name": args.model,
-                                "in_shape": in_shape,
-                                "out_dim": out_dim,
-                                "target_shape": target_shape,
-                            },
-                            f,
-                        )
-
-                    # Unwrap model for saving (handle torch.compile compatibility)
-                    try:
-                        unwrapped = accelerator.unwrap_model(model)
-                    except KeyError:
-                        # torch.compile model may not have _orig_mod in expected location
-                        # Fall back to getting the module directly
-                        unwrapped = model.module if hasattr(model, "module") else model
-                        # If still compiled, try to get the underlying model
-                        if hasattr(unwrapped, "_orig_mod"):
-                            unwrapped = unwrapped._orig_mod
-
-                    torch.save(
-                        unwrapped.state_dict(),
-                        os.path.join(args.output_dir, "best_model_weights.pth"),
-                    )
-
-                    # Copy scaler to checkpoint for portability (always overwrite to stay current)
-                    scaler_src = os.path.join(args.output_dir, "scaler.pkl")
-                    scaler_dst = os.path.join(ckpt_dir, "scaler.pkl")
-                    if os.path.exists(scaler_src):
-                        shutil.copy2(scaler_src, scaler_dst)
-
-                    logger.info(
-                        f"   💾 Best model saved (val_loss: {best_val_loss:.6f})"
-                    )
-
+                _save_best_checkpoint(
+                    accelerator=accelerator,
+                    model=model,
+                    args=args,
+                    epoch=epoch,
+                    best_val_loss=best_val_loss,
+                    in_shape=in_shape,
+                    out_dim=out_dim,
+                    scaler=scaler,
+                    logger=logger,
+                    target_shape=target_shape,
+                )
+                if accelerator.is_main_process:
                     # Also save CSV on best model (ensures progress is saved)
                     pd.DataFrame(history).to_csv(
                         os.path.join(args.output_dir, "training_history.csv"),
@@ -2195,22 +2458,21 @@ def _run_training(args, accelerator):
                     accelerator.save_state(ckpt_dir, safe_serialization=False)
 
                 if accelerator.is_main_process:
-                    with open(os.path.join(ckpt_dir, "training_meta.pkl"), "wb") as f:
-                        pickle.dump(
-                            {
-                                "epoch": epoch + 1,
-                                "best_val_loss": best_val_loss,
-                                "patience_ctr": patience_ctr,
-                                # Model info for auto-detection during inference
-                                "model_name": args.model,
-                                "in_shape": in_shape,
-                                "out_dim": out_dim,
-                                "target_shape": target_shape,
-                            },
-                            f,
-                        )
-                    with open(os.path.join(ckpt_dir, "scaler.pkl"), "wb") as f:
-                        pickle.dump(scaler, f)
+                    _remove_stale_safetensors(ckpt_dir)
+                    _atomic_pickle_dump(
+                        {
+                            "epoch": epoch + 1,
+                            "best_val_loss": best_val_loss,
+                            "patience_ctr": patience_ctr,
+                            # Model info for auto-detection during inference
+                            "model_name": args.model,
+                            "in_shape": in_shape,
+                            "out_dim": out_dim,
+                            "target_shape": target_shape,
+                        },
+                        os.path.join(ckpt_dir, "training_meta.pkl"),
+                    )
+                    _atomic_pickle_dump(scaler, os.path.join(ckpt_dir, "scaler.pkl"))
                     logger.info(f"   📁 Periodic checkpoint: {ckpt_name}")
 
                     # Deferred cleanup (same as best checkpoint path above)
@@ -2248,38 +2510,38 @@ def _run_training(args, accelerator):
         # is collective and hangs if ranks receive the signal at different times.
         if accelerator.is_main_process:
             logger.warning("Training interrupted. Saving emergency checkpoint...")
+            staging_ckpt = f"{interrupted_ckpt_path}.tmp.{os.getpid()}"
             try:
-                os.makedirs(interrupted_ckpt_path, exist_ok=True)
-                unwrapped = accelerator.unwrap_model(model)
-                torch.save(
-                    unwrapped.state_dict(),
-                    os.path.join(interrupted_ckpt_path, "model_weights.pth"),
+                shutil.rmtree(staging_ckpt, ignore_errors=True)
+                os.makedirs(staging_ckpt, exist_ok=True)
+                unwrapped = _unwrap_compiled_model(accelerator, model)
+                _atomic_torch_save(
+                    _clean_state_dict_prefixes(unwrapped.state_dict()),
+                    os.path.join(staging_ckpt, "model_weights.pth"),
                 )
-                torch.save(
+                _atomic_torch_save(
                     optimizer.state_dict(),
-                    os.path.join(interrupted_ckpt_path, "optimizer.pt"),
+                    os.path.join(staging_ckpt, "optimizer.pt"),
                 )
-                torch.save(
+                _atomic_torch_save(
                     scheduler.state_dict(),
-                    os.path.join(interrupted_ckpt_path, "scheduler.pt"),
+                    os.path.join(staging_ckpt, "scheduler.pt"),
                 )
-                with open(
-                    os.path.join(interrupted_ckpt_path, "training_meta.pkl"), "wb"
-                ) as f:
-                    pickle.dump(
-                        {
-                            "epoch": epoch,
-                            "best_val_loss": best_val_loss,
-                            "patience_ctr": patience_ctr,
-                            "model_name": args.model,
-                            "in_shape": in_shape,
-                            "out_dim": out_dim,
-                            "target_shape": target_shape,
-                        },
-                        f,
-                    )
-                with open(os.path.join(interrupted_ckpt_path, "scaler.pkl"), "wb") as f:
-                    pickle.dump(scaler, f)
+                _atomic_pickle_dump(
+                    {
+                        "epoch": epoch,
+                        "best_val_loss": best_val_loss,
+                        "patience_ctr": patience_ctr,
+                        "model_name": args.model,
+                        "in_shape": in_shape,
+                        "out_dim": out_dim,
+                        "target_shape": target_shape,
+                    },
+                    os.path.join(staging_ckpt, "training_meta.pkl"),
+                )
+                _atomic_pickle_dump(scaler, os.path.join(staging_ckpt, "scaler.pkl"))
+                shutil.rmtree(interrupted_ckpt_path, ignore_errors=True)
+                os.replace(staging_ckpt, interrupted_ckpt_path)
                 logger.info("   💾 Emergency checkpoint saved")
                 if scheduler_step_per_batch:
                     logger.warning(
@@ -2293,6 +2555,7 @@ def _run_training(args, accelerator):
                         "it is not an exact continuation."
                     )
             except Exception as save_err:
+                shutil.rmtree(staging_ckpt, ignore_errors=True)
                 logger.error(f"Failed to save emergency checkpoint: {save_err}")
         raise
 
@@ -2319,6 +2582,7 @@ def _run_training(args, accelerator):
 
         # Generate training curves plot (PNG + SVG)
         if accelerator.is_main_process and len(history) > 0:
+            fig = None
             try:
                 fig = create_training_curves(history, show_lr=True)
                 for fmt in ["png", "svg"]:
@@ -2327,10 +2591,17 @@ def _run_training(args, accelerator):
                         dpi=FIGURE_DPI,
                         bbox_inches="tight",
                     )
-                plt.close(fig)
                 logger.info("✔ Saved: training_curves.png, training_curves.svg")
             except Exception as e:
                 logger.warning(f"Could not generate training curves: {e}")
+            finally:
+                if fig is not None:
+                    plt.close(fig)
+
+    # Synchronize ranks so non-main processes do not tear down DDP while rank 0
+    # finishes final CSV/curve writes. Placed outside finally so exceptions do
+    # not trigger a collective barrier.
+    wait_for_everyone(accelerator)
 
 
 if __name__ == "__main__":

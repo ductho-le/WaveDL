@@ -102,15 +102,28 @@ class CNN(BaseModel):
     ):
         super().__init__(in_shape, out_size)
 
+        if (
+            isinstance(base_channels, bool)
+            or not isinstance(base_channels, int)
+            or base_channels <= 0
+        ):
+            raise ValueError(
+                f"base_channels must be a positive integer, got {base_channels!r}"
+            )
+        if not (0.0 <= dropout_rate < 1.0):
+            raise ValueError(
+                f"dropout_rate must be in [0.0, 1.0), got {dropout_rate!r}"
+            )
+
         self.base_channels = base_channels
         self.dropout_rate = dropout_rate
-        self.dim = len(in_shape)
+        self.dim = len(self.in_shape)
 
         # The encoder applies 5 stride-2 pools, downsampling each spatial axis by
         # 32x. Reject inputs that would collapse to size 0 with a clear message
         # instead of a cryptic 'max_pool ... Invalid computed output size: 0' crash.
         min_size = 2**5
-        for i, s in enumerate(in_shape):
+        for i, s in enumerate(self.in_shape):
             if s < min_size:
                 raise ValueError(
                     f"CNN requires each spatial axis >= {min_size} (5 stride-2 "
@@ -138,11 +151,12 @@ class CNN(BaseModel):
             base_channels * 16,
         )
 
-        # Encoder blocks with progressive dropout (5 blocks)
+        # Encoder blocks with progressive dropout (respecting dropout_rate=0.0)
+        mid_dropout = min(0.05, dropout_rate * 0.5)
         self.block1 = self._make_conv_block(1, c1)
         self.block2 = self._make_conv_block(c1, c2)
-        self.block3 = self._make_conv_block(c2, c3, dropout=0.05)
-        self.block4 = self._make_conv_block(c3, c4, dropout=0.05)
+        self.block3 = self._make_conv_block(c2, c3, dropout=mid_dropout)
+        self.block4 = self._make_conv_block(c3, c4, dropout=mid_dropout)
         self.block5 = self._make_conv_block(c4, c5, dropout=dropout_rate)
 
         # Global average pooling (output size = 1) - ONNX compatible with any input size

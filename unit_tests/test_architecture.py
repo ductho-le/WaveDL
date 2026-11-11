@@ -56,12 +56,13 @@ MODEL_DIMS = {
     "mc3": [3],
     "vit": [1, 2],
     "resnet": [1, 2, 3],
+    "unet_field": [2],
     "unet": [1, 2, 3],
-    "cnn": [1, 2],
-    "convnext": [1, 2],
-    "densenet": [1, 2],
+    "cnn": [1, 2, 3],
+    "convnext": [1, 2, 3],
+    "densenet": [1, 2, 3],
     # New models
-    "convnext_v2": [1, 2],  # Skip 3D for faster tests
+    "convnext_v2": [1, 2, 3],
     "mamba": [1],
     "vim": [2],
     "maxvit": [2],
@@ -69,7 +70,7 @@ MODEL_DIMS = {
     "caformer": [2],
     "poolformer": [2],
     "efficientvit": [2],
-    "unireplknet": [1, 2],
+    "unireplknet": [1, 2, 3],
     # v1.8+ models
     "wavenet": [1],
     "s4d": [1],
@@ -85,10 +86,10 @@ def get_supported_dims(model_name: str) -> list[int]:
     if model_lower.endswith("_pretrained"):
         return [2]
 
-    if model_lower.startswith("resnet3d") or model_lower.startswith("mc3"):
-        return [3]
-
-    for prefix, dims in MODEL_DIMS.items():
+    # Match longest prefix first so e.g. 'unet_field' and 'resnet3d' precede 'unet'/'resnet'
+    for prefix, dims in sorted(
+        MODEL_DIMS.items(), key=lambda kv: len(kv[0]), reverse=True
+    ):
         if model_lower.startswith(prefix):
             return dims
 
@@ -120,7 +121,10 @@ def get_test_config(model_name: str, dim: int | None = None) -> tuple:
         else:
             in_shape = (64, 64)
     else:
-        in_shape = (16, 64, 64)
+        if model_lower.startswith(("cnn", "densenet", "convnext", "unireplknet")):
+            in_shape = (32, 32, 32)
+        else:
+            in_shape = (16, 64, 64)
 
     # Several families default to pretrained=True without a _pretrained suffix.
     # Architecture checks must run offline and test construction/gradients
@@ -479,3 +483,36 @@ class TestModelEdgeCases:
             out1 = model(x)
             out2 = model2(x)
         assert torch.allclose(out1, out2)
+
+    @pytest.mark.parametrize(
+        ("model_name", "in_shape"),
+        [
+            ("swin_t", (65, 65)),
+            ("maxvit_tiny", (225, 225)),
+        ],
+    )
+    def test_windowed_models_handle_odd_spatial_resolutions(self, model_name, in_shape):
+        """Window-partitioned backbones should support non-multiple spatial sizes."""
+        model = build_model(
+            model_name, in_shape=in_shape, out_size=3, pretrained=False
+        ).eval()
+        x = torch.randn(1, 1, *in_shape)
+        with torch.no_grad():
+            out = model(x)
+        assert out.shape == (1, 3)
+        assert torch.isfinite(out).all()
+
+    @pytest.mark.skipif(
+        not torch.backends.mps.is_available(), reason="Apple MPS backend unavailable"
+    )
+    def test_mps_forward_backward_smoke(self):
+        """Smoke check forward + backward pass on Apple Silicon MPS device."""
+        device = torch.device("mps")
+        model = build_model("cnn", in_shape=(64, 64), out_size=3).to(device)
+        x = torch.randn(2, 1, 64, 64, device=device, requires_grad=True)
+        out = model(x)
+        loss = out.sum()
+        loss.backward()
+        assert out.shape == (2, 3)
+        assert x.grad is not None
+        assert torch.isfinite(out.cpu()).all()

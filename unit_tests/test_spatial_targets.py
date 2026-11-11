@@ -167,6 +167,43 @@ def test_fast_cache_hash_detects_changes_after_first_megabyte(tmp_path):
     assert _compute_file_hash(str(path), mode="fast") != original
 
 
+@pytest.mark.parametrize("old_mode", ["size", "fast"])
+def test_stronger_cache_validation_rebuilds_data_missed_by_old_hash(tmp_path, old_mode):
+    path = tmp_path / "data.h5"
+    inputs = np.zeros((10, 80000), dtype=np.float32)
+    with h5py.File(path, "w") as file:
+        file["input_train"] = inputs
+        file["output_train"] = np.arange(10, dtype=np.float32).reshape(-1, 1)
+    args = Namespace(
+        data_path=str(path), batch_size=2, workers=0, seed=7, cache_validate=old_mode
+    )
+    cache_dir = str(tmp_path / "cache")
+    logger = logging.getLogger(__name__)
+    prepare_data(args, logger, _CPUAccelerator(), cache_dir=cache_dir)
+    old_hash = _compute_file_hash(str(path), mode=old_mode)
+    # This fixed-size write lies outside the first/last MB sampled by fast mode.
+    inputs[5, 40000] = 123
+    with h5py.File(path, "r+") as file:
+        file["input_train"][5, 40000] = 123
+    assert _compute_file_hash(str(path), mode=old_mode) == old_hash
+
+    args.cache_validate = "sha256"
+    for _ in range(2):
+        train, val, *_ = prepare_data(
+            args, logger, _CPUAccelerator(), cache_dir=cache_dir
+        )
+        for loader in (train, val):
+            for index, source_index in enumerate(loader.dataset.indices):
+                np.testing.assert_array_equal(
+                    loader.dataset[index][0].numpy()[0], inputs[source_index]
+                )
+        del train, val, loader
+    with open(tmp_path / "cache" / "data_metadata.pkl", "rb") as file:
+        metadata = pickle.load(file)
+    assert metadata["content_hash_mode"] == "sha256"
+    assert metadata["content_hash"] == _compute_file_hash(str(path), mode="sha256")
+
+
 def test_prepare_data_keeps_dense_target_shape(tmp_path):
     rng = np.random.default_rng(4)
     x = rng.normal(size=(10, 16, 16)).astype(np.float32)

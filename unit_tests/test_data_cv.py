@@ -328,32 +328,60 @@ class TestSparseMatrixHandling:
     """Tests for sparse matrix conversion."""
 
     def test_detects_csr_matrix(self):
-        """Test that CSR sparse matrices are detected and converted."""
+        """Test that real scipy CSR sparse matrices and MATLAB HDF5 sparse groups convert to dense."""
+        import h5py
+        from scipy.sparse import csc_matrix, csr_matrix
 
-        from wavedl.utils.data import NPZSource
+        from wavedl.utils.data import MATSource, NPZSource
+
+        rng = np.random.default_rng(42)
+        dense = rng.standard_normal((10, 100)).astype(np.float32)
+        dense[np.abs(dense) < 0.7] = 0.0
+        sparse_in = csr_matrix(dense)
+        outputs = rng.standard_normal((10, 2)).astype(np.float32)
 
         with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as f:
-            # Create sparse inputs
-            dense = np.random.randn(10, 100).astype(np.float32)
-            dense[dense < 0.5] = 0  # Make it sparse
-            # csr_matrix(dense) would create sparse, but we test dense loading
+            # Saving a scipy sparse matrix inside np.savez stores a 0-D object array
+            np.savez(
+                f.name,
+                input_train=np.array(sparse_in, dtype=object),
+                output_train=outputs,
+            )
+            npz_path = f.name
 
-            outputs = np.random.randn(10, 2).astype(np.float32)
-
-            # Save as sparse - NPZ supports sparse arrays
-            np.savez(f.name, input_train=dense, output_train=outputs)
-
+        try:
+            source = NPZSource(allow_pickle=True)
+            X, y = source.load(npz_path)
+            assert isinstance(X, np.ndarray)
+            assert X.shape == (10, 100)
+            np.testing.assert_allclose(X, dense)
+            np.testing.assert_allclose(y, outputs)
+        finally:
             try:
-                source = NPZSource()
-                X, _y = source.load(f.name)
+                os.unlink(npz_path)
+            except PermissionError:
+                pass
 
-                assert isinstance(X, np.ndarray)
-                assert X.shape == (10, 100)
-            finally:
-                try:
-                    os.unlink(f.name)
-                except PermissionError:
-                    pass  # Windows file locking - cleanup later
+        # Also verify HDF5/MATLAB v7.3 CSC sparse group reconstruction
+        csc = csc_matrix(dense)
+        with tempfile.NamedTemporaryFile(suffix=".mat", delete=False) as mf:
+            mat_path = mf.name
+        try:
+            with h5py.File(mat_path, "w") as hf:
+                grp = hf.create_group("sparse_mat")
+                grp.attrs["MATLAB_sparse"] = np.uint64(dense.shape[0])
+                grp.create_dataset("data", data=csc.data.astype(np.float64))
+                grp.create_dataset("ir", data=csc.indices.astype(np.uint64))
+                grp.create_dataset("jc", data=csc.indptr.astype(np.uint64))
+                reconstructed = MATSource._sparse_to_dense(grp)
+            assert isinstance(reconstructed, np.ndarray)
+            assert reconstructed.shape == dense.shape
+            np.testing.assert_allclose(reconstructed, dense)
+        finally:
+            try:
+                os.unlink(mat_path)
+            except PermissionError:
+                pass
 
 
 # ==============================================================================
@@ -836,6 +864,61 @@ class TestDataLoaderScalerLeakage:
         expected_mean = outputs[tr_idx].mean()
         assert np.abs(scaler.mean_[0] - expected_mean) < 0.01, (
             "Scaler mean should match training data mean for 1D outputs"
+        )
+
+    def test_prepare_data_fits_scaler_on_train_split_only(self, tmp_path):
+        """End-to-end check on wavedl.utils.data.prepare_data against val leakage."""
+        import argparse
+        import logging
+
+        from accelerate import Accelerator
+
+        from wavedl.utils.data import prepare_data
+
+        rng = np.random.default_rng(2026)
+        n_samples = 100
+        X = rng.standard_normal((n_samples, 32, 32)).astype(np.float32)
+        # Strong linear ramp so train subset mean differs from full dataset mean
+        y = (
+            np.linspace(-50.0, 50.0, n_samples)[:, None]
+            + rng.standard_normal((n_samples, 2)) * 0.1
+        ).astype(np.float32)
+
+        data_file = tmp_path / "train.npz"
+        np.savez(data_file, input_train=X, output_train=y)
+
+        args = argparse.Namespace(
+            data_path=str(data_file),
+            seed=2025,
+            batch_size=16,
+            workers=0,
+            single_channel=False,
+            allow_pickle=False,
+        )
+        accelerator = Accelerator(cpu=True)
+        logger = logging.getLogger("test_prepare_data_leakage")
+
+        train_dl, val_dl, scaler, in_shape, out_dim = prepare_data(
+            args=args,
+            logger=logger,
+            accelerator=accelerator,
+            cache_dir=str(tmp_path / "cache"),
+            val_split=0.2,
+        )
+
+        assert in_shape == (32, 32)
+        assert out_dim == 2
+        assert len(train_dl.dataset) == 80
+        assert len(val_dl.dataset) == 20
+        assert int(scaler.n_samples_seen_) == 80
+
+        # Recover physical training targets from train_dl.dataset and verify scaler mean
+        train_indices = train_dl.dataset.indices
+        np.testing.assert_allclose(
+            scaler.mean_,
+            y[train_indices].mean(axis=0, dtype=np.float64),
+            rtol=1e-5,
+            atol=1e-5,
         )
 
 

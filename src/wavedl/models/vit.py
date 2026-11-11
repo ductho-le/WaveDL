@@ -22,7 +22,9 @@ References:
 Author: Ductho Le (ductho.le@outlook.com)
 """
 
-from typing import Any
+import copy
+from numbers import Integral
+from typing import Any, ClassVar
 
 import torch
 import torch.nn as nn
@@ -61,6 +63,15 @@ class PatchEmbed(nn.Module):
     ):
         super().__init__()
 
+        if (
+            isinstance(patch_size, bool)
+            or not isinstance(patch_size, int)
+            or patch_size <= 0
+        ):
+            raise ValueError(
+                f"patch_size must be a positive integer, got {patch_size!r}"
+            )
+
         self.dim = len(in_shape)
         self.patch_size = patch_size
         self.embed_dim = embed_dim
@@ -71,6 +82,11 @@ class PatchEmbed(nn.Module):
         if self.dim == 1:
             # 1D: segment patches
             L = in_shape[0]
+            if not pad_if_needed and patch_size > L:
+                raise ValueError(
+                    f"Input length {L} is smaller than patch_size {patch_size}. "
+                    f"Set pad_if_needed=True or use patch_size <= {L}."
+                )
             remainder = L % patch_size
             if remainder != 0:
                 if pad_if_needed:
@@ -82,11 +98,12 @@ class PatchEmbed(nn.Module):
                 else:
                     import warnings
 
+                    next_aligned = ((L + patch_size - 1) // patch_size) * patch_size
                     warnings.warn(
                         f"Input length {L} not divisible by patch_size {patch_size}. "
                         f"Last {remainder} elements will be dropped. "
                         f"Consider using pad_if_needed=True or padding input to "
-                        f"{((L // patch_size) + 1) * patch_size}.",
+                        f"{next_aligned}.",
                         UserWarning,
                         stacklevel=2,
                     )
@@ -99,6 +116,11 @@ class PatchEmbed(nn.Module):
         elif self.dim == 2:
             # 2D: grid patches
             H, W = in_shape[0], in_shape[1]
+            if not pad_if_needed and (patch_size > H or patch_size > W):
+                raise ValueError(
+                    f"Input shape ({H}, {W}) has dimension smaller than patch_size {patch_size}. "
+                    f"Set pad_if_needed=True or use patch_size <= {min(H, W)}."
+                )
             h_rem, w_rem = H % patch_size, W % patch_size
             if h_rem != 0 or w_rem != 0:
                 if pad_if_needed:
@@ -114,12 +136,13 @@ class PatchEmbed(nn.Module):
                 else:
                     import warnings
 
+                    h_aligned = ((H + patch_size - 1) // patch_size) * patch_size
+                    w_aligned = ((W + patch_size - 1) // patch_size) * patch_size
                     warnings.warn(
                         f"Input shape ({H}, {W}) not divisible by patch_size {patch_size}. "
                         f"Border pixels will be dropped (H: {h_rem}, W: {w_rem}). "
                         f"Consider using pad_if_needed=True or padding to "
-                        f"({((H // patch_size) + 1) * patch_size}, "
-                        f"{((W // patch_size) + 1) * patch_size}).",
+                        f"({h_aligned}, {w_aligned}).",
                         UserWarning,
                         stacklevel=2,
                     )
@@ -160,6 +183,10 @@ class MultiHeadAttention(nn.Module):
 
     def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.0):
         super().__init__()
+        if embed_dim <= 0 or num_heads <= 0 or embed_dim % num_heads != 0:
+            raise ValueError(
+                f"embed_dim ({embed_dim}) must be positive and divisible by num_heads ({num_heads})"
+            )
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
         self.dropout_p = dropout
@@ -271,16 +298,27 @@ class ViTBase(BaseModel):
     ):
         super().__init__(in_shape, out_size)
 
+        if not isinstance(depth, Integral) or isinstance(depth, bool) or depth <= 0:
+            raise ValueError(f"depth must be a positive integer, got {depth!r}")
+        if mlp_ratio <= 0:
+            raise ValueError(f"mlp_ratio must be positive, got {mlp_ratio!r}")
+        if embed_dim % num_heads != 0:
+            raise ValueError(
+                f"embed_dim ({embed_dim}) must be divisible by num_heads ({num_heads})"
+            )
+
         self.patch_size = patch_size
         self.embed_dim = embed_dim
-        self.depth = depth
+        self.depth = int(depth)
         self.num_heads = num_heads
         self.dropout_rate = dropout_rate
-        self.dim = len(in_shape)
+        self.dim = len(self.in_shape)
         self.pad_if_needed = pad_if_needed
 
         # Patch embedding
-        self.patch_embed = PatchEmbed(in_shape, patch_size, embed_dim, pad_if_needed)
+        self.patch_embed = PatchEmbed(
+            self.in_shape, patch_size, embed_dim, pad_if_needed
+        )
         num_patches = self.patch_embed.num_patches
 
         # Learnable CLS token and position embeddings
@@ -316,9 +354,9 @@ class ViTBase(BaseModel):
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
         nn.init.trunc_normal_(self.cls_token, std=0.02)
 
-        # Initialize linear layers
+        # Initialize patch projection and linear layers
         for m in self.modules():
-            if isinstance(m, nn.Linear):
+            if isinstance(m, (nn.Linear, nn.Conv1d, nn.Conv2d)):
                 nn.init.trunc_normal_(m.weight, std=0.02)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
@@ -336,6 +374,7 @@ class ViTBase(BaseModel):
         Returns:
             Regression output (B, out_size)
         """
+        self.validate_input_shape(x, in_channels=1)
         B = x.size(0)
 
         # Patch embedding
@@ -363,7 +402,16 @@ class ViTBase(BaseModel):
     @classmethod
     def get_default_config(cls) -> dict[str, Any]:
         """Return default configuration."""
-        return {"patch_size": 16, "dropout_rate": 0.1}
+        return {
+            "patch_size": 16,
+            "embed_dim": 768,
+            "depth": 12,
+            "num_heads": 12,
+            "mlp_ratio": 4.0,
+            "dropout_rate": 0.1,
+            "pad_if_needed": True,
+            **copy.deepcopy(getattr(cls, "_variant_defaults", {})),
+        }
 
 
 # =============================================================================
@@ -385,17 +433,18 @@ class ViTTiny(ViTBase):
         dropout_rate: Dropout rate (default: 0.1)
     """
 
-    def __init__(
-        self, in_shape: SpatialShape, out_size: int, patch_size: int = 16, **kwargs
-    ):
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "patch_size": 16,
+        "embed_dim": 192,
+        "depth": 12,
+        "num_heads": 3,
+    }
+
+    def __init__(self, in_shape: SpatialShape, out_size: int, **kwargs):
         super().__init__(
             in_shape=in_shape,
             out_size=out_size,
-            patch_size=patch_size,
-            embed_dim=192,
-            depth=12,
-            num_heads=3,
-            **kwargs,
+            **{**copy.deepcopy(self._variant_defaults), **kwargs},
         )
 
     def __repr__(self) -> str:
@@ -418,17 +467,18 @@ class ViTSmall(ViTBase):
         dropout_rate: Dropout rate (default: 0.1)
     """
 
-    def __init__(
-        self, in_shape: SpatialShape, out_size: int, patch_size: int = 16, **kwargs
-    ):
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "patch_size": 16,
+        "embed_dim": 384,
+        "depth": 12,
+        "num_heads": 6,
+    }
+
+    def __init__(self, in_shape: SpatialShape, out_size: int, **kwargs):
         super().__init__(
             in_shape=in_shape,
             out_size=out_size,
-            patch_size=patch_size,
-            embed_dim=384,
-            depth=12,
-            num_heads=6,
-            **kwargs,
+            **{**copy.deepcopy(self._variant_defaults), **kwargs},
         )
 
     def __repr__(self) -> str:
@@ -449,17 +499,18 @@ class ViTBase_(ViTBase):
         dropout_rate: Dropout rate (default: 0.1)
     """
 
-    def __init__(
-        self, in_shape: SpatialShape, out_size: int, patch_size: int = 16, **kwargs
-    ):
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "patch_size": 16,
+        "embed_dim": 768,
+        "depth": 12,
+        "num_heads": 12,
+    }
+
+    def __init__(self, in_shape: SpatialShape, out_size: int, **kwargs):
         super().__init__(
             in_shape=in_shape,
             out_size=out_size,
-            patch_size=patch_size,
-            embed_dim=768,
-            depth=12,
-            num_heads=12,
-            **kwargs,
+            **{**copy.deepcopy(self._variant_defaults), **kwargs},
         )
 
     def __repr__(self) -> str:

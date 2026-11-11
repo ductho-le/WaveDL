@@ -41,3 +41,41 @@ def test_versioned_mamba_checkpoint_preserves_predictions():
     restored.load_state_dict(model.state_dict())
     x = torch.randn(2, 129, 8)
     torch.testing.assert_close(model(x), restored(x), rtol=0, atol=0)
+
+
+def test_maxvit_legacy_partitions_preserve_checkpoint_predictions(monkeypatch):
+    from wavedl.models.maxvit import MaxViTBase
+
+    with monkeypatch.context() as legacy:
+        legacy.setattr(
+            MaxViTBase, "_compute_compatible_size", lambda self, shape: (224, 224)
+        )
+        original = build_model(
+            "maxvit_tiny", in_shape=(64, 64), out_size=2, pretrained=False
+        ).eval()
+    restored = build_model(
+        "maxvit_tiny", in_shape=(64, 64), out_size=2, pretrained=False
+    ).eval()
+    restored.load_state_dict(original.state_dict())
+    x = torch.randn(1, 1, 64, 64)
+    with torch.inference_mode():
+        torch.testing.assert_close(restored(x), original(x), rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    "name", ["unireplknet_tiny", "unireplknet_small", "unireplknet_base"]
+)
+def test_unireplknet_legacy_3d_kernels_preserve_checkpoint_predictions(name):
+    # Small stage widths keep the test affordable while exercising every kernel.
+    kwargs = {
+        "in_shape": (32, 32, 32),
+        "out_size": 2,
+        "depths": [1, 1, 1, 1],
+        "dims": [2, 2, 2, 2],
+    }
+    original = build_model(name, **kwargs, kernel_sizes=[31, 29, 17, 13]).eval()
+    restored = build_model(name, **kwargs).eval()
+    restored.load_state_dict(original.state_dict())
+    x = torch.randn(1, 1, 32, 32, 32)
+    with torch.inference_mode():
+        torch.testing.assert_close(restored(x), original(x), rtol=0, atol=0)

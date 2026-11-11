@@ -74,40 +74,46 @@ class CaFormerBase(BaseModel):
         if len(in_shape) != 2:
             raise ValueError(f"CaFormer requires 2D input (H, W), got {len(in_shape)}D")
 
+        min_size = 32
+        for i, s in enumerate(in_shape):
+            if s < min_size:
+                raise ValueError(
+                    f"CaFormer requires each spatial axis >= {min_size}, "
+                    f"but axis {i} has size {s}."
+                )
+
         self.pretrained = pretrained
         self.freeze_backbone = freeze_backbone
         self.model_name = model_name
+        self.dropout_rate = dropout_rate
 
         # Try to load from timm
         try:
             import timm
+        except ImportError as e:
+            raise ImportError(
+                "timm >= 0.9.0 is required for CaFormer. "
+                "Install with: pip install timm>=0.9.0"
+            ) from e
 
+        try:
             self.backbone = timm.create_model(
                 model_name,
                 pretrained=pretrained,
                 num_classes=0,  # Remove classifier
-            )
-
-            # Get feature dimension (eval mode to preserve pretrained BN stats)
-            with torch.no_grad():
-                self.backbone.eval()
-                dummy = torch.zeros(1, 3, *in_shape)
-                features = self.backbone(dummy)
-                in_features = features.shape[-1]
-                self.backbone.train()
-
-        except ImportError:
-            raise ImportError(
-                "timm >= 0.9.0 is required for CaFormer. "
-                "Install with: pip install timm>=0.9.0"
             )
         except Exception as e:
             raise RuntimeError(
                 f"Failed to load CaFormer model '{model_name}': {e}"
             ) from e
 
-        # Adapt input channels (3 -> 1)
+        # Adapt input channels (3 -> 1) before probing actual output width
         self._adapt_input_channels()
+        from wavedl.models._pretrained_utils import infer_backbone_features
+
+        in_features = infer_backbone_features(
+            self.backbone, self.in_shape, in_channels=1
+        )
 
         # Regression head
         self.head = build_regression_head(in_features, out_size, dropout_rate)
@@ -124,11 +130,8 @@ class CaFormerBase(BaseModel):
         )
 
         if adapted_count == 0:
-            import warnings
-
-            warnings.warn(
-                "Could not adapt CaFormer input channels. Model may fail.",
-                stacklevel=2,
+            raise RuntimeError(
+                f"Could not adapt input channels for CaFormer model '{self.model_name}'."
             )
 
     def _freeze_backbone(self):
@@ -138,6 +141,10 @@ class CaFormerBase(BaseModel):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         features = self.backbone(x)
         return self.head(features)
+
+    @classmethod
+    def get_default_config(cls) -> dict[str, bool | float]:
+        return {"pretrained": True, "freeze_backbone": False, "dropout_rate": 0.3}
 
 
 # =============================================================================

@@ -10,7 +10,6 @@ Author: Ductho Le (ductho.le@outlook.com)
 
 import os
 import sys
-import tempfile
 
 import pytest
 import torch
@@ -138,40 +137,26 @@ class TestExpressionConstraint:
 class TestFileConstraint:
     """Tests for file-based constraints."""
 
-    def test_load_constraint_file(self):
+    def test_load_constraint_file(self, tmp_path):
         """Should load and execute constraint from file."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            f.write("import torch\n")
-            f.write("def constraint(pred, inputs=None):\n")
-            f.write("    return pred[:, 0] - pred[:, 1]\n")
-            f.flush()
+        constraint_file = tmp_path / "constraint_fn.py"
+        constraint_file.write_text(
+            "import torch\n"
+            "def constraint(pred, inputs=None):\n"
+            "    return pred[:, 0] - pred[:, 1]\n",
+            encoding="utf-8",
+        )
+        constraint = FileConstraint(str(constraint_file))
+        pred = torch.tensor([[1.0, 1.0], [2.0, 2.0]])
+        result = constraint(pred)
+        assert result.item() == pytest.approx(0.0, abs=1e-6)
 
-            try:
-                constraint = FileConstraint(f.name)
-                pred = torch.tensor([[1.0, 1.0], [2.0, 2.0]])
-                result = constraint(pred)
-                assert result.item() == pytest.approx(0.0, abs=1e-6)
-            finally:
-                try:
-                    os.unlink(f.name)
-                except PermissionError:
-                    pass  # Windows file locking - cleanup later
-
-    def test_missing_function_raises(self):
+    def test_missing_function_raises(self, tmp_path):
         """File without constraint function should raise."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            f.write("# Empty file\n")
-            f.write("x = 1\n")
-            f.flush()
-
-            try:
-                with pytest.raises(ValueError, match="must define"):
-                    FileConstraint(f.name)
-            finally:
-                try:
-                    os.unlink(f.name)
-                except PermissionError:
-                    pass  # Windows file locking - cleanup later
+        constraint_file = tmp_path / "empty_constraint.py"
+        constraint_file.write_text("# Empty file\nx = 1\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="must define"):
+            FileConstraint(str(constraint_file))
 
 
 # ==============================================================================

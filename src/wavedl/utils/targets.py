@@ -235,6 +235,37 @@ class SpatialTargetScaler:
         return self.fit(values).transform(values)
 
 
+class _Float64StandardScaler(StandardScaler):
+    """StandardScaler subclass that performs arithmetic in float64.
+
+    Standard ``sklearn.preprocessing.StandardScaler.transform`` casts ``mean_``
+    and ``scale_`` down to ``X.dtype`` when ``X`` is ``float32``, losing up to
+    entire standard deviations on physical targets with large offsets (e.g.,
+    1e9 Pa elastic moduli with 1e5 Pa variations). Computing in ``float64`` and
+    casting back preserves full float32 precision while keeping ``isinstance(s,
+    StandardScaler)`` True for downstream compatibility.
+    """
+
+    def fit(
+        self, X: Any, y: Any = None, sample_weight: Any = None
+    ) -> _Float64StandardScaler:
+        arr = np.asarray(X, dtype=np.float64)
+        super().fit(arr, y=y, sample_weight=sample_weight)
+        return self
+
+    def transform(self, X: Any, copy: bool | None = None) -> np.ndarray:
+        arr = np.asarray(X)
+        out_dtype = arr.dtype if np.issubdtype(arr.dtype, np.floating) else np.float64
+        res = super().transform(arr.astype(np.float64, copy=False), copy=copy)
+        return res.astype(out_dtype, copy=False)
+
+    def inverse_transform(self, X: Any, copy: bool | None = None) -> np.ndarray:
+        arr = np.asarray(X)
+        out_dtype = arr.dtype if np.issubdtype(arr.dtype, np.floating) else np.float64
+        res = super().inverse_transform(arr.astype(np.float64, copy=False), copy=copy)
+        return res.astype(out_dtype, copy=False)
+
+
 def create_target_scaler(values: Any) -> StandardScaler | SpatialTargetScaler:
     """Fit the appropriate scaler for vector or 2D field targets."""
 
@@ -242,7 +273,7 @@ def create_target_scaler(values: Any) -> StandardScaler | SpatialTargetScaler:
     if array.dtype.kind not in "biuf" or not np.isfinite(array).all():
         raise ValueError("Targets must contain only finite real values.")
     if array.ndim == 2:
-        return StandardScaler().fit(array)
+        return _Float64StandardScaler().fit(array)
     return SpatialTargetScaler().fit(array)
 
 

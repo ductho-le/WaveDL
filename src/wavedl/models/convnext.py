@@ -22,7 +22,8 @@ References:
 Author: Ductho Le (ductho.le@outlook.com)
 """
 
-from typing import Any
+import copy
+from typing import Any, ClassVar
 
 import torch
 import torch.nn as nn
@@ -167,10 +168,23 @@ class ConvNeXtBase(BaseModel):
         # behavior (dropout_rate * 0.5) when not specified, to preserve defaults.
         self.drop_path_rate = drop_path_rate
 
-        # Validate minimum spatial size:
+        # Validate stage config and minimum spatial size:
         # stem stride-4 × (len(depths)-1) stride-2 downsamplers
+        if (
+            not depths
+            or len(depths) != len(dims)
+            or any(
+                isinstance(d, bool) or not isinstance(d, int) or d <= 0 for d in depths
+            )
+            or any(
+                isinstance(c, bool) or not isinstance(c, int) or c <= 0 for c in dims
+            )
+        ):
+            raise ValueError(
+                f"depths ({depths!r}) and dims ({dims!r}) must be non-empty integer lists of equal length with positive values."
+            )
         min_size = 4 * (2 ** (len(depths) - 1))
-        for i, s in enumerate(in_shape):
+        for i, s in enumerate(self.in_shape):
             if s < min_size:
                 raise ValueError(
                     f"ConvNeXt requires each spatial axis >= {min_size}, "
@@ -196,7 +210,7 @@ class ConvNeXtBase(BaseModel):
         dp_rates = torch.linspace(0, dp_max, total_blocks).tolist()
         block_idx = 0
 
-        for i in range(4):
+        for i in range(len(depths)):
             # Stage: multiple ConvNeXt blocks with per-block drop path rates
             stage = nn.Sequential(
                 *[
@@ -208,7 +222,7 @@ class ConvNeXtBase(BaseModel):
             self.stages.append(stage)
 
             # Downsample between stages (except after last stage)
-            if i < 3:
+            if i < len(depths) - 1:
                 downsample = nn.Sequential(
                     LayerNormNd(dims[i], self.dim),
                     Conv(dims[i], dims[i + 1], kernel_size=2, stride=2),
@@ -264,7 +278,13 @@ class ConvNeXtBase(BaseModel):
     @classmethod
     def get_default_config(cls) -> dict[str, Any]:
         """Return default configuration."""
-        return {"dropout_rate": 0.1}
+        return {
+            "depths": [3, 3, 9, 3],
+            "dims": [96, 192, 384, 768],
+            "dropout_rate": 0.1,
+            "drop_path_rate": None,
+            **copy.deepcopy(getattr(cls, "_variant_defaults", {})),
+        }
 
 
 # =============================================================================
@@ -285,13 +305,16 @@ class ConvNeXtTiny(ConvNeXtBase):
         dropout_rate: Dropout rate (default: 0.1)
     """
 
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "depths": [3, 3, 9, 3],
+        "dims": [96, 192, 384, 768],
+    }
+
     def __init__(self, in_shape: SpatialShape, out_size: int, **kwargs):
         super().__init__(
             in_shape=in_shape,
             out_size=out_size,
-            depths=[3, 3, 9, 3],
-            dims=[96, 192, 384, 768],
-            **kwargs,
+            **{**copy.deepcopy(self._variant_defaults), **kwargs},
         )
 
     def __repr__(self) -> str:
@@ -311,13 +334,16 @@ class ConvNeXtSmall(ConvNeXtBase):
         dropout_rate: Dropout rate (default: 0.1)
     """
 
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "depths": [3, 3, 27, 3],
+        "dims": [96, 192, 384, 768],
+    }
+
     def __init__(self, in_shape: SpatialShape, out_size: int, **kwargs):
         super().__init__(
             in_shape=in_shape,
             out_size=out_size,
-            depths=[3, 3, 27, 3],
-            dims=[96, 192, 384, 768],
-            **kwargs,
+            **{**copy.deepcopy(self._variant_defaults), **kwargs},
         )
 
     def __repr__(self) -> str:
@@ -337,13 +363,16 @@ class ConvNeXtBase_(ConvNeXtBase):
         dropout_rate: Dropout rate (default: 0.1)
     """
 
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "depths": [3, 3, 27, 3],
+        "dims": [128, 256, 512, 1024],
+    }
+
     def __init__(self, in_shape: SpatialShape, out_size: int, **kwargs):
         super().__init__(
             in_shape=in_shape,
             out_size=out_size,
-            depths=[3, 3, 27, 3],
-            dims=[128, 256, 512, 1024],
-            **kwargs,
+            **{**copy.deepcopy(self._variant_defaults), **kwargs},
         )
 
     def __repr__(self) -> str:
@@ -405,6 +434,14 @@ class ConvNeXtTinyPretrained(BaseModel):
                 "For 1D/3D data, use convnext_tiny instead."
             )
 
+        min_size = 32
+        for i, s in enumerate(in_shape):
+            if s < min_size:
+                raise ValueError(
+                    f"Pretrained ConvNeXt requires each spatial axis >= {min_size}, "
+                    f"but axis {i} has size {s}."
+                )
+
         self.pretrained = pretrained
         self.dropout_rate = dropout_rate
         self.freeze_backbone = freeze_backbone
@@ -413,13 +450,15 @@ class ConvNeXtTinyPretrained(BaseModel):
         weights = ConvNeXt_Tiny_Weights.IMAGENET1K_V1 if pretrained else None
         self.backbone = tv_convnext_tiny(weights=weights)
 
-        # Get classifier input features
+        # Preserve torchvision's pretrained LayerNorm2d(768, eps=1e-6) and Flatten(1)
+        norm_layer = self.backbone.classifier[0]
+        flatten_layer = self.backbone.classifier[1]
         in_features = self.backbone.classifier[2].in_features
 
-        # Replace classifier with regression head
+        # Replace final linear layer with regression head while keeping calibrated norm
         self.backbone.classifier = nn.Sequential(
-            nn.Flatten(1),
-            nn.LayerNorm(in_features),
+            norm_layer,
+            flatten_layer,
             nn.Dropout(dropout_rate),
             nn.Linear(in_features, 512),
             nn.GELU(),
@@ -438,8 +477,44 @@ class ConvNeXtTinyPretrained(BaseModel):
             self._freeze_backbone()
 
     def _freeze_backbone(self):
-        """Freeze feature extraction while retaining the regression head."""
-        self._freeze_backbone_modules(("classifier",))
+        """Freeze feature extraction (including penultimate norm) while retaining head."""
+        self._freeze_backbone_modules(
+            (
+                "classifier.2",
+                "classifier.3",
+                "classifier.4",
+                "classifier.5",
+                "classifier.6",
+            )
+        )
+
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        legacy_w = f"{prefix}backbone.classifier.1.weight"
+        legacy_b = f"{prefix}backbone.classifier.1.bias"
+        curr_w = f"{prefix}backbone.classifier.0.weight"
+        curr_b = f"{prefix}backbone.classifier.0.bias"
+        if legacy_w in state_dict and curr_w not in state_dict:
+            state_dict[curr_w] = state_dict.pop(legacy_w)
+            if legacy_b in state_dict and curr_b not in state_dict:
+                state_dict[curr_b] = state_dict.pop(legacy_b)
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.backbone(x)

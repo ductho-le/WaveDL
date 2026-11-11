@@ -118,6 +118,10 @@ class SwinTransformerBase(BaseModel):
                 f"Swin Transformer requires 2D input (H, W), got {len(in_shape)}D. "
                 "For 1D data, use TCN. For 3D data, use ResNet3D."
             )
+        if any(s < 4 for s in in_shape):
+            raise ValueError(
+                f"Swin Transformer requires spatial dimensions >= 4 for 4x4 patch embedding, got {in_shape}."
+            )
 
         self.pretrained = pretrained
         self.dropout_rate = dropout_rate
@@ -136,16 +140,29 @@ class SwinTransformerBase(BaseModel):
 
         # Replace head with regression head
         # Use LayerNorm for stability (matches Transformer architecture)
+        mid_hidden = max(regression_hidden // 2, 1)
         self.backbone.head = nn.Sequential(
             nn.LayerNorm(in_features),
             nn.Dropout(dropout_rate),
             nn.Linear(in_features, regression_hidden),
             nn.GELU(),  # GELU matches Transformer's activation
             nn.Dropout(dropout_rate * 0.5),
-            nn.Linear(regression_hidden, regression_hidden // 2),
+            nn.Linear(regression_hidden, mid_hidden),
             nn.GELU(),
-            nn.Linear(regression_hidden // 2, out_size),
+            nn.Linear(mid_hidden, out_size),
         )
+
+        # Warn if spatial axes are not divisible by patch stride 4
+        h_rem, w_rem = self.in_shape[0] % 4, self.in_shape[1] % 4
+        if h_rem != 0 or w_rem != 0:
+            import warnings
+
+            warnings.warn(
+                f"Swin input shape {self.in_shape} is not divisible by patch stride 4; "
+                f"border pixels (H: {h_rem}, W: {w_rem}) will be truncated.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         # Adapt patch embedding conv for single-channel input (3× memory savings vs expand)
         self._adapt_input_channels()
@@ -155,37 +172,18 @@ class SwinTransformerBase(BaseModel):
             self._freeze_backbone()
 
     def _adapt_input_channels(self):
-        """Modify patch embedding conv to accept single-channel input.
+        """Modify patch embedding conv to accept single-channel input."""
+        from wavedl.models._pretrained_utils import adapt_first_conv_for_single_channel
 
-        Instead of expanding 1→3 channels in forward (which triples memory),
-        we replace the patch embedding conv with a 1-channel version and
-        initialize weights as the mean of the pretrained RGB filters.
-        """
-        # Swin's patch embedding is at features[0][0]
         try:
-            old_conv = self.backbone.features[0][0]
+            adapt_first_conv_for_single_channel(
+                self.backbone, "features.0.0", pretrained=self.pretrained
+            )
         except (IndexError, AttributeError, TypeError) as e:
             raise RuntimeError(
                 f"Swin patch embed structure changed in this torchvision version. "
                 f"Cannot adapt input channels. Error: {e}"
             ) from e
-        new_conv = nn.Conv2d(
-            1,  # Single channel input
-            old_conv.out_channels,
-            kernel_size=old_conv.kernel_size,
-            stride=old_conv.stride,
-            padding=old_conv.padding,
-            dilation=old_conv.dilation,
-            groups=old_conv.groups,
-            padding_mode=old_conv.padding_mode,
-            bias=old_conv.bias is not None,
-        )
-        if self.pretrained:
-            with torch.no_grad():
-                new_conv.weight.copy_(old_conv.weight.mean(dim=1, keepdim=True))
-                if old_conv.bias is not None:
-                    new_conv.bias.copy_(old_conv.bias)
-        self.backbone.features[0][0] = new_conv
 
     def _freeze_backbone(self):
         """Freeze feature extraction while retaining the regression head."""
@@ -213,40 +211,38 @@ class SwinTransformerBase(BaseModel):
             "regression_hidden": 512,
         }
 
-    def get_optimizer_groups(self, base_lr: float, weight_decay: float = 0.05) -> list:
+    def get_optimizer_groups(self, base_lr: float, weight_decay: float = 1e-4) -> list:
         """
-        Get parameter groups with layer-wise learning rate decay.
-
-        Swin Transformer benefits from decaying learning rate for earlier layers.
-        This is a common practice for fine-tuning vision transformers.
+        Get parameter groups with layer-wise learning rate decay when fine-tuning.
 
         Args:
-            base_lr: Base learning rate (applied to head)
+            base_lr: Base learning rate (applied to head, and to backbone when training from scratch)
             weight_decay: Weight decay coefficient
 
         Returns:
             List of parameter group dictionaries
         """
-        # Separate parameters into 4 groups for proper LR decay:
-        # 1. Head params with decay (full LR)
-        # 2. Backbone params with decay (0.1× LR)
-        # 3. Head bias/norm without decay (full LR)
-        # 4. Backbone bias/norm without decay (0.1× LR)
+        backbone_lr = base_lr * 0.1 if self.pretrained else base_lr
         head_params = []
         backbone_params = []
         head_no_decay = []
         backbone_no_decay = []
 
-        for name, param in self.backbone.named_parameters():
+        for name, param in self.named_parameters():
             if not param.requires_grad:
                 continue
 
-            is_head = "head" in name
+            name_lower = name.lower()
+            is_head = name == "backbone.head" or name.startswith("backbone.head.")
             # Classify 1-D params (biases and norm scales) as no-decay by shape,
-            # not just by name: the head LayerNorm weight is named 'head.0.weight'
-            # (no 'norm' substring) and would otherwise have weight decay applied
-            # to a normalization gain.
-            is_no_decay = "bias" in name or "norm" in name or param.ndim <= 1
+            # not just by name: the head LayerNorm weight is named 'head.0.weight'.
+            is_no_decay = (
+                "bias" in name_lower
+                or "norm" in name_lower
+                or "pos_embed" in name_lower
+                or "relative_position_bias_table" in name_lower
+                or param.ndim <= 1
+            )
 
             if is_head:
                 if is_no_decay:
@@ -271,11 +267,10 @@ class SwinTransformerBase(BaseModel):
             )
 
         if backbone_params:
-            # Apply 0.1x learning rate to backbone (common for fine-tuning)
             groups.append(
                 {
                     "params": backbone_params,
-                    "lr": base_lr * 0.1,
+                    "lr": backbone_lr,
                     "weight_decay": weight_decay,
                 }
             )
@@ -290,16 +285,25 @@ class SwinTransformerBase(BaseModel):
             )
 
         if backbone_no_decay:
-            # Backbone bias/norm also gets 0.1× LR to match intended decay
             groups.append(
                 {
                     "params": backbone_no_decay,
-                    "lr": base_lr * 0.1,
+                    "lr": backbone_lr,
                     "weight_decay": 0.0,
                 }
             )
 
-        return groups if groups else [{"params": self.parameters(), "lr": base_lr}]
+        return (
+            groups
+            if groups
+            else [
+                {
+                    "params": [p for p in self.parameters() if p.requires_grad],
+                    "lr": base_lr,
+                    "weight_decay": 0.0,
+                }
+            ]
+        )
 
 
 # =============================================================================

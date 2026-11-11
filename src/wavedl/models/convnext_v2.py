@@ -191,17 +191,40 @@ class ConvNeXtV2Base(BaseModel):
         self,
         in_shape: SpatialShape,
         out_size: int,
-        depths: list[int],
-        dims: list[int],
+        depths: list[int] | None = None,
+        dims: list[int] | None = None,
         drop_path_rate: float = 0.1,
         dropout_rate: float = 0.1,
         **kwargs,
     ):
         super().__init__(in_shape, out_size)
 
-        self.dim = len(in_shape)
+        if depths is None:
+            depths = [3, 3, 9, 3]
+        else:
+            depths = list(depths)
+        if dims is None:
+            dims = [96, 192, 384, 768]
+        else:
+            dims = list(dims)
+
+        self.dim = len(self.in_shape)
         self.depths = depths
         self.dims = dims
+
+        if (
+            not depths
+            or len(depths) != len(dims)
+            or any(
+                isinstance(d, bool) or not isinstance(d, int) or d <= 0 for d in depths
+            )
+            or any(
+                isinstance(c, bool) or not isinstance(c, int) or c <= 0 for c in dims
+            )
+        ):
+            raise ValueError(
+                f"depths ({depths!r}) and dims ({dims!r}) must be non-empty integer lists of equal length with positive values."
+            )
 
         # Validate minimum spatial size:
         # stem stride-4 × (len(depths)-1) stride-2 downsamplers
@@ -256,14 +279,15 @@ class ConvNeXtV2Base(BaseModel):
                 self.downsamples.append(downsample)
 
         # Global pooling and head
+        head_hidden = max(dims[-1] // 2, 1)
         self.norm = nn.LayerNorm(dims[-1], eps=1e-6)
         self.global_pool = Pool(1)
         self.head = nn.Sequential(
             nn.Dropout(dropout_rate),
-            nn.Linear(dims[-1], dims[-1] // 2),
+            nn.Linear(dims[-1], head_hidden),
             nn.GELU(),
             nn.Dropout(dropout_rate * 0.5),
-            nn.Linear(dims[-1] // 2, out_size),
+            nn.Linear(head_hidden, out_size),
         )
 
         # Initialize weights
@@ -458,41 +482,45 @@ class ConvNeXtV2TinyPretrained(BaseModel):
                 f"got {len(in_shape)}D"
             )
 
+        min_size = 32
+        for i, s in enumerate(in_shape):
+            if s < min_size:
+                raise ValueError(
+                    f"ConvNeXtV2TinyPretrained requires each spatial axis >= {min_size}, "
+                    f"but axis {i} has size {s}."
+                )
+
         self.pretrained = pretrained
         self.freeze_backbone = freeze_backbone
+        self.dropout_rate = dropout_rate
 
         # Load real ConvNeXt V2 from timm
         try:
             import timm
+        except ImportError as e:
+            raise ImportError(
+                "timm >= 0.9.0 is required for pretrained ConvNeXt V2. "
+                "Install with: pip install timm>=0.9.0"
+            ) from e
 
+        try:
             self.backbone = timm.create_model(
                 "convnextv2_tiny",
                 pretrained=pretrained,
                 num_classes=0,  # Remove classifier
             )
-
-            # Get feature dimension.
-            # IMPORTANT: The probe MUST happen before _adapt_input_channels()
-            # because the backbone still expects 3-channel input here.
-            with torch.no_grad():
-                self.backbone.eval()
-                dummy = torch.zeros(1, 3, *in_shape)
-                features = self.backbone(dummy)
-                in_features = features.shape[-1]
-                self.backbone.train()
-
-        except ImportError:
-            raise ImportError(
-                "timm >= 0.9.0 is required for pretrained ConvNeXt V2. "
-                "Install with: pip install timm>=0.9.0"
-            )
         except Exception as e:
             raise RuntimeError(
                 f"Failed to load ConvNeXt V2 model 'convnextv2_tiny': {e}"
-            )
+            ) from e
 
-        # Adapt input channels (3 -> 1)
+        # Adapt input channels (3 -> 1) before probing actual output width
         self._adapt_input_channels()
+        from wavedl.models._pretrained_utils import infer_backbone_features
+
+        in_features = infer_backbone_features(
+            self.backbone, self.in_shape, in_channels=1
+        )
 
         # Regression head
         self.head = build_regression_head(in_features, out_size, dropout_rate)
@@ -509,11 +537,8 @@ class ConvNeXtV2TinyPretrained(BaseModel):
         )
 
         if adapted_count == 0:
-            import warnings
-
-            warnings.warn(
-                "Could not adapt ConvNeXt V2 input channels. Model may fail.",
-                stacklevel=2,
+            raise RuntimeError(
+                "Could not adapt input channels for ConvNeXt V2 model 'convnextv2_tiny'."
             )
 
     def _freeze_backbone(self):
@@ -523,6 +548,10 @@ class ConvNeXtV2TinyPretrained(BaseModel):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         features = self.backbone(x)
         return self.head(features)
+
+    @classmethod
+    def get_default_config(cls) -> dict[str, Any]:
+        return {"pretrained": True, "freeze_backbone": False, "dropout_rate": 0.3}
 
     def __repr__(self) -> str:
         return (

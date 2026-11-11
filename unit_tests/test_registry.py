@@ -221,9 +221,36 @@ class TestListModels:
 
         models = list_models()
 
-        # Check that aaa comes before zzz if both present
-        if "aaa_model" in models and "zzz_model" in models:
-            assert models.index("aaa_model") < models.index("zzz_model")
+        assert "aaa_model" in models
+        assert "zzz_model" in models
+        assert models.index("aaa_model") < models.index("zzz_model")
+
+    def test_idempotent_same_class_and_failed_import_rollback(self, tmp_path):
+        """Re-registering the exact same class is idempotent; failed imports roll back."""
+        from wavedl.models.registry import import_model_modules
+
+        @register_model("idempotent_model_test")
+        class IdempotentModel(nn.Module):
+            pass
+
+        # Re-registering the exact same class object is a safe no-op
+        assert (
+            register_model("idempotent_model_test")(IdempotentModel) is IdempotentModel
+        )
+
+        broken_file = tmp_path / "broken_custom_model.py"
+        broken_file.write_text(
+            "from wavedl.models import register_model\n"
+            "@register_model('transient_broken_model')\n"
+            "class TransientModel:\n"
+            "    pass\n"
+            "raise RuntimeError('boom during import')\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(RuntimeError, match="boom during import"):
+            import_model_modules([str(broken_file)])
+
+        assert "transient_broken_model" not in MODEL_REGISTRY
 
 
 # ==============================================================================

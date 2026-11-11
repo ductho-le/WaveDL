@@ -16,7 +16,7 @@ def release_metadata(version):
 
 def check_release(root, tag):
     root = Path(root)
-    tree = ast.parse((root / "src/wavedl/__init__.py").read_text())
+    tree = ast.parse((root / "src/wavedl/__init__.py").read_text(encoding="utf-8"))
     version = next(
         ast.literal_eval(node.value)
         for node in tree.body
@@ -29,9 +29,9 @@ def check_release(root, tag):
     release_metadata(version)
     if tag != f"v{version}":
         raise ValueError(f"Tag {tag} does not match package version {version}")
-    changelog = (root / "CHANGELOG.md").read_text()
+    changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
     match = re.search(
-        rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|\Z)",
+        rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|^\[[^\]]+\]:|\Z)",
         changelog,
         re.MULTILINE | re.DOTALL,
     )
@@ -43,16 +43,19 @@ def check_release(root, tag):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tag", required=True)
-    parser.add_argument("--notes-file", type=Path, required=True)
+    parser.add_argument("--notes-file", type=Path, default=None)
     parser.add_argument("--metadata-file", type=Path)
     args = parser.parse_args()
     try:
         notes = check_release(Path(__file__).resolve().parents[1], args.tag)
     except ValueError as error:
         parser.error(str(error))
-    args.notes_file.write_text(notes)
+    if args.notes_file is not None:
+        args.notes_file.write_text(notes, encoding="utf-8")
     if args.metadata_file:
-        args.metadata_file.write_text(json.dumps(release_metadata(args.tag[1:])))
+        args.metadata_file.write_text(
+            json.dumps(release_metadata(args.tag[1:])), encoding="utf-8"
+        )
 
 
 if __name__ == "__main__":

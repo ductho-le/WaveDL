@@ -36,16 +36,21 @@ Author: Ductho Le (ductho.le@outlook.com)
 """
 
 import argparse
-import hashlib
 import json
 import math
 import os
 import queue
+import re
 import shlex
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+from wavedl.utils import setup_hpc_cache_dirs
+
+
+setup_hpc_cache_dirs()
 
 
 try:
@@ -56,30 +61,35 @@ except ImportError:
     sys.exit(1)
 
 
-def _detect_gpu_count() -> int:
-    """Return the number of GPUs via nvidia-smi (best effort, defaults to 1)."""
+def _detect_cuda_device_ids() -> list[str]:
+    """Return visible CUDA device identifiers, or an empty list when no GPUs exist."""
     visible = os.environ.get("CUDA_VISIBLE_DEVICES")
     if visible is not None:
-        return max(
-            1,
-            len(
-                [
-                    value
-                    for value in visible.split(",")
-                    if value.strip() and value.strip() != "-1"
-                ]
-            ),
-        )
+        return [
+            value.strip()
+            for value in visible.split(",")
+            if value.strip() and value.strip() != "-1"
+        ]
     try:
         result = subprocess.run(
-            ["nvidia-smi", "--list-gpus"], capture_output=True, text=True
+            ["nvidia-smi", "--list-gpus"],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
-        if result.returncode == 0:
-            lines = result.stdout.strip()
-            return max(1, len(lines.split("\n"))) if lines else 1
+        if result.returncode == 0 and result.stdout.strip():
+            lines = [
+                line for line in result.stdout.splitlines() if line.startswith("GPU ")
+            ]
+            return [str(index) for index in range(len(lines))]
     except Exception:
         pass
-    return 1
+    return []
+
+
+def _detect_gpu_count() -> int:
+    """Return the number of GPUs via nvidia-smi (best effort, defaults to 1)."""
+    return max(1, len(_detect_cuda_device_ids()))
 
 
 # =============================================================================
@@ -112,8 +122,9 @@ DEFAULT_SCHEDULERS = [
 QUICK_SCHEDULERS = ["plateau"]
 MEDIUM_SCHEDULERS = ["plateau", "cosine", "onecycle"]
 
-# All 6 losses
-DEFAULT_LOSSES = ["mse", "mae", "huber", "smooth_l1", "log_cosh", "weighted_mse"]
+# Unweighted losses for HPO sweeps (weighted_mse without --loss_weights duplicates mse)
+ALL_LOSSES = ["mse", "mae", "huber", "smooth_l1", "log_cosh", "weighted_mse"]
+DEFAULT_LOSSES = ["mse", "mae", "huber", "smooth_l1", "log_cosh"]
 QUICK_LOSSES = ["mse"]
 MEDIUM_LOSSES = ["mse", "mae", "huber"]
 
@@ -254,19 +265,27 @@ def create_objective(args):
     # new trial to a GPU whose earlier (slower) trial is still running.
     gpu_pool = queue.Queue()
     visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-    n_gpus = getattr(args, "n_gpus", 1)
-    n_gpus = n_gpus if isinstance(n_gpus, int) else 1
-    gpu_ids = (
-        [
+    explicit_ids = getattr(args, "_cuda_device_ids", None)
+    n_gpus = getattr(args, "n_gpus", None)
+    if visible is not None:
+        gpu_ids = [
             value.strip()
             for value in visible.split(",")
             if value.strip() and value.strip() != "-1"
         ]
-        if visible is not None
-        else [str(index) for index in range(max(1, n_gpus))]
-    )
-    for gpu_id in gpu_ids:
-        gpu_pool.put(gpu_id)
+    elif isinstance(explicit_ids, (list, tuple)):
+        gpu_ids = [str(v) for v in explicit_ids]
+    elif isinstance(n_gpus, int) and not isinstance(n_gpus, bool) and n_gpus > 1:
+        gpu_ids = [str(index) for index in range(n_gpus)]
+    else:
+        gpu_ids = _detect_cuda_device_ids()
+
+    n_jobs = getattr(args, "n_jobs", 1)
+    n_jobs = n_jobs if isinstance(n_jobs, int) and not isinstance(n_jobs, bool) else 1
+    if gpu_ids:
+        pool_slots = max(len(gpu_ids), max(1, n_jobs))
+        for slot in range(pool_slots):
+            gpu_pool.put(gpu_ids[slot % len(gpu_ids)])
 
     def objective(trial):
         # Select search space based on mode (quick < medium < full)
@@ -308,11 +327,22 @@ def create_objective(args):
         else:
             momentum = 0.9  # default
 
+        shared_cache_dir = getattr(args, "_shared_cache_dir", None)
+        shared_cache_dir = (
+            shared_cache_dir
+            if isinstance(shared_cache_dir, str) and shared_cache_dir
+            else None
+        )
+
         # ==================================================================
         # IN-PROCESS MODE: Direct function call with pruning support
         # ==================================================================
         if args.inprocess:
             from wavedl.train import train_single_trial
+
+            trial_kwargs = {}
+            if shared_cache_dir is not None:
+                trial_kwargs["cache_dir"] = shared_cache_dir
 
             try:
                 result = train_single_trial(
@@ -334,6 +364,7 @@ def create_objective(args):
                     selection_metric="mse",
                     timeout_seconds=args.timeout,
                     allow_pickle=getattr(args, "allow_pickle", False) is True,
+                    **trial_kwargs,
                 )
 
                 if result["pruned"]:
@@ -386,15 +417,21 @@ def create_objective(args):
             str(weight_decay),
             "--patience",
             str(patience),
+            "--scheduler_patience",
+            str(max(1, patience // 2)),
             "--epochs",
             str(args.max_epochs),
             "--seed",
             str(args.seed),
             "--selection_metric",
             "mse",
+            "--cache_validate",
+            "fast",
             "--workers",
             "0",
         ]
+        if shared_cache_dir is not None and n_jobs == 1:
+            cmd.extend(["--cache_dir", shared_cache_dir])
         if getattr(args, "allow_pickle", False) is True:
             cmd.append("--allow_pickle")
 
@@ -409,15 +446,29 @@ def create_objective(args):
             cmd.extend(["--momentum", str(momentum)])
 
         # Use temporary directory for trial output
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
             cmd.extend(["--output_dir", tmpdir])
             history_file = Path(tmpdir) / "training_history.csv"
 
-            env = None
+            env = os.environ.copy()
+            env.setdefault("PYTHONIOENCODING", "utf-8")
+            # Strip distributed environment variables inherited from parent
+            # SLURM/torchrun jobs so single-GPU trial subprocesses never hang
+            # trying to form a multi-rank DDP rendezvous.
+            for dist_var in (
+                "RANK",
+                "WORLD_SIZE",
+                "LOCAL_RANK",
+                "LOCAL_WORLD_SIZE",
+                "GROUP_RANK",
+                "ROLE_RANK",
+                "MASTER_ADDR",
+                "MASTER_PORT",
+            ):
+                env.pop(dist_var, None)
             gpu_id = None
             if args.n_jobs > 1 and gpu_ids:
                 gpu_id = gpu_pool.get()
-                env = os.environ.copy()
                 env["CUDA_VISIBLE_DEVICES"] = gpu_id
 
             # Run training
@@ -428,6 +479,8 @@ def create_objective(args):
                     cmd,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=args.timeout,
                     env=env,
                 )
@@ -451,7 +504,7 @@ def create_objective(args):
                     try:
                         import csv
 
-                        with open(history_file) as f:
+                        with open(history_file, encoding="utf-8") as f:
                             reader = csv.DictReader(f)
                             val_losses = []
                             for row in reader:
@@ -466,17 +519,17 @@ def create_objective(args):
                         print(f"Trial {trial.number}: Error reading history: {e}")
 
                 if val_loss is None:
-                    # Fallback: parse stdout for training log format
-                    # Pattern: "epoch | train_loss | val_loss | ..."
+                    # Fallback: parse stdout/stderr for training log format
+                    # Pattern: "[HH:MM:SS | INFO | ] epoch | train_loss | val_loss | ..."
                     # Use regex to avoid false positives from unrelated lines
                     import re
 
-                    # Match lines like: "  42  | 0.0123   | 0.0156   | ..."
                     log_pattern = re.compile(
-                        r"^\s*\d+\s*\|\s*[\d.]+\s*\|\s*([\d.]+)\s*\|"
+                        r"^(?:\s*\d{2}:\d{2}:\d{2}\s*\|\s*INFO\s*\|\s*)?\s*\d+\s*\|\s*[-+eE0-9.]+\s*\|\s*([-+eE0-9.]+)\s*\|"
                     )
                     val_losses_stdout = []
-                    for line in result.stdout.split("\n"):
+                    combined_logs = f"{result.stdout or ''}\n{result.stderr or ''}"
+                    for line in combined_logs.split("\n"):
                         match = log_pattern.match(line)
                         if match:
                             try:
@@ -609,7 +662,7 @@ Examples:
         "--losses",
         nargs="+",
         default=None,
-        choices=DEFAULT_LOSSES,
+        choices=ALL_LOSSES,
         help=f"Losses to search (default: {DEFAULT_LOSSES})",
     )
     parser.add_argument(
@@ -695,7 +748,8 @@ Examples:
         parser.error(str(error))
 
     # Detect GPU count once (reused by subprocess trials for round-robin pinning).
-    args.n_gpus = _detect_gpu_count()
+    args._cuda_device_ids = _detect_cuda_device_ids()
+    args.n_gpus = max(1, len(args._cuda_device_ids))
 
     # Auto-detect GPUs for n_jobs if not specified
     if args.n_jobs == -1:
@@ -736,17 +790,41 @@ Examples:
         # NopPruner for subprocess mode - pruning has no effect there
         pruner = optuna.pruners.NopPruner()
 
+    # In-process mode: force single-threaded to avoid GPU memory contention
+    if args.inprocess and args.n_jobs > 1:
+        print(
+            f"\u26a0\ufe0f  --inprocess mode: overriding n_jobs={args.n_jobs} \u2192 1 "
+            "(multiple in-process trials would share GPU memory)"
+        )
+        args.n_jobs = 1
+
     # Determine storage backend for study persistence
+    storage_url: str | None
     if args.storage and args.storage.lower() == "none":
-        storage = None  # Explicitly disabled
+        storage_url = None  # Explicitly disabled
+        storage = None
     elif args.storage:
-        storage = args.storage  # User-specified
+        storage_url = args.storage  # User-specified
+        storage = storage_url
     else:
         # Default: SQLite file alongside results for resumability
-        storage = f"sqlite:///{args.study_name}.db"
+        safe_study = (
+            re.sub(r"[^A-Za-z0-9_.-]+", "_", args.study_name).strip("._")
+            or "wavedl_hpo"
+        )
+        out_parent = Path(args.output).resolve().parent
+        out_parent.mkdir(parents=True, exist_ok=True)
+        db_path = (out_parent / f"{safe_study}.db").as_posix()
+        storage_url = f"sqlite:///{db_path}"
+        storage = storage_url
 
-    if storage:
-        print(f"Study persistence: {storage}")
+    if storage_url:
+        print(f"Study persistence: {storage_url}")
+        if storage_url.startswith("sqlite:///") and args.n_jobs > 1:
+            storage = optuna.storages.RDBStorage(
+                url=storage_url,
+                engine_kwargs={"connect_args": {"timeout": 60}},
+            )
 
     study = optuna.create_study(
         study_name=args.study_name,
@@ -757,11 +835,12 @@ Examples:
         sampler=optuna.samplers.TPESampler(seed=args.seed),
     )
 
-    if storage:
-        with open(args.data_path, "rb") as data_file:
-            data_digest = hashlib.file_digest(data_file, "sha256").hexdigest()
+    if storage_url:
+        from wavedl.utils.data import _compute_file_hash
+
+        data_digest = _compute_file_hash(args.data_path, mode="fast")
         signature = {
-            "data_sha256": data_digest,
+            "data_fast_hash": data_digest,
             "target_shape": list(args.target_shape),
             "selection_metric": "normalized_mse_v1",
             "seed": args.seed,
@@ -787,34 +866,31 @@ Examples:
 
     # Surface implicit resume: a persistent study with the same name is reused,
     # which appends to prior trials. Warn so a search-space change isn't silent.
-    if storage and len(study.trials) > 0:
+    prior_trial_count = len(study.trials)
+    if storage_url and prior_trial_count > 0:
         print(
             f"⚠️  Resuming existing study '{args.study_name}' with "
-            f"{len(study.trials)} prior trial(s). If you changed the search space "
+            f"{prior_trial_count} prior trial(s). If you changed the search space "
             "(models/optimizers/batch sizes/mode), pass a new --study_name or "
             "--storage none to avoid distribution-mismatch errors."
         )
 
-    # In-process mode: force single-threaded to avoid GPU memory contention
-    if args.inprocess and args.n_jobs > 1:
-        print(
-            f"\u26a0\ufe0f  --inprocess mode: overriding n_jobs={args.n_jobs} \u2192 1 "
-            "(multiple in-process trials would share GPU memory)"
+    # Run optimization with a shared temporary memmap cache for single-worker runs
+    with tempfile.TemporaryDirectory(
+        prefix="wavedl_hpo_cache_", ignore_cleanup_errors=True
+    ) as shared_cache_dir:
+        args._shared_cache_dir = shared_cache_dir
+        objective = create_objective(args)
+        # catch=(Exception,): a trial that errors (OOM, NaN, bad config combo, crashed
+        # subprocess) is recorded as FAILED and the sweep continues, instead of one
+        # bad trial aborting the entire run. TrialPruned is handled separately.
+        study.optimize(
+            objective,
+            n_trials=args.n_trials,
+            n_jobs=args.n_jobs,
+            show_progress_bar=True,
+            catch=(Exception,),
         )
-        args.n_jobs = 1
-
-    # Run optimization
-    objective = create_objective(args)
-    # catch=(Exception,): a trial that errors (OOM, NaN, bad config combo, crashed
-    # subprocess) is recorded as FAILED and the sweep continues, instead of one
-    # bad trial aborting the entire run. TrialPruned is handled separately.
-    study.optimize(
-        objective,
-        n_trials=args.n_trials,
-        n_jobs=args.n_jobs,
-        show_progress_bar=True,
-        catch=(Exception,),
-    )
 
     # Results
     print("\n" + "=" * 60)
@@ -828,7 +904,8 @@ Examples:
         print("No trials completed successfully.")
         sys.exit(1)
 
-    print(f"\nCompleted trials: {len(completed_trials)}/{args.n_trials}")
+    total_trials = len(study.trials)
+    print(f"\nCompleted trials: {len(completed_trials)}/{total_trials}")
     print(f"Best trial: #{study.best_trial.number}")
     print(f"Best val_loss: {study.best_value:.6f}")
 
@@ -847,7 +924,7 @@ Examples:
     }
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-    with open(args.output, "w") as f:
+    with open(args.output, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
 
     print(f"\nResults saved to: {args.output}")
@@ -859,6 +936,7 @@ Examples:
     cmd_parts = ["wavedl-train"]
     cmd_parts.append(f"--data_path {shlex.quote(args.data_path)}")
     cmd_parts.append("--selection_metric mse")
+    cmd_parts.append(f"--epochs {args.max_epochs}")
     cmd_parts.append(f"--seed {args.seed}")
     if args.import_modules:
         cmd_parts.append(
@@ -867,7 +945,10 @@ Examples:
     if args.allow_pickle:
         cmd_parts.append("--allow_pickle")
     for key, value in study.best_params.items():
-        cmd_parts.append(f"--{key} {value}")
+        cmd_parts.append(f"--{key} {shlex.quote(str(value))}")
+    if "patience" in study.best_params:
+        sched_pat = max(1, int(study.best_params["patience"]) // 2)
+        cmd_parts.append(f"--scheduler_patience {sched_pat}")
     print(" \\\n    ".join(cmd_parts))
 
 

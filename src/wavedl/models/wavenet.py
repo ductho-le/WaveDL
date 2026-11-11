@@ -15,9 +15,9 @@ fields and expressive nonlinearities.
       activations and residual/skip connections
 
 **Variants**:
-    - wavenet_small: 32 channels, 6 dilation levels (~1.0M params)
-    - wavenet: 64 channels, 8 dilation levels (~4.0M params)
-    - wavenet_large: 128 channels, 10 dilation levels (~15M params)
+    - wavenet_small: 32 channels, 6 dilation levels (~0.07M params)
+    - wavenet: 64 channels, 8 dilation levels (~0.34M params)
+    - wavenet_large: 128 channels, 10 dilation levels (~1.65M params)
 
 **Receptive Field**:
     RF = 1 + (kernel_size - 1) * sum(2^i for i in range(n_layers))
@@ -170,12 +170,14 @@ class WaveNetBase(BaseModel):
                 "For 2D/3D data, use ResNet, EfficientNet, or Swin."
             )
 
-        if (
-            not isinstance(n_layers, Integral)
-            or isinstance(n_layers, bool)
-            or n_layers <= 0
+        for name, val in (
+            ("channels", channels),
+            ("skip_channels", skip_channels),
+            ("n_layers", n_layers),
+            ("kernel_size", kernel_size),
         ):
-            raise ValueError("n_layers must be a positive integer.")
+            if not isinstance(val, Integral) or isinstance(val, bool) or val <= 0:
+                raise ValueError(f"{name} must be a positive integer, got {val!r}.")
 
         self.channels = channels
         self.skip_channels = skip_channels
@@ -223,13 +225,14 @@ class WaveNetBase(BaseModel):
         self.global_pool = nn.AdaptiveAvgPool1d(1)
 
         # Regression head
+        head_hidden = max(skip_channels // 2, 1)
         self.head = nn.Sequential(
             nn.Flatten(),
             nn.Dropout(dropout_rate),
-            nn.Linear(skip_channels, skip_channels // 2),
+            nn.Linear(skip_channels, head_hidden),
             nn.GELU(),
             nn.Dropout(dropout_rate * 0.5),
-            nn.Linear(skip_channels // 2, out_size),
+            nn.Linear(head_hidden, out_size),
         )
 
         # Compute receptive field
@@ -302,7 +305,7 @@ class WaveNetSmall(WaveNetBase):
     """
     WaveNet-Small: Lightweight gated dilated conv network for 1D waveforms.
 
-    ~1.0M parameters. 6 dilation layers, 32-channel residual, 64-channel skip.
+    ~0.07M parameters. 6 dilation layers, 32-channel residual, 64-channel skip.
     Receptive field: 127 samples (kernel=3).
 
     Recommended for:
@@ -345,7 +348,7 @@ class WaveNet(WaveNetBase):
     """
     WaveNet: Standard gated dilated conv network for 1D waveforms.
 
-    ~4.0M parameters. 8 dilation layers, 64-channel residual, 128-channel skip.
+    ~0.34M parameters. 8 dilation layers, 64-channel residual, 128-channel skip.
     Receptive field: 511 samples (kernel=3).
 
     Recommended for:
@@ -389,7 +392,7 @@ class WaveNetLarge(WaveNetBase):
     """
     WaveNet-Large: High-capacity gated dilated conv network for 1D waveforms.
 
-    ~15M parameters. 10 dilation layers, 128-channel residual, 256-channel skip.
+    ~1.65M parameters. 10 dilation layers, 128-channel residual, 256-channel skip.
     Receptive field: 2047 samples (kernel=3).
 
     Recommended for:

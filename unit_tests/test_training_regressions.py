@@ -69,6 +69,51 @@ class _SmallFieldModel(torch.nn.Module):
         return self.parameters()
 
 
+@pytest.mark.parametrize("dense", [False, True])
+def test_cv_physical_mae_matches_direct_inverse_transform(dense):
+    from torch.utils.data import DataLoader, TensorDataset
+
+    from wavedl.utils.cross_validation import train_fold
+    from wavedl.utils.targets import create_target_scaler
+
+    targets = np.array([[-1.0, -1.0], [1.0, 1.0]], dtype=np.float32)
+    if dense:
+        targets = np.broadcast_to(targets[:, :, None, None], (2, 2, 3, 4)).copy()
+    scales = np.array([10.0, 0.25]).reshape((2, 1, 1) if dense else (2,))
+    physical = 20 + targets * scales
+    scaler = create_target_scaler(physical)
+    normalized = scaler.transform(physical).astype(np.float32)
+    model = _SmallFieldModel() if dense else torch.nn.Linear(1, 2, bias=False)
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.zero_()
+    loader = DataLoader(
+        TensorDataset(torch.ones(2, 1), torch.from_numpy(normalized)), batch_size=1
+    )
+    result = train_fold(
+        fold=0,
+        model=model,
+        train_loader=loader,
+        val_loader=loader,
+        criterion=torch.nn.MSELoss(),
+        optimizer=torch.optim.SGD(model.parameters(), lr=0),
+        scheduler=None,
+        device=torch.device("cpu"),
+        epochs=1,
+        patience=2,
+        grad_clip=0,
+        scaler=scaler,
+        logger=logging.getLogger(__name__),
+    )
+    errors = np.abs(physical - scaler.inverse_transform(np.zeros_like(normalized)))
+    expected = flatten_targets_by_channel(errors).mean(axis=0)
+    assert result["mae_normalized"] == pytest.approx(1.0)
+    assert result["mae_physical"] == pytest.approx(expected.mean())
+    assert result["history"][0]["mae"] == pytest.approx(expected.mean())
+    for channel, mae in enumerate(expected):
+        assert result[f"mae_target_{channel}"] == pytest.approx(mae)
+
+
 @pytest.mark.parametrize(
     ("loss_name", "loss_weights", "huber_delta", "expected_unit_loss"),
     [("weighted_mse", [1.0, 4.0], 1.0, 2.5), ("huber", None, 0.25, 0.21875)],
@@ -311,6 +356,27 @@ def test_onecycle_counts_optimizer_updates_with_accumulation(tiny_training, tmp_
     )
     assert state["total_steps"] == 4
     assert state["last_epoch"] == 4
+
+
+@pytest.mark.parametrize("checkpoint_epoch", [1, 2])
+def test_onecycle_resume_rejects_extension_without_rewriting_checkpoint(
+    tiny_training, tmp_path, monkeypatch, checkpoint_epoch
+):
+    from wavedl import train
+
+    run, _, _ = tiny_training
+    run("--scheduler", "onecycle")
+    checkpoint = tmp_path / f"epoch_{checkpoint_epoch}_checkpoint"
+    original = (checkpoint / "scheduler.bin").read_bytes()
+    monkeypatch.setattr(
+        train,
+        "_flag_nonfinite_loss",
+        lambda *args: pytest.fail("extension must fail before training updates"),
+    )
+    with pytest.raises(ValueError, match="Cannot extend a resumed OneCycleLR"):
+        run("--scheduler", "onecycle", "--epochs", "4", "--resume", str(checkpoint))
+    assert (checkpoint / "scheduler.bin").read_bytes() == original
+    assert not (tmp_path / "epoch_3_checkpoint").exists()
 
 
 def test_fresh_archives_old_checkpoint_and_completion_state(tmp_path):

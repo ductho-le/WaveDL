@@ -1025,8 +1025,8 @@
           </div>
           <label class="toggle-card" style="align-self:end;">
             <div class="toggle-info">
-              <span class="toggle-title">Use ImageNet Pretrained Weights</span>
-              <span class="toggle-sub">For <code>*_pretrained</code> model variants</span>
+              <span class="toggle-title">Use Pretrained Weights</span>
+              <span class="toggle-sub">For ★ Vision &amp; <code>*_pretrained</code> models</span>
             </div>
             <input type="checkbox" id="f_pretrained" onchange="syncFromForm()" />
           </label>
@@ -1200,7 +1200,7 @@
               </div>
               <div class="field" id="wrap_warmup_epochs" style="display:none;">
                 <div class="field-label"><span>Warmup Epochs</span><span class="field-key">warmup_epochs</span></div>
-                <input type="number" id="f_warmup_epochs" min="1" oninput="syncFromForm()" />
+                <input type="number" id="f_warmup_epochs" min="0" oninput="syncFromForm()" />
               </div>
               <div class="field" id="wrap_step_size" style="display:none;">
                 <div class="field-label"><span>Step Size</span><span class="field-key">step_size</span></div>
@@ -1318,8 +1318,8 @@
           <div class="context-box" id="constraintsDetailsBox" style="display:none;">
             <div class="grid-2">
               <div class="field">
-                <div class="field-label"><span>Constraint Expressions (comma-separated)</span><span class="field-key">constraint</span></div>
-                <input type="text" id="f_constraint" placeholder="e.g. y0 > 0, y0 - y1*y2" oninput="syncFromForm()" />
+                <div class="field-label"><span>Constraint Expressions (semicolon-separated)</span><span class="field-key">constraint</span></div>
+                <input type="text" id="f_constraint" placeholder="e.g. y0 > 0; max(y0, y1) < 10" oninput="syncFromForm()" />
               </div>
               <div class="field">
                 <div class="field-label"><span>Penalty Weights</span><span class="field-key">constraint_weight</span></div>
@@ -1457,7 +1457,7 @@
         </div>
       </div>
       <div class="config-path-row">
-        <input type="text" id="configFilePath" value="config.yaml" oninput="renderYamlPreview()" title="Target YAML file path" />
+        <input type="text" id="configFilePath" value="config.yaml" oninput="updateCliPreview()" title="Target YAML file path" />
         <button class="sm" type="button" onclick="loadConfigFromFile()" title="Load this YAML file into the form">📂 Load</button>
         <button class="sm" type="button" onclick="openBrowser('configFilePath', 'file')">…</button>
       </div>
@@ -1520,57 +1520,57 @@ const MODEL_CATALOG = [
   { name: "resnet18", cat: "Classic CNN", dims: ["1D", "2D", "3D"], note: "Residual network (18 layers)" },
   { name: "resnet34", cat: "Classic CNN", dims: ["1D", "2D", "3D"], note: "Residual network (34 layers)" },
   { name: "resnet50", cat: "Classic CNN", dims: ["1D", "2D", "3D"], note: "Bottleneck ResNet (50 layers)" },
-  { name: "resnet18_pretrained", cat: "Classic CNN", dims: ["2D"], note: "ImageNet pretrained ResNet-18" },
-  { name: "resnet50_pretrained", cat: "Classic CNN", dims: ["2D"], note: "ImageNet pretrained ResNet-50" },
+  { name: "resnet18_pretrained", cat: "Classic CNN", dims: ["2D"], pretrained: true, note: "ImageNet pretrained ResNet-18" },
+  { name: "resnet50_pretrained", cat: "Classic CNN", dims: ["2D"], pretrained: true, note: "ImageNet pretrained ResNet-50" },
   { name: "densenet121", cat: "Classic CNN", dims: ["1D", "2D", "3D"], note: "Dense feature reuse (121L)" },
   { name: "densenet169", cat: "Classic CNN", dims: ["1D", "2D", "3D"], note: "Dense feature reuse (169L)" },
-  { name: "densenet121_pretrained", cat: "Classic CNN", dims: ["2D"], note: "ImageNet DenseNet-121" },
-  { name: "mobilenet_v3_small", cat: "Efficient CNN", dims: ["2D"], note: "Ultra-fast lightweight 2D" },
-  { name: "mobilenet_v3_large", cat: "Efficient CNN", dims: ["2D"], note: "MobileNetV3 high capacity" },
-  { name: "efficientnet_b0", cat: "Efficient CNN", dims: ["2D"], note: "Compound-scaled CNN (B0)" },
-  { name: "efficientnet_b2", cat: "Efficient CNN", dims: ["2D"], note: "Compound-scaled CNN (B2)" },
-  { name: "efficientnet_b4", cat: "Efficient CNN", dims: ["2D"], note: "Compound-scaled CNN (B4)" },
-  { name: "efficientnet_b7", cat: "Efficient CNN", dims: ["2D"], note: "Compound-scaled CNN (B7)" },
-  { name: "efficientnet_v2_s", cat: "Efficient CNN", dims: ["2D"], note: "Fast progressive training (S)" },
-  { name: "efficientnet_v2_m", cat: "Efficient CNN", dims: ["2D"], note: "EfficientNetV2 Medium" },
-  { name: "efficientnet_v2_l", cat: "Efficient CNN", dims: ["2D"], note: "EfficientNetV2 Large" },
-  { name: "regnet_y_400mf", cat: "Efficient CNN", dims: ["2D"], note: "RegNetY 400M FLOPs" },
-  { name: "regnet_y_800mf", cat: "Efficient CNN", dims: ["2D"], note: "RegNetY 800M FLOPs" },
-  { name: "regnet_y_1_6gf", cat: "Efficient CNN", dims: ["2D"], note: "RegNetY 1.6G FLOPs" },
-  { name: "regnet_y_3_2gf", cat: "Efficient CNN", dims: ["2D"], note: "RegNetY 3.2G FLOPs" },
-  { name: "regnet_y_8gf", cat: "Efficient CNN", dims: ["2D"], note: "RegNetY 8.0G FLOPs" },
+  { name: "densenet121_pretrained", cat: "Classic CNN", dims: ["2D"], pretrained: true, note: "ImageNet DenseNet-121" },
+  { name: "mobilenet_v3_small", cat: "Efficient CNN", dims: ["2D"], pretrained: true, note: "Ultra-fast lightweight 2D" },
+  { name: "mobilenet_v3_large", cat: "Efficient CNN", dims: ["2D"], pretrained: true, note: "MobileNetV3 high capacity" },
+  { name: "efficientnet_b0", cat: "Efficient CNN", dims: ["2D"], pretrained: true, note: "Compound-scaled CNN (B0)" },
+  { name: "efficientnet_b2", cat: "Efficient CNN", dims: ["2D"], pretrained: true, note: "Compound-scaled CNN (B2)" },
+  { name: "efficientnet_b4", cat: "Efficient CNN", dims: ["2D"], pretrained: true, note: "Compound-scaled CNN (B4)" },
+  { name: "efficientnet_b7", cat: "Efficient CNN", dims: ["2D"], pretrained: true, note: "Compound-scaled CNN (B7)" },
+  { name: "efficientnet_v2_s", cat: "Efficient CNN", dims: ["2D"], pretrained: true, note: "Fast progressive training (S)" },
+  { name: "efficientnet_v2_m", cat: "Efficient CNN", dims: ["2D"], pretrained: true, note: "EfficientNetV2 Medium" },
+  { name: "efficientnet_v2_l", cat: "Efficient CNN", dims: ["2D"], pretrained: true, note: "EfficientNetV2 Large" },
+  { name: "regnet_y_400mf", cat: "Efficient CNN", dims: ["2D"], pretrained: true, note: "RegNetY 400M FLOPs" },
+  { name: "regnet_y_800mf", cat: "Efficient CNN", dims: ["2D"], pretrained: true, note: "RegNetY 800M FLOPs" },
+  { name: "regnet_y_1_6gf", cat: "Efficient CNN", dims: ["2D"], pretrained: true, note: "RegNetY 1.6G FLOPs" },
+  { name: "regnet_y_3_2gf", cat: "Efficient CNN", dims: ["2D"], pretrained: true, note: "RegNetY 3.2G FLOPs" },
+  { name: "regnet_y_8gf", cat: "Efficient CNN", dims: ["2D"], pretrained: true, note: "RegNetY 8.0G FLOPs" },
   { name: "convnext_tiny", cat: "Modern CNN", dims: ["1D", "2D", "3D"], note: "7x7 depthwise modern CNN" },
   { name: "convnext_small", cat: "Modern CNN", dims: ["1D", "2D", "3D"], note: "ConvNeXt Small" },
   { name: "convnext_base", cat: "Modern CNN", dims: ["1D", "2D", "3D"], note: "ConvNeXt Base" },
-  { name: "convnext_tiny_pretrained", cat: "Modern CNN", dims: ["2D"], note: "ImageNet ConvNeXt-Tiny" },
+  { name: "convnext_tiny_pretrained", cat: "Modern CNN", dims: ["2D"], pretrained: true, note: "ImageNet ConvNeXt-Tiny" },
   { name: "convnext_v2_tiny", cat: "Modern CNN", dims: ["1D", "2D", "3D"], note: "GRN-enhanced ConvNeXt V2" },
   { name: "convnext_v2_small", cat: "Modern CNN", dims: ["1D", "2D", "3D"], note: "ConvNeXt V2 Small" },
   { name: "convnext_v2_base", cat: "Modern CNN", dims: ["1D", "2D", "3D"], note: "ConvNeXt V2 Base" },
-  { name: "convnext_v2_tiny_pretrained", cat: "Modern CNN", dims: ["2D"], note: "ImageNet ConvNeXt-V2" },
-  { name: "unireplknet_tiny", cat: "Modern CNN", dims: ["2D"], note: "Large-kernel re-param CNN" },
-  { name: "unireplknet_small", cat: "Modern CNN", dims: ["2D"], note: "UniRepLKNet Small" },
-  { name: "unireplknet_base", cat: "Modern CNN", dims: ["2D"], note: "UniRepLKNet Base" },
+  { name: "convnext_v2_tiny_pretrained", cat: "Modern CNN", dims: ["2D"], pretrained: true, note: "ImageNet ConvNeXt-V2" },
+  { name: "unireplknet_tiny", cat: "Modern CNN", dims: ["1D", "2D", "3D"], note: "Large-kernel re-param CNN" },
+  { name: "unireplknet_small", cat: "Modern CNN", dims: ["1D", "2D", "3D"], note: "UniRepLKNet Small" },
+  { name: "unireplknet_base", cat: "Modern CNN", dims: ["1D", "2D", "3D"], note: "UniRepLKNet Base" },
   { name: "vit_tiny", cat: "Transformer", dims: ["1D", "2D"], note: "Patch Vision Transformer" },
   { name: "vit_small", cat: "Transformer", dims: ["1D", "2D"], note: "ViT Small" },
   { name: "vit_base", cat: "Transformer", dims: ["1D", "2D"], note: "ViT Base" },
-  { name: "swin_t", cat: "Transformer", dims: ["2D"], note: "Shifted-window Transformer" },
-  { name: "swin_s", cat: "Transformer", dims: ["2D"], note: "Swin Small" },
-  { name: "swin_b", cat: "Transformer", dims: ["2D"], note: "Swin Base" },
-  { name: "maxvit_tiny", cat: "Transformer", dims: ["2D"], note: "Multi-axis attention (Tiny)" },
-  { name: "maxvit_small", cat: "Transformer", dims: ["2D"], note: "MaxViT Small" },
-  { name: "maxvit_base", cat: "Transformer", dims: ["2D"], note: "MaxViT Base" },
-  { name: "fastvit_t8", cat: "Hybrid", dims: ["2D"], note: "Reparam hybrid ViT (T8)" },
-  { name: "fastvit_t12", cat: "Hybrid", dims: ["2D"], note: "FastViT T12" },
-  { name: "fastvit_s12", cat: "Hybrid", dims: ["2D"], note: "FastViT S12" },
-  { name: "fastvit_sa12", cat: "Hybrid", dims: ["2D"], note: "FastViT SA12" },
-  { name: "caformer_s18", cat: "Hybrid", dims: ["2D"], note: "Conv + Attention MetaFormer" },
-  { name: "caformer_s36", cat: "Hybrid", dims: ["2D"], note: "CAFormer S36" },
-  { name: "caformer_m36", cat: "Hybrid", dims: ["2D"], note: "CAFormer M36" },
-  { name: "poolformer_s12", cat: "Hybrid", dims: ["2D"], note: "Pooling MetaFormer S12" },
-  { name: "efficientvit_m1", cat: "Hybrid", dims: ["2D"], note: "Cascaded group attention" },
-  { name: "efficientvit_b1", cat: "Hybrid", dims: ["2D"], note: "EfficientViT B1" },
-  { name: "efficientvit_b2", cat: "Hybrid", dims: ["2D"], note: "EfficientViT B2" },
-  { name: "efficientvit_l2", cat: "Hybrid", dims: ["2D"], note: "EfficientViT L2" },
+  { name: "swin_t", cat: "Transformer", dims: ["2D"], pretrained: true, note: "Shifted-window Transformer" },
+  { name: "swin_s", cat: "Transformer", dims: ["2D"], pretrained: true, note: "Swin Small" },
+  { name: "swin_b", cat: "Transformer", dims: ["2D"], pretrained: true, note: "Swin Base" },
+  { name: "maxvit_tiny", cat: "Transformer", dims: ["2D"], pretrained: true, note: "Multi-axis attention (Tiny)" },
+  { name: "maxvit_small", cat: "Transformer", dims: ["2D"], pretrained: true, note: "MaxViT Small" },
+  { name: "maxvit_base", cat: "Transformer", dims: ["2D"], pretrained: true, note: "MaxViT Base" },
+  { name: "fastvit_t8", cat: "Hybrid", dims: ["2D"], pretrained: true, note: "Reparam hybrid ViT (T8)" },
+  { name: "fastvit_t12", cat: "Hybrid", dims: ["2D"], pretrained: true, note: "FastViT T12" },
+  { name: "fastvit_s12", cat: "Hybrid", dims: ["2D"], pretrained: true, note: "FastViT S12" },
+  { name: "fastvit_sa12", cat: "Hybrid", dims: ["2D"], pretrained: true, note: "FastViT SA12" },
+  { name: "caformer_s18", cat: "Hybrid", dims: ["2D"], pretrained: true, note: "Conv + Attention MetaFormer" },
+  { name: "caformer_s36", cat: "Hybrid", dims: ["2D"], pretrained: true, note: "CAFormer S36" },
+  { name: "caformer_m36", cat: "Hybrid", dims: ["2D"], pretrained: true, note: "CAFormer M36" },
+  { name: "poolformer_s12", cat: "Hybrid", dims: ["2D"], pretrained: true, note: "Pooling MetaFormer S12" },
+  { name: "efficientvit_m1", cat: "Hybrid", dims: ["2D"], pretrained: true, note: "Cascaded group attention" },
+  { name: "efficientvit_b1", cat: "Hybrid", dims: ["2D"], pretrained: true, note: "EfficientViT B1" },
+  { name: "efficientvit_b2", cat: "Hybrid", dims: ["2D"], pretrained: true, note: "EfficientViT B2" },
+  { name: "efficientvit_l2", cat: "Hybrid", dims: ["2D"], pretrained: true, note: "EfficientViT L2" },
   { name: "mamba_1d", cat: "SSM / Mamba", dims: ["1D"], note: "Selective State Space (1D)" },
   { name: "vim_tiny", cat: "SSM / Mamba", dims: ["2D"], note: "Bidirectional Vision Mamba" },
   { name: "vim_small", cat: "SSM / Mamba", dims: ["2D"], note: "Vision Mamba Small" },
@@ -1584,9 +1584,9 @@ const MODEL_CATALOG = [
   { name: "wavenet_small", cat: "Specialized", dims: ["1D"], note: "Gated dilated WaveNet (Small)" },
   { name: "wavenet", cat: "Specialized", dims: ["1D"], note: "WaveNet for ultrasonic/audio" },
   { name: "wavenet_large", cat: "Specialized", dims: ["1D"], note: "WaveNet (Large)" },
-  { name: "resnet3d_18", cat: "Specialized", dims: ["3D"], note: "3D volumetric ResNet-18" },
-  { name: "mc3_18", cat: "Specialized", dims: ["3D"], note: "Mixed 3D/2D spatio-temporal" },
-  { name: "unet_regression", cat: "Specialized", dims: ["2D"], note: "U-Net encoder-decoder → Vector" },
+  { name: "resnet3d_18", cat: "Specialized", dims: ["3D"], pretrained: true, note: "3D volumetric ResNet-18" },
+  { name: "mc3_18", cat: "Specialized", dims: ["3D"], pretrained: true, note: "Mixed 3D/2D spatio-temporal" },
+  { name: "unet_regression", cat: "Specialized", dims: ["1D", "2D", "3D"], note: "U-Net encoder-decoder → Vector" },
   { name: "unet_field", cat: "Specialized", dims: ["2D", "field"], note: "Dense 2D field map (N,H,W)" }
 ];
 
@@ -1643,11 +1643,23 @@ const DEFAULTS = {
 };
 
 let state = JSON.parse(JSON.stringify(DEFAULTS));
+let extraConfigKeys = {};
 let activeModelCat = "All";
 let activeDimFilter = "all";
 let dataFileCheck = { exists: false, is_file: false, size_mb: null };
 let pollTimer = null;
 let logOffset = 0;
+let activeJobId = null;
+let wasJobRunning = false;
+
+function postHeaders() {
+  const headers = { "Content-Type": "application/json" };
+  const meta = document.querySelector('meta[name="wavedl-token"]');
+  if (meta && meta.content) {
+    headers["X-WaveDL-Token"] = meta.content;
+  }
+  return headers;
+}
 
 function init() {
   const cats = ["All", ...new Set(MODEL_CATALOG.map(m => m.cat))];
@@ -1663,7 +1675,7 @@ function init() {
 function goToStep(stepNum) {
   const ckpt = document.getElementById("t_checkpoint");
   if (stepNum === 5 && !ckpt.value.trim()) {
-    ckpt.value = `${(state.output_dir || ".").replace(/\/+$/, "")}/best_checkpoint`;
+    ckpt.value = `${(state.output_dir || ".").replace(/[\\/]+$/, "")}/best_checkpoint`;
   }
   for (let i = 1; i <= 5; i++) {
     document.getElementById(`panel-step-${i}`).classList.toggle("active", i === stepNum);
@@ -1741,7 +1753,8 @@ function renderModelGrid() {
   }
 
   grid.innerHTML = filtered.map(m => {
-    const dimLabel = m.dims.includes("field") ? "Dense 2D" : m.dims.join("·");
+    const baseDim = m.dims.includes("field") ? "Dense 2D" : m.dims.join("·");
+    const dimLabel = m.pretrained ? `★ ${baseDim}` : baseDim;
     return `
       <div class="model-card ${state.model === m.name ? 'active' : ''}" onclick="chooseModel('${m.name}')">
         <div class="model-card-top">
@@ -1788,7 +1801,7 @@ async function verifyDataPath(pathStr) {
   try {
     const res = await fetch(`/api/check_path?path=${encodeURIComponent(pathStr)}`);
     if (!res.ok) {
-      dataFileCheck = { exists: true, is_file: true, size_mb: null };
+      dataFileCheck = { exists: false, is_file: false, size_mb: null };
     } else {
       dataFileCheck = await res.json();
     }
@@ -1797,7 +1810,18 @@ async function verifyDataPath(pathStr) {
 }
 
 function selectPill(field, val) {
+  const prev = state[field];
   state[field] = val;
+  if (field === "scheduler") {
+    const sfEl = document.getElementById("f_scheduler_factor");
+    if (val === "exponential" && state.scheduler_factor === 0.5) {
+      state.scheduler_factor = 0.95;
+      if (sfEl) sfEl.value = 0.95;
+    } else if (prev === "exponential" && val !== "exponential" && state.scheduler_factor === 0.95) {
+      state.scheduler_factor = 0.5;
+      if (sfEl) sfEl.value = 0.5;
+    }
+  }
   const container = document.getElementById(`pills_${field}`);
   if (container) {
     container.querySelectorAll(".pill").forEach(p => {
@@ -1862,7 +1886,7 @@ function updateConditionalFields() {
 
   const sc = state.scheduler;
   document.getElementById("wrap_scheduler_patience").style.display = sc === "plateau" ? "" : "none";
-  document.getElementById("wrap_scheduler_factor").style.display = (sc === "plateau" || sc === "step") ? "" : "none";
+  document.getElementById("wrap_scheduler_factor").style.display = ["plateau", "step", "multistep", "exponential"].includes(sc) ? "" : "none";
   document.getElementById("wrap_warmup_epochs").style.display = sc === "linear_warmup" ? "" : "none";
   document.getElementById("wrap_step_size").style.display = sc === "step" ? "" : "none";
   document.getElementById("wrap_milestones").style.display = sc === "multistep" ? "" : "none";
@@ -1921,7 +1945,7 @@ function applyStateToDOM() {
     : (state.import_modules || "");
 
   document.getElementById("f_constraint").value = Array.isArray(state.constraint)
-    ? state.constraint.join(", ")
+    ? state.constraint.join("; ")
     : (state.constraint || "");
 
   document.getElementById("f_constraint_weight").value = Array.isArray(state.constraint_weight)
@@ -2017,7 +2041,7 @@ function readDOMToState() {
   state.run_name = getStr("f_run_name");
 
   state.constraint = getStr("f_constraint")
-    ? getStr("f_constraint").split(",").map(s => s.trim()).filter(Boolean)
+    ? getStr("f_constraint").split(/[;\n]+/).map(s => s.trim()).filter(Boolean)
     : [];
   state.constraint_file = getStr("f_constraint_file");
   const cwRaw = getStr("f_constraint_weight");
@@ -2062,7 +2086,11 @@ function buildEffectiveConfig() {
     cfg.betas = state.betas;
   }
 
-  if (state.scheduler === "plateau" || state.scheduler === "step") cfg.scheduler_factor = state.scheduler_factor;
+  if (["plateau", "step", "multistep"].includes(state.scheduler)) {
+    cfg.scheduler_factor = state.scheduler_factor;
+  } else if (state.scheduler === "exponential" && state.scheduler_factor !== 0.95) {
+    cfg.scheduler_factor = state.scheduler_factor;
+  }
   if (state.scheduler === "plateau") cfg.scheduler_patience = state.scheduler_patience;
   if (state.min_lr !== 1e-6) cfg.min_lr = state.min_lr;
   if (state.scheduler === "linear_warmup") cfg.warmup_epochs = state.warmup_epochs;
@@ -2095,19 +2123,34 @@ function buildEffectiveConfig() {
     cfg.constraint_reduction = state.constraint_reduction;
   }
 
+  for (const [k, v] of Object.entries(extraConfigKeys)) {
+    if (cfg[k] === undefined && v !== null && v !== undefined && v !== "" && !(Array.isArray(v) && v.length === 0)) {
+      cfg[k] = v;
+    }
+  }
+
   return cfg;
+}
+
+function updateCliPreview() {
+  const cfgPath = (document.getElementById("configFilePath").value || "config.yaml").trim();
+  const gpus = (document.getElementById("f_num_gpus").value || "").trim();
+  const gpuFlag = gpus && parseInt(gpus, 10) > 0 ? ` --num_gpus ${parseInt(gpus, 10)}` : "";
+  document.getElementById("cliPreview").textContent = `wavedl-train${gpuFlag} --config ${cfgPath}`;
 }
 
 function renderYamlPreview() {
   const c = buildEffectiveConfig();
-  const fmtVal = (v) => {
-    if (Array.isArray(v)) return `[${v.map(x => typeof x === "string" ? JSON.stringify(x) : x).join(", ")}]`;
-    if (typeof v === "string") {
-      const reserved = /^(true|false|yes|no|on|off|y|n|null|none)$/i.test(v);
-      return /^[a-zA-Z0-9_./-]+$/.test(v) && !reserved ? v : JSON.stringify(v);
-    }
-    return String(v);
+  const fmtScalar = (v) => {
+    if (typeof v === "boolean") return v ? "true" : "false";
+    if (v === null || v === undefined) return "null";
+    if (typeof v === "number") return Number.isFinite(v) ? String(v) : "null";
+    const s = String(v);
+    const reserved = /^(true|false|yes|no|on|off|y|n|null|none|nan|\.nan|inf|\.inf|\+\.inf|-\.inf)$/i.test(s);
+    const safeUnquoted = /^[a-zA-Z0-9_./-]+$/.test(s) && (/^[a-zA-Z]/.test(s) || s.startsWith("./") || s.startsWith("../") || s.startsWith("/"));
+    return safeUnquoted && !reserved ? s : JSON.stringify(s);
   };
+  const fmtVal = (v) => Array.isArray(v) ? `[${v.map(fmtScalar).join(", ")}]` : fmtScalar(v);
 
   const groups = [
     ["MODEL", ["model", "pretrained", "import_modules"]],
@@ -2116,12 +2159,13 @@ function renderYamlPreview() {
     ["OPTIMIZER", ["optimizer", "momentum", "nesterov", "betas"]],
     ["LEARNING RATE SCHEDULER", ["scheduler", "scheduler_factor", "scheduler_patience", "min_lr", "warmup_epochs", "step_size", "milestones"]],
     ["CROSS-VALIDATION", ["cv", "cv_stratify", "cv_bins"]],
-    ["DATA & OUTPUT", ["data_path", "output_dir", "resume", "save_every", "fresh", "workers", "seed", "deterministic", "cache_validate", "single_channel", "allow_pickle"]],
+    ["DATA & OUTPUT", ["data_path", "output_dir", "cache_dir", "resume", "save_every", "fresh", "workers", "seed", "deterministic", "cache_validate", "single_channel", "allow_pickle"]],
     ["PERFORMANCE OPTIMIZATION", ["precision", "compile"]],
     ["LOGGING & MONITORING", ["wandb", "wandb_watch", "project_name", "run_name"]],
     ["PHYSICAL CONSTRAINTS", ["constraint", "constraint_file", "constraint_weight", "constraint_reduction"]]
   ];
 
+  const used = new Set();
   const lines = [
     "# WaveDL Configuration",
     "# Generated by WaveDL Studio",
@@ -2134,17 +2178,25 @@ function renderYamlPreview() {
     lines.push(`# ${title}`);
     lines.push(`# ${"=".repeat(65)}`);
     for (const k of present) {
+      used.add(k);
+      lines.push(`${k}: ${fmtVal(c[k])}`);
+    }
+    lines.push("");
+  }
+
+  const extras = Object.keys(c).filter(k => !used.has(k) && !k.startsWith("_") && c[k] !== undefined && c[k] !== "" && !(Array.isArray(c[k]) && c[k].length === 0));
+  if (extras.length > 0) {
+    lines.push(`# ${"=".repeat(65)}`);
+    lines.push("# ADDITIONAL OPTIONS");
+    lines.push(`# ${"=".repeat(65)}`);
+    for (const k of extras) {
       lines.push(`${k}: ${fmtVal(c[k])}`);
     }
     lines.push("");
   }
 
   document.getElementById("yamlEditor").value = lines.join("\n").trimEnd() + "\n";
-
-  const cfgPath = (document.getElementById("configFilePath").value || "config.yaml").trim();
-  const gpus = (document.getElementById("f_num_gpus").value || "").trim();
-  const gpuFlag = gpus && parseInt(gpus, 10) > 0 ? ` --num_gpus ${parseInt(gpus, 10)}` : "";
-  document.getElementById("cliPreview").textContent = `wavedl-train${gpuFlag} --config ${cfgPath}`;
+  updateCliPreview();
 }
 
 function syncFromForm() {
@@ -2152,6 +2204,51 @@ function syncFromForm() {
   updateConditionalFields();
   updateSummaryAndBadges();
   renderYamlPreview();
+}
+
+function normalizeLoadedConfig(rawCfg) {
+  const incoming = Object.assign({}, rawCfg || {});
+  if (incoming.import !== undefined && incoming.import_modules === undefined) {
+    incoming.import_modules = incoming.import;
+    delete incoming.import;
+  }
+  if (typeof incoming.import_modules === "string") {
+    incoming.import_modules = incoming.import_modules.split(",").map(s => s.trim()).filter(Boolean);
+  }
+  if (typeof incoming.constraint === "string") {
+    incoming.constraint = incoming.constraint.split(/[;\n]+/).map(s => s.trim()).filter(Boolean);
+  }
+  if (typeof incoming.constraint_weight === "number") {
+    incoming.constraint_weight = [incoming.constraint_weight];
+  } else if (typeof incoming.constraint_weight === "string") {
+    incoming.constraint_weight = incoming.constraint_weight
+      .split(",")
+      .map(s => parseFloat(s.trim()))
+      .filter(Number.isFinite);
+  }
+  ["betas", "milestones", "loss_weights"].forEach(k => {
+    if (Array.isArray(incoming[k])) {
+      incoming[k] = incoming[k].join(",");
+    }
+  });
+
+  const merged = JSON.parse(JSON.stringify(DEFAULTS));
+  extraConfigKeys = {};
+  for (const [k, v] of Object.entries(incoming)) {
+    if (v === null || v === undefined) continue;
+    if (Object.prototype.hasOwnProperty.call(DEFAULTS, k)) {
+      merged[k] = v;
+    } else if (!k.startsWith("_")) {
+      extraConfigKeys[k] = v;
+    }
+  }
+  if (merged.scheduler === "exponential" && incoming.scheduler_factor === undefined) {
+    merged.scheduler_factor = 0.95;
+  }
+
+  const hasConstraints = (Array.isArray(merged.constraint) && merged.constraint.length > 0) || Boolean(merged.constraint_file);
+  document.getElementById("toggle_constraints_enabled").checked = hasConstraints;
+  return merged;
 }
 
 async function loadConfigFromFile(silent = false) {
@@ -2163,7 +2260,7 @@ async function loadConfigFromFile(silent = false) {
       if (!silent) showToast(data.error || "Could not load config", true);
       return;
     }
-    state = Object.assign(JSON.parse(JSON.stringify(DEFAULTS)), data.config || {});
+    state = normalizeLoadedConfig(data.config || {});
     applyStateToDOM();
     if (!silent) showToast(`Loaded ${path}`);
   } catch (e) {
@@ -2177,7 +2274,7 @@ async function saveConfigToFile() {
   try {
     const res = await fetch("/api/config", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: postHeaders(),
       body: JSON.stringify({ path, raw_yaml: rawYaml })
     });
     const data = await res.json();
@@ -2198,7 +2295,7 @@ async function applyYamlToForm() {
   try {
     const res = await fetch("/api/config/parse", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: postHeaders(),
       body: JSON.stringify({ raw_yaml: rawYaml })
     });
     if (res.status === 404) {
@@ -2211,7 +2308,7 @@ async function applyYamlToForm() {
       showToast(data.error || "Invalid YAML", true);
       return;
     }
-    state = Object.assign(JSON.parse(JSON.stringify(DEFAULTS)), data.config || {});
+    state = normalizeLoadedConfig(data.config || {});
     applyStateToDOM();
     showToast("Synced YAML edits into form");
   } catch (e) {
@@ -2221,22 +2318,65 @@ async function applyYamlToForm() {
 
 function resetDefaults() {
   state = JSON.parse(JSON.stringify(DEFAULTS));
+  extraConfigKeys = {};
   document.getElementById("toggle_constraints_enabled").checked = false;
   applyStateToDOM();
   showToast("Reset to WaveDL default configuration");
 }
 
+async function copyTextWithFallback(text, successMsg) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      showToast(successMsg);
+      return;
+    }
+  } catch (_) {}
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand("copy");
+    showToast(successMsg);
+  } catch (_) {
+    showToast("Could not copy automatically — select text and press Ctrl/Cmd+C", true);
+  } finally {
+    document.body.removeChild(ta);
+  }
+}
+
 function copyYaml() {
-  navigator.clipboard.writeText(document.getElementById("yamlEditor").value);
-  showToast("Copied YAML to clipboard");
+  copyTextWithFallback(document.getElementById("yamlEditor").value, "Copied YAML to clipboard");
 }
 
 function copyCli() {
-  navigator.clipboard.writeText(document.getElementById("cliPreview").textContent);
-  showToast("Copied CLI command to clipboard");
+  copyTextWithFallback(document.getElementById("cliPreview").textContent, "Copied CLI command to clipboard");
 }
 
 async function startTraining() {
+  if (state.fresh && state.resume) {
+    showToast("Cannot enable both 'Start Fresh' and 'Resume From Checkpoint'.", true);
+    return;
+  }
+  if (state.cv >= 2) {
+    if (state.resume) {
+      showToast("K-fold cross-validation (--cv) cannot be combined with --resume.", true);
+      return;
+    }
+    if ((Array.isArray(state.constraint) && state.constraint.length > 0) || state.constraint_file) {
+      showToast("K-fold cross-validation (--cv) does not support physical constraints.", true);
+      return;
+    }
+    if (state.grad_accum_steps > 1) {
+      showToast("K-fold cross-validation (--cv) does not support grad_accum_steps > 1.", true);
+      return;
+    }
+  }
+
   const path = document.getElementById("configFilePath").value.trim() || "config.yaml";
   const rawYaml = document.getElementById("yamlEditor").value;
   const gpus = parseInt(document.getElementById("f_num_gpus").value, 10);
@@ -2245,7 +2385,7 @@ async function startTraining() {
   try {
     const res = await fetch("/api/train/start", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: postHeaders(),
       body: JSON.stringify({
         path,
         raw_yaml: rawYaml,
@@ -2258,6 +2398,7 @@ async function startTraining() {
       return;
     }
     logOffset = 0;
+    activeJobId = data.job_id !== undefined ? data.job_id : null;
     document.getElementById("consoleOutput").textContent = "";
     showToast("Saved config & started wavedl-train!");
     checkTrainingStatus();
@@ -2268,17 +2409,27 @@ async function startTraining() {
 
 async function startTest(mode) {
   const val = id => document.getElementById(id).value.trim();
+  const payload = {
+    mode,
+    checkpoint: val("t_checkpoint"),
+    data_path: val("t_data_path"),
+    output_dir: val("t_output_dir")
+  };
+  if (Array.isArray(state.import_modules) && state.import_modules.length > 0) {
+    payload.import_modules = state.import_modules;
+  }
+  if (state.allow_pickle) {
+    payload.allow_pickle = true;
+  }
+  if (state.single_channel) {
+    payload.input_channels = 1;
+  }
   switchRightTab("console");
   try {
     const res = await fetch("/api/test/start", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        mode,
-        checkpoint: val("t_checkpoint"),
-        data_path: val("t_data_path"),
-        output_dir: val("t_output_dir")
-      })
+      headers: postHeaders(),
+      body: JSON.stringify(payload)
     });
     const data = await res.json();
     if (!res.ok) {
@@ -2286,6 +2437,7 @@ async function startTest(mode) {
       return;
     }
     logOffset = 0;
+    activeJobId = data.job_id !== undefined ? data.job_id : null;
     document.getElementById("consoleOutput").textContent = "";
     showToast(mode === "export" ? "Exporting model to ONNX..." : "Started wavedl-test!");
     checkTrainingStatus();
@@ -2298,7 +2450,7 @@ async function stopTraining() {
   try {
     await fetch("/api/train/stop", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: postHeaders(),
       body: "{}"
     });
     showToast("Stopping training process...");
@@ -2315,9 +2467,25 @@ async function checkTrainingStatus() {
     const data = await res.json();
     const consoleEl = document.getElementById("consoleOutput");
 
+    if (data.job_id !== undefined && activeJobId !== null && data.job_id !== activeJobId) {
+      activeJobId = data.job_id;
+      logOffset = 0;
+      consoleEl.textContent = "";
+      pollTimer = setTimeout(checkTrainingStatus, 50);
+      return;
+    }
+    if (data.job_id !== undefined) {
+      activeJobId = data.job_id;
+    }
+
     if (data.logs && data.logs.length > 0) {
       if (logOffset === 0) consoleEl.textContent = "";
-      consoleEl.textContent += data.logs.join("\n") + "\n";
+      let combined = consoleEl.textContent + data.logs.join("\n") + "\n";
+      if (combined.length > 250000) {
+        const cut = combined.indexOf("\n", combined.length - 200000);
+        combined = cut >= 0 ? combined.slice(cut + 1) : combined.slice(-200000);
+      }
+      consoleEl.textContent = combined;
       consoleEl.scrollTop = consoleEl.scrollHeight;
       logOffset = data.next_offset;
     }
@@ -2330,12 +2498,14 @@ async function checkTrainingStatus() {
     elapsedEl.textContent = data.elapsed !== null ? `(${data.elapsed}s)` : "";
 
     if (data.running) {
+      wasJobRunning = true;
       badge.className = "status-pill status-running";
       badge.textContent = `Running (PID ${data.pid})`;
       runBtn.style.display = "none";
       stopBtn.style.display = "inline-flex";
       pollTimer = setTimeout(checkTrainingStatus, 600);
     } else {
+      wasJobRunning = false;
       runBtn.style.display = "inline-flex";
       stopBtn.style.display = "none";
       if (data.exit_code === 0) {
@@ -2349,7 +2519,11 @@ async function checkTrainingStatus() {
         badge.textContent = "Idle";
       }
     }
-  } catch (_) {}
+  } catch (_) {
+    if (wasJobRunning) {
+      pollTimer = setTimeout(checkTrainingStatus, 1500);
+    }
+  }
 }
 
 function clearConsole() {
@@ -2388,25 +2562,45 @@ async function fetchBrowse(dir) {
   document.getElementById("browserCurrentDir").textContent = currentBrowseDir;
 
   const list = document.getElementById("browserList");
+  list.textContent = "";
   if (!data.entries || data.entries.length === 0) {
-    list.innerHTML = `<div style="padding:14px;color:var(--muted);">No files or folders found.</div>`;
+    const empty = document.createElement("div");
+    empty.style.padding = "14px";
+    empty.style.color = "var(--muted)";
+    empty.textContent = "No files or folders found.";
+    list.appendChild(empty);
     return;
   }
-  list.innerHTML = data.entries.map(item => {
-    const icon = item.is_dir ? "📁" : "📄";
-    const safePath = item.path.replace(/'/g, "\\'");
-    const safeAbs = item.abs_path.replace(/'/g, "\\'");
+  data.entries.forEach(item => {
+    const row = document.createElement("div");
+    row.className = "file-row";
+    const left = document.createElement("span");
+    const right = document.createElement("span");
+    right.style.fontSize = "12px";
+
     if (item.is_dir) {
-      return `<div class="file-row" onclick="fetchBrowse('${safeAbs}')">
-        <span>${icon} <strong>${item.name}/</strong></span>
-        <span style="color:var(--muted);font-size:12px;">Open →</span>
-      </div>`;
+      left.append("📁 ");
+      const strong = document.createElement("strong");
+      strong.textContent = `${item.name}/`;
+      left.appendChild(strong);
+      right.style.color = "var(--muted)";
+      right.textContent = "Open →";
+      row.addEventListener("click", () => fetchBrowse(item.abs_path));
+    } else if (browserMode === "dir") {
+      left.textContent = `📄 ${item.name}`;
+      row.style.cursor = "default";
+      row.style.opacity = "0.6";
+    } else {
+      left.textContent = `📄 ${item.name}`;
+      right.style.color = "var(--brand-dark)";
+      right.style.fontWeight = "600";
+      right.textContent = "Select";
+      row.addEventListener("click", () => pickFile(item.path));
     }
-    return `<div class="file-row" onclick="pickFile('${safePath}')">
-      <span>${icon} ${item.name}</span>
-      <span style="color:var(--brand-dark);font-weight:600;font-size:12px;">Select</span>
-    </div>`;
-  }).join("");
+    row.appendChild(left);
+    row.appendChild(right);
+    list.appendChild(row);
+  });
 }
 
 function browseUp() {
@@ -2420,19 +2614,22 @@ function browseRoot() {
 function pickFile(path) {
   if (browserTargetInput) {
     document.getElementById(browserTargetInput).value = path;
-    if (browserTargetInput === "f_data_path") onDataPathChange();
-    else syncFromForm();
+    if (browserTargetInput === "configFilePath") loadConfigFromFile();
+    else if (browserTargetInput === "f_data_path") onDataPathChange();
+    else if (!browserTargetInput.startsWith("t_")) syncFromForm();
   }
   closeBrowser();
 }
 
 function chooseCurrentDir() {
   if (browserTargetInput && currentBrowseDir) {
-    const rel = currentBrowseDir.startsWith(workspaceRootDir + "/")
-      ? currentBrowseDir.slice(workspaceRootDir.length + 1)
+    const sep = currentBrowseDir.includes("\\") ? "\\" : "/";
+    const prefix = workspaceRootDir.replace(/[\\/]+$/, "") + sep;
+    const rel = currentBrowseDir.startsWith(prefix)
+      ? currentBrowseDir.slice(prefix.length)
       : (currentBrowseDir === workspaceRootDir ? "." : currentBrowseDir);
     document.getElementById(browserTargetInput).value = rel;
-    syncFromForm();
+    if (!browserTargetInput.startsWith("t_")) syncFromForm();
   }
   closeBrowser();
 }

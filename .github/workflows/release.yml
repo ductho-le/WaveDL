@@ -20,11 +20,14 @@ jobs:
           path: |
             notes.md
             metadata.json
+  lint:
+    needs: validate
+    uses: ./.github/workflows/lint.yml
   checks:
     needs: validate
     uses: ./.github/workflows/test.yml
   publish:
-    needs: checks
+    needs: [lint, checks]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

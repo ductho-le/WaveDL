@@ -138,24 +138,35 @@ def get_scheduler(
         )
 
     elif name_lower == "cosine":
+        effective_t_max = T_max if T_max is not None else epochs
+        if effective_t_max < 1:
+            raise ValueError(
+                f"CosineAnnealingLR T_max must be >= 1, got {effective_t_max}."
+            )
         return CosineAnnealingLR(
             optimizer,
-            T_max=T_max if T_max is not None else epochs,
+            T_max=effective_t_max,
             eta_min=min_lr,
             **kwargs,
         )
 
     elif name_lower == "cosine_restarts":
+        if T_0 < 1:
+            raise ValueError(
+                f"CosineAnnealingWarmRestarts T_0 must be >= 1, got {T_0}."
+            )
         return CosineAnnealingWarmRestarts(
             optimizer, T_0=T_0, T_mult=T_mult, eta_min=min_lr, **kwargs
         )
 
     elif name_lower == "onecycle":
-        if steps_per_epoch is None:
+        if steps_per_epoch is None or steps_per_epoch < 1:
             raise ValueError(
-                "OneCycleLR requires 'steps_per_epoch'. "
+                "OneCycleLR requires 'steps_per_epoch' >= 1. "
                 "Pass len(train_dataloader) as steps_per_epoch."
             )
+        if epochs < 1:
+            raise ValueError(f"OneCycleLR requires epochs >= 1, got {epochs}.")
         return OneCycleLR(
             optimizer,
             max_lr=max_lr if max_lr is not None else base_lr,
@@ -166,6 +177,8 @@ def get_scheduler(
         )
 
     elif name_lower == "step":
+        if step_size < 1:
+            raise ValueError(f"StepLR step_size must be >= 1, got {step_size}.")
         step_gamma = gamma if gamma is not None else 0.1
         return StepLR(optimizer, step_size=step_size, gamma=step_gamma, **kwargs)
 
@@ -193,6 +206,16 @@ def get_scheduler(
         return ExponentialLR(optimizer, gamma=exp_gamma, **kwargs)
 
     elif name_lower == "linear_warmup":
+        if warmup_epochs < 0:
+            raise ValueError(f"warmup_epochs must be >= 0, got {warmup_epochs}.")
+        if warmup_epochs == 0:
+            return LinearLR(
+                optimizer,
+                start_factor=1.0,
+                end_factor=1.0,
+                total_iters=1,
+                **kwargs,
+            )
         return LinearLR(
             optimizer,
             start_factor=start_factor,
@@ -261,9 +284,17 @@ def get_scheduler_with_warmup(
     )
 
     # Create main scheduler with adjusted epoch budget
-    if "epochs" in kwargs:
-        kwargs["epochs"] = max(1, kwargs["epochs"] - warmup_epochs)
-    main_scheduler = get_scheduler(name, optimizer, **kwargs)
+    main_kwargs = dict(kwargs)
+    if "epochs" in main_kwargs:
+        main_kwargs["epochs"] = max(1, main_kwargs["epochs"] - warmup_epochs)
+    if name_lower == "cosine" and main_kwargs.get("T_max") is not None:
+        main_kwargs["T_max"] = max(1, main_kwargs["T_max"] - warmup_epochs)
+    if name_lower == "multistep" and main_kwargs.get("milestones") is not None:
+        shifted = sorted(
+            {m - warmup_epochs for m in main_kwargs["milestones"] if m > warmup_epochs}
+        )
+        main_kwargs["milestones"] = shifted or [1]
+    main_scheduler = get_scheduler(name, optimizer, **main_kwargs)
 
     # Combine with SequentialLR
     return SequentialLR(

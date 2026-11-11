@@ -285,9 +285,11 @@ class UNetRegression(BaseModel):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.kaiming_normal_(m.weight, mode="fan_in", nonlinearity="relu")
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
+        if isinstance(self.head[-1], nn.Linear):
+            nn.init.xavier_uniform_(self.head[-1].weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass."""
@@ -456,6 +458,10 @@ class UNetField(BaseModel):
             elif isinstance(module, nn.GroupNorm):
                 nn.init.constant_(module.weight, 1)
                 nn.init.constant_(module.bias, 0)
+        # Use Xavier init on the linear 1x1 output head to avoid fan_out=1 explosion
+        nn.init.xavier_uniform_(self.head.weight)
+        if self.head.bias is not None:
+            nn.init.constant_(self.head.bias, 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Predict a dense field with shape ``(B, C, *spatial)``."""

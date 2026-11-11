@@ -113,6 +113,22 @@ class MobileNetV3Base(BaseModel):
                 "For 1D data, use TCN. For 3D data, use ResNet3D."
             )
 
+        min_size = 16
+        for i, s in enumerate(self.in_shape):
+            if s < min_size:
+                raise ValueError(
+                    f"MobileNetV3 requires each spatial axis >= {min_size}, "
+                    f"but axis {i} has size {s}."
+                )
+        if (
+            isinstance(regression_hidden, bool)
+            or not isinstance(regression_hidden, int)
+            or regression_hidden <= 0
+        ):
+            raise ValueError(
+                f"regression_hidden must be a positive integer, got {regression_hidden!r}"
+            )
+
         self.pretrained = pretrained
         self.dropout_rate = dropout_rate
         self.freeze_backbone = freeze_backbone
@@ -122,20 +138,13 @@ class MobileNetV3Base(BaseModel):
         weights = weights_class.IMAGENET1K_V1 if pretrained else None
         self.backbone = model_fn(weights=weights)
 
-        # MobileNetV3 classifier structure:
-        # classifier[0]: Linear (features → 1280 for Large, 1024 for Small)
-        # classifier[1]: Hardswish
-        # classifier[2]: Dropout
-        # classifier[3]: Linear (1280/1024 → num_classes)
-
         # Get the input features to the final classifier
         in_features = self.backbone.classifier[0].in_features
 
         # Replace classifier with lightweight regression head
-        # Keep it efficient to maintain MobileNet's speed advantage
         self.backbone.classifier = nn.Sequential(
             nn.Linear(in_features, regression_hidden),
-            nn.Hardswish(inplace=True),  # Match MobileNetV3's activation
+            nn.Hardswish(inplace=True),
             nn.Dropout(dropout_rate),
             nn.Linear(regression_hidden, out_size),
         )
@@ -148,28 +157,12 @@ class MobileNetV3Base(BaseModel):
             self._freeze_backbone()
 
     def _adapt_input_channels(self):
-        """Modify first conv to accept single-channel input.
+        """Modify first conv to accept single-channel input."""
+        from wavedl.models._pretrained_utils import adapt_first_conv_for_single_channel
 
-        Instead of expanding 1→3 channels in forward (which triples memory),
-        we replace the first conv layer with a 1-channel version and initialize
-        weights as the mean of the pretrained RGB filters.
-        """
-        old_conv = self.backbone.features[0][0]
-        new_conv = nn.Conv2d(
-            1,  # Single channel input
-            old_conv.out_channels,
-            kernel_size=old_conv.kernel_size,
-            stride=old_conv.stride,
-            padding=old_conv.padding,
-            dilation=old_conv.dilation,
-            groups=old_conv.groups,
-            padding_mode=old_conv.padding_mode,
-            bias=old_conv.bias is not None,
+        adapt_first_conv_for_single_channel(
+            self.backbone, "features.0.0", pretrained=self.pretrained
         )
-        if self.pretrained:
-            with torch.no_grad():
-                new_conv.weight.copy_(old_conv.weight.mean(dim=1, keepdim=True))
-        self.backbone.features[0][0] = new_conv
 
     def _freeze_backbone(self):
         """Freeze feature extraction while retaining the regression head."""

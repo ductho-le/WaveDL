@@ -29,6 +29,8 @@ def launch_local(work_dir: Path) -> int:
     env.setdefault("OMP_NUM_THREADS", "1")
     if sys.platform == "darwin":
         env.setdefault("GLOO_SOCKET_IFNAME", "lo0")
+    elif os.name == "nt":
+        env.setdefault("USE_LIBUV", "0")
     return subprocess.run(
         [
             sys.executable,
@@ -91,7 +93,11 @@ def main():
     from wavedl.train import main as train
 
     train()
-    assert (args.work_dir / "run/epoch_2_checkpoint/training_meta.pkl").is_file()
+    meta_file = args.work_dir / "run/epoch_2_checkpoint/training_meta.pkl"
+    if not meta_file.is_file():
+        raise RuntimeError(
+            f"Expected distributed checkpoint metadata missing: {meta_file}"
+        )
 
 
 if __name__ == "__main__":

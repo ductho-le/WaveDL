@@ -28,7 +28,6 @@ Author: Ductho Le (ductho.le@outlook.com)
 from typing import Any
 
 import torch
-import torch.nn as nn
 
 
 try:
@@ -111,6 +110,22 @@ class EfficientNetV2Base(BaseModel):
                 "For 1D data, use TCN. For 3D data, use ResNet3D."
             )
 
+        min_size = 16
+        for i, s in enumerate(self.in_shape):
+            if s < min_size:
+                raise ValueError(
+                    f"EfficientNetV2 requires each spatial axis >= {min_size}, "
+                    f"but axis {i} has size {s}."
+                )
+        if (
+            isinstance(regression_hidden, bool)
+            or not isinstance(regression_hidden, int)
+            or regression_hidden <= 0
+        ):
+            raise ValueError(
+                f"regression_hidden must be a positive integer, got {regression_hidden!r}"
+            )
+
         self.pretrained = pretrained
         self.dropout_rate = dropout_rate
         self.freeze_backbone = freeze_backbone
@@ -124,15 +139,13 @@ class EfficientNetV2Base(BaseModel):
         in_features = self.backbone.classifier[1].in_features
 
         # Replace classifier with regression head
-        # EfficientNetV2 benefits from a deeper regression head
-        self.backbone.classifier = nn.Sequential(
-            nn.Dropout(dropout_rate),
-            nn.Linear(in_features, regression_hidden),
-            nn.SiLU(inplace=True),  # SiLU (Swish) matches EfficientNet's activation
-            nn.Dropout(dropout_rate * 0.5),
-            nn.Linear(regression_hidden, regression_hidden // 2),
-            nn.SiLU(inplace=True),
-            nn.Linear(regression_hidden // 2, out_size),
+        from wavedl.models._pretrained_utils import build_regression_head
+
+        self.backbone.classifier = build_regression_head(
+            in_features,
+            out_size,
+            dropout_rate=dropout_rate,
+            hidden_dim=regression_hidden,
         )
 
         # Adapt first conv for single-channel input (3× memory savings vs expand)
@@ -143,28 +156,12 @@ class EfficientNetV2Base(BaseModel):
             self._freeze_backbone()
 
     def _adapt_input_channels(self):
-        """Modify first conv to accept single-channel input.
+        """Modify first conv to accept single-channel input."""
+        from wavedl.models._pretrained_utils import adapt_first_conv_for_single_channel
 
-        Instead of expanding 1→3 channels in forward (which triples memory),
-        we replace the first conv layer with a 1-channel version and initialize
-        weights as the mean of the pretrained RGB filters.
-        """
-        old_conv = self.backbone.features[0][0]
-        new_conv = nn.Conv2d(
-            1,  # Single channel input
-            old_conv.out_channels,
-            kernel_size=old_conv.kernel_size,
-            stride=old_conv.stride,
-            padding=old_conv.padding,
-            dilation=old_conv.dilation,
-            groups=old_conv.groups,
-            padding_mode=old_conv.padding_mode,
-            bias=old_conv.bias is not None,
+        adapt_first_conv_for_single_channel(
+            self.backbone, "features.0.0", pretrained=self.pretrained
         )
-        if self.pretrained:
-            with torch.no_grad():
-                new_conv.weight.copy_(old_conv.weight.mean(dim=1, keepdim=True))
-        self.backbone.features[0][0] = new_conv
 
     def _freeze_backbone(self):
         """Freeze feature extraction while retaining the regression head."""

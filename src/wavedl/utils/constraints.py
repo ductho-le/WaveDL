@@ -35,6 +35,39 @@ if TYPE_CHECKING:
 # ==============================================================================
 # SAFE EXPRESSION PARSING
 # ==============================================================================
+def _safe_positive_floor(t: torch.Tensor) -> torch.Tensor:
+    eps = (
+        max(1e-12, float(torch.finfo(t.dtype).tiny)) if t.is_floating_point() else 1e-12
+    )
+    return torch.clamp(t, min=eps)
+
+
+def _safe_nonzero_denom(t: torch.Tensor) -> torch.Tensor:
+    eps = (
+        max(1e-12, float(torch.finfo(t.dtype).tiny)) if t.is_floating_point() else 1e-12
+    )
+    sign = torch.where(t >= 0, torch.ones_like(t), -torch.ones_like(t))
+    return torch.where(t.abs() < eps, sign * eps, t)
+
+
+def _safe_pow(base: torch.Tensor, exp: torch.Tensor) -> torch.Tensor:
+    """Domain-safe power: clamp negative bases when exponent is non-integer."""
+    is_int_exp = torch.all(exp == torch.floor(exp))
+    if bool(is_int_exp):
+        if bool(torch.any(exp < 0)):
+            return torch.pow(_safe_nonzero_denom(base), exp)
+        return torch.pow(base, exp)
+    return torch.pow(_safe_positive_floor(base), exp)
+
+
+def _reduce_sample_axes(x: torch.Tensor) -> tuple[int, ...]:
+    if x.ndim < 2:
+        raise ValueError(
+            f"Input aggregates require batched tensors with ndim >= 2, got {tuple(x.shape)}."
+        )
+    return tuple(range(1, x.ndim))
+
+
 SAFE_FUNCTIONS: dict[str, Callable] = {
     "sin": torch.sin,
     "cos": torch.cos,
@@ -43,8 +76,8 @@ SAFE_FUNCTIONS: dict[str, Callable] = {
     # log/sqrt are domain-protected: clamp the argument to a small positive floor
     # so denormalized predictions <= 0 (common before convergence) yield a finite
     # penalty/gradient instead of NaN/-inf, which would poison training via backprop.
-    "log": lambda t: torch.log(torch.clamp(t, min=1e-12)),
-    "sqrt": lambda t: torch.sqrt(torch.clamp(t, min=1e-12)),
+    "log": lambda t: torch.log(_safe_positive_floor(t)),
+    "sqrt": lambda t: torch.sqrt(_safe_positive_floor(t)),
     "abs": torch.abs,
     "relu": F.relu,
     "sigmoid": torch.sigmoid,
@@ -52,17 +85,17 @@ SAFE_FUNCTIONS: dict[str, Callable] = {
     "tanh": torch.tanh,
     "min": torch.minimum,
     "max": torch.maximum,
-    "pow": torch.pow,
+    "pow": _safe_pow,
     "clamp": torch.clamp,
 }
 
 INPUT_AGGREGATES: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
-    "x_mean": lambda x: x.mean(dim=tuple(range(1, x.ndim))),
-    "x_sum": lambda x: x.sum(dim=tuple(range(1, x.ndim))),
-    "x_max": lambda x: x.amax(dim=tuple(range(1, x.ndim))),
-    "x_min": lambda x: x.amin(dim=tuple(range(1, x.ndim))),
-    "x_std": lambda x: x.std(dim=tuple(range(1, x.ndim)), correction=0),
-    "x_energy": lambda x: (x**2).sum(dim=tuple(range(1, x.ndim))),
+    "x_mean": lambda x: x.mean(dim=_reduce_sample_axes(x)),
+    "x_sum": lambda x: x.sum(dim=_reduce_sample_axes(x)),
+    "x_max": lambda x: x.amax(dim=_reduce_sample_axes(x)),
+    "x_min": lambda x: x.amin(dim=_reduce_sample_axes(x)),
+    "x_std": lambda x: x.std(dim=_reduce_sample_axes(x), correction=0),
+    "x_energy": lambda x: (x**2).sum(dim=_reduce_sample_axes(x)),
 }
 
 
@@ -100,26 +133,95 @@ class ExpressionConstraint(nn.Module):
         self._validate(self._tree)
 
     def _validate(self, tree: ast.Expression) -> None:
+        allowed_nodes = (
+            ast.Expression,
+            ast.Constant,
+            ast.Name,
+            ast.Load,
+            ast.BinOp,
+            ast.Add,
+            ast.Sub,
+            ast.Mult,
+            ast.Div,
+            ast.Pow,
+            ast.Mod,
+            ast.UnaryOp,
+            ast.UAdd,
+            ast.USub,
+            ast.Call,
+            ast.keyword,
+            ast.Compare,
+            ast.Gt,
+            ast.GtE,
+            ast.Lt,
+            ast.LtE,
+            ast.Eq,
+            ast.Subscript,
+            ast.Tuple,
+        )
+        unary_fns = {
+            "sin",
+            "cos",
+            "tan",
+            "exp",
+            "log",
+            "sqrt",
+            "abs",
+            "relu",
+            "sigmoid",
+            "softplus",
+            "tanh",
+        }
+        binary_fns = {"min", "max", "pow"}
         for node in ast.walk(tree):
+            if not isinstance(node, allowed_nodes):
+                if isinstance(node, ast.NotEq):
+                    raise ValueError(
+                        "'!=' is not a valid constraint. Use '==' for equality constraints."
+                    )
+                raise ValueError(
+                    f"Unsupported expression syntax '{type(node).__name__}' in constraint."
+                )
             if isinstance(node, ast.Constant):
-                if not isinstance(node.value, (int, float)) or not math.isfinite(
-                    node.value
+                if (
+                    isinstance(node.value, bool)
+                    or not isinstance(node.value, (int, float))
+                    or not math.isfinite(node.value)
                 ):
                     raise ValueError(
                         "Constraint constants must be finite real numbers."
                     )
+            if isinstance(node, ast.Compare) and (
+                len(node.ops) != 1 or len(node.comparators) != 1
+            ):
+                raise ValueError(
+                    "Only single comparisons supported (e.g., 'y0 > 0', not 'y0 > 0 > y1')"
+                )
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                if node.func.id not in SAFE_FUNCTIONS:
+                fn_name = node.func.id
+                if fn_name not in SAFE_FUNCTIONS:
                     raise ValueError(
-                        f"Unsafe function '{node.func.id}' in constraint. "
+                        f"Unsafe function '{fn_name}' in constraint. "
                         f"Allowed: {list(SAFE_FUNCTIONS.keys())}"
                     )
-                allowed_keywords = {"min", "max"} if node.func.id == "clamp" else set()
+                allowed_keywords = {"min", "max"} if fn_name == "clamp" else set()
                 for keyword in node.keywords:
                     if keyword.arg not in allowed_keywords:
                         raise ValueError(
-                            f"Unsupported keyword '{keyword.arg}' for {node.func.id}."
+                            f"Unsupported keyword '{keyword.arg}' for {fn_name}."
                         )
+                if fn_name in unary_fns and len(node.args) != 1:
+                    raise ValueError(
+                        f"Function '{fn_name}' expects 1 argument, got {len(node.args)}."
+                    )
+                if fn_name in binary_fns and len(node.args) != 2:
+                    raise ValueError(
+                        f"Function '{fn_name}' expects 2 arguments, got {len(node.args)}."
+                    )
+                if fn_name == "clamp" and not (1 <= len(node.args) <= 3):
+                    raise ValueError(
+                        f"Function 'clamp' expects 1 to 3 positional arguments, got {len(node.args)}."
+                    )
             elif isinstance(node, ast.Call):
                 raise ValueError("Only direct function calls supported (e.g., sin(x))")
 
@@ -158,18 +260,19 @@ class ExpressionConstraint(nn.Module):
         elif isinstance(node, ast.BinOp):
             left = self._eval(node.left, pred, inputs)
             right = self._eval(node.right, pred, inputs)
-            ops = {
-                ast.Add: torch.add,
-                ast.Sub: torch.sub,
-                ast.Mult: torch.mul,
-                ast.Div: torch.div,
-                ast.Pow: torch.pow,
-                ast.Mod: torch.remainder,
-            }
-            op_fn = ops.get(type(node.op))
-            if op_fn is None:
-                raise ValueError(f"Unsupported operator: {type(node.op).__name__}")
-            return op_fn(left, right)
+            if isinstance(node.op, ast.Add):
+                return torch.add(left, right)
+            if isinstance(node.op, ast.Sub):
+                return torch.sub(left, right)
+            if isinstance(node.op, ast.Mult):
+                return torch.mul(left, right)
+            if isinstance(node.op, ast.Div):
+                return torch.div(left, _safe_nonzero_denom(right))
+            if isinstance(node.op, ast.Pow):
+                return _safe_pow(left, right)
+            if isinstance(node.op, ast.Mod):
+                return torch.remainder(left, _safe_nonzero_denom(right))
+            raise ValueError(f"Unsupported operator: {type(node.op).__name__}")
         elif isinstance(node, ast.UnaryOp):
             operand = self._eval(node.operand, pred, inputs)
             if isinstance(node.op, ast.USub):
@@ -243,23 +346,16 @@ class ExpressionConstraint(nn.Module):
                 inputs_for_indexing = inputs.squeeze(1)  # (B, 1, H, W) → (B, H, W)
 
             # Validate dimensions match
-            # inputs shape: (batch, dim1) or (batch, dim1, dim2) or (batch, dim1, dim2, dim3)
+            # inputs shape: (batch, dim1, ...)
             input_ndim = inputs_for_indexing.ndim - 1  # Exclude batch dimension
-            if len(indices) != input_ndim:
+            if input_ndim < 1 or len(indices) != input_ndim:
                 raise ValueError(
                     f"Input has {input_ndim}D shape (after channel squeeze), but got {len(indices)} indices. "
                     f"Use x[i] for 1D, x[i,j] for 2D, x[i,j,k] for 3D inputs."
                 )
 
             # Extract the value at the specified indices (for entire batch)
-            if len(indices) == 1:
-                value = inputs_for_indexing[:, indices[0]]
-            elif len(indices) == 2:
-                value = inputs_for_indexing[:, indices[0], indices[1]]
-            elif len(indices) == 3:
-                value = inputs_for_indexing[:, indices[0], indices[1], indices[2]]
-            else:
-                raise ValueError("Only 1D, 2D, or 3D input indexing supported.")
+            value = inputs_for_indexing[(slice(None), *indices)]
 
             if pred.ndim > 2:
                 value = value.reshape(value.shape[0], *([1] * (pred.ndim - 2)))
@@ -308,7 +404,15 @@ class ExpressionConstraint(nn.Module):
         Returns:
             Scalar penalty value
         """
-        violation = self._eval(self._tree, pred, inputs)
+        work_pred = (
+            pred.float() if pred.dtype in (torch.float16, torch.bfloat16) else pred
+        )
+        work_inputs = (
+            inputs.float()
+            if inputs is not None and inputs.dtype in (torch.float16, torch.bfloat16)
+            else inputs
+        )
+        violation = self._eval(self._tree, work_pred, work_inputs)
         if self.reduction == "mse":
             return (violation**2).mean()
         else:  # mae
@@ -360,12 +464,15 @@ class FileConstraint(nn.Module):
 
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
-        spec.loader.exec_module(module)
-
-        if not callable(getattr(module, "constraint", None)):
-            raise ValueError(
-                f"Constraint file must define 'constraint(pred, inputs)' function: {file_path}"
-            )
+        try:
+            spec.loader.exec_module(module)
+            if not callable(getattr(module, "constraint", None)):
+                raise ValueError(
+                    f"Constraint file must define 'constraint(pred, inputs)' function: {file_path}"
+                )
+        except Exception:
+            sys.modules.pop(module_name, None)
+            raise
 
         self._constraint_fn = module.constraint
 
@@ -373,7 +480,15 @@ class FileConstraint(nn.Module):
         self, pred: torch.Tensor, inputs: torch.Tensor | None = None
     ) -> torch.Tensor:
         """Evaluate constraint from loaded function."""
-        violation = self._constraint_fn(pred, inputs)
+        work_pred = (
+            pred.float() if pred.dtype in (torch.float16, torch.bfloat16) else pred
+        )
+        work_inputs = (
+            inputs.float()
+            if inputs is not None and inputs.dtype in (torch.float16, torch.bfloat16)
+            else inputs
+        )
+        violation = self._constraint_fn(work_pred, work_inputs)
         if self.reduction == "mse":
             return (violation**2).mean()
         else:
@@ -463,25 +578,32 @@ class PhysicsConstrainedLoss(nn.Module):
 
     def _denormalize(self, pred: torch.Tensor) -> torch.Tensor:
         """Convert normalized predictions to physical values."""
+        work_pred = (
+            pred.float() if pred.dtype in (torch.float16, torch.bfloat16) else pred
+        )
         if self.output_mean is None or self.output_std is None:
-            return pred
-        output_mean = self.output_mean
-        output_residual = self.output_mean_residual
-        output_std = self.output_std
+            return work_pred
+        output_mean = self.output_mean.to(
+            device=work_pred.device, dtype=work_pred.dtype
+        )
+        output_residual = self.output_mean_residual.to(
+            device=work_pred.device, dtype=work_pred.dtype
+        )
+        output_std = self.output_std.to(device=work_pred.device, dtype=work_pred.dtype)
         # Legacy/custom scalers commonly store channel statistics as (C,).
         # Reshape them for channels-first dense fields; vector behavior is
         # unchanged. SpatialTargetScaler already stores (C,1,1), which also
         # broadcasts correctly after the optional batch dimension below.
-        if pred.ndim > 2 and output_mean.ndim == 1:
-            shape = (1, -1, *([1] * (pred.ndim - 2)))
+        if work_pred.ndim > 2 and output_mean.ndim == 1:
+            shape = (1, -1, *([1] * (work_pred.ndim - 2)))
             output_mean = output_mean.reshape(shape)
             output_residual = output_residual.reshape(shape)
             output_std = output_std.reshape(shape)
-        elif output_mean.ndim == pred.ndim - 1:
+        elif output_mean.ndim == work_pred.ndim - 1:
             output_mean = output_mean.unsqueeze(0)
             output_residual = output_residual.unsqueeze(0)
             output_std = output_std.unsqueeze(0)
-        return (pred * output_std + output_residual) + output_mean
+        return (work_pred * output_std + output_residual) + output_mean
 
     def forward(
         self,

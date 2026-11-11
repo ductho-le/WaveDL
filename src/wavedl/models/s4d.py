@@ -15,9 +15,9 @@ and full compatibility with torch.compile.
     - torch.compile-safe: no dynamic control flow
 
 **Variants**:
-    - s4d_small:  d_model=64,  n_layers=4, d_state=32  (~0.8M params)
-    - s4d:        d_model=128, n_layers=6, d_state=64  (~3.2M params)
-    - s4d_large:  d_model=256, n_layers=8, d_state=64  (~11M params)
+    - s4d_small:  d_model=64,  n_layers=4, d_state=32  (~0.11M params)
+    - s4d:        d_model=128, n_layers=6, d_state=64  (~0.66M params)
+    - s4d_large:  d_model=256, n_layers=8, d_state=64  (~3.07M params)
 
 **Note**: S4D is 1D-only. For 2D data use CNN, ResNet, or ViT.
 
@@ -39,6 +39,7 @@ from typing import Any, ClassVar
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from wavedl.models.base import BaseModel
 from wavedl.models.registry import register_model
@@ -120,40 +121,43 @@ class S4DKernel(nn.Module):
         Returns:
             kernel: (d_model, L) real-valued convolution kernel
         """
-        dt = self.log_dt.exp()  # (d_model, d_state)
+        # Always synthesize the SSM kernel in float32: bfloat16/float16 quantizes
+        # integer sample indices t > 256/2048 and is unsupported by torch.fft.rfft.
+        with torch.amp.autocast(device_type=self.log_dt.device.type, enabled=False):
+            dt = self.log_dt.float().exp()  # (d_model, d_state)
 
-        # Discretize: A_bar = exp(dt * A)
-        # A shape: (d_state,), dt shape: (d_model, d_state)
-        # Clamp A_real to non-positive: guarantees exp(t*A_real) decays,
-        # preventing exponential kernel growth if A_real drifts positive.
-        dA_real = dt * self.A_real.clamp(max=0)  # (d_model, d_state)
-        dA_imag = dt * self.A_imag  # (d_model, d_state)
+            # Discretize: A_bar = exp(dt * A)
+            # A shape: (d_state,), dt shape: (d_model, d_state)
+            # Clamp A_real to non-positive: guarantees exp(t*A_real) decays,
+            # preventing exponential kernel growth if A_real drifts positive.
+            dA_real = dt * self.A_real.float().clamp(max=0)  # (d_model, d_state)
+            dA_imag = dt * self.A_imag.float()  # (d_model, d_state)
 
-        # C coefficients (broadcast-ready)
-        C_r = self.C_real.unsqueeze(0)  # (1, d_model, d_state)
-        C_i = self.C_imag.unsqueeze(0)  # (1, d_model, d_state)
+            # C coefficients (broadcast-ready)
+            C_r = self.C_real.float().unsqueeze(0)  # (1, d_model, d_state)
+            C_i = self.C_imag.float().unsqueeze(0)  # (1, d_model, d_state)
 
-        # Chunked computation: process L in blocks to limit peak memory.
-        # Each chunk materializes (chunk_size, d_model, d_state) intermediates
-        # and immediately sums over d_state, keeping only (d_model, chunk_size).
-        chunk_size = self._KERNEL_CHUNK_SIZE
-        kernel_chunks: list[torch.Tensor] = []
+            # Chunked computation: process L in blocks to limit peak memory.
+            # Each chunk materializes (chunk_size, d_model, d_state) intermediates
+            # and immediately sums over d_state, keeping only (d_model, chunk_size).
+            chunk_size = self._KERNEL_CHUNK_SIZE
+            kernel_chunks: list[torch.Tensor] = []
 
-        for start in range(0, L, chunk_size):
-            end = min(start + chunk_size, L)
-            t = torch.arange(start, end, device=dt.device, dtype=dt.dtype)
-            t = t.view(-1, 1, 1)  # (chunk_len, 1, 1)
+            for start in range(0, L, chunk_size):
+                end = min(start + chunk_size, L)
+                t = torch.arange(start, end, device=dt.device, dtype=torch.float32)
+                t = t.view(-1, 1, 1)  # (chunk_len, 1, 1)
 
-            mag_t = (t * dA_real).exp()  # (chunk_len, d_model, d_state)
-            cos_t = (t * dA_imag).cos()
-            sin_t = (t * dA_imag).sin()
+                mag_t = (t * dA_real).exp()  # (chunk_len, d_model, d_state)
+                cos_t = (t * dA_imag).cos()
+                sin_t = (t * dA_imag).sin()
 
-            # kernel_t = Re(C * exp(A)^t * B) — B=1 for S4D-Lin
-            k_real = mag_t * (C_r * cos_t - C_i * sin_t)
-            kernel_chunks.append(k_real.sum(dim=-1))  # (chunk_len, d_model)
+                # kernel_t = Re(C * exp(A)^t * B) — B=1 for S4D-Lin
+                k_real = mag_t * (C_r * cos_t - C_i * sin_t)
+                kernel_chunks.append(k_real.sum(dim=-1))  # (chunk_len, d_model)
 
-        kernel = torch.cat(kernel_chunks, dim=0)  # (L, d_model)
-        return kernel.permute(1, 0)  # (d_model, L)
+            kernel = torch.cat(kernel_chunks, dim=0)  # (L, d_model)
+            return kernel.permute(1, 0)  # (d_model, L)
 
 
 # =============================================================================
@@ -209,23 +213,30 @@ class S4DLayer(nn.Module):
             (B, L, d_model)
         """
         residual = x
-        _B, L, _ = x.shape
+        is_onnx = torch.onnx.is_in_onnx_export()
+        L = int(x.shape[1]) if is_onnx else x.shape[1]
 
         # SSM mixing
         z = self.norm(x)  # (B, L, d_model)
         z = z.permute(0, 2, 1)  # (B, d_model, L)
 
-        # Compute kernel
-        k = self.kernel(L)  # (d_model, L)
-
-        # FFT convolution
-        k_f = torch.fft.rfft(k, n=2 * L)  # (d_model, L+1) complex
-        z_f = torch.fft.rfft(z, n=2 * L)  # (B, d_model, L+1) complex
-        y_f = k_f.unsqueeze(0) * z_f  # broadcast over batch
-        y = torch.fft.irfft(y_f, n=2 * L)[..., :L]  # (B, d_model, L)
-
-        # Add skip connection D*x (feedthrough)
-        y = y + self.D.view(1, -1, 1) * z
+        # Compute kernel and causal convolution in float32 (FFT does not support
+        # bf16/non-pow2 fp16, and ONNX opset 17 lacks aten::fft_rfft).
+        with torch.amp.autocast(device_type=z.device.type, enabled=False):
+            k = self.kernel(L)  # (d_model, L), float32
+            z_f32 = z.float()
+            if is_onnx:
+                y_f32 = F.conv1d(
+                    F.pad(z_f32, (L - 1, 0)),
+                    k.flip(-1).unsqueeze(1),
+                    groups=int(z_f32.shape[1]),
+                )
+            else:
+                k_f = torch.fft.rfft(k, n=2 * L)  # (d_model, L+1) complex
+                z_f = torch.fft.rfft(z_f32, n=2 * L)  # (B, d_model, L+1) complex
+                y_f = k_f.unsqueeze(0) * z_f  # broadcast over batch
+                y_f32 = torch.fft.irfft(y_f, n=2 * L)[..., :L]  # (B, d_model, L)
+            y = (y_f32 + self.D.float().view(1, -1, 1) * z_f32).to(dtype=z.dtype)
 
         y = y.permute(0, 2, 1)  # (B, L, d_model)
         y = self.act(y)
@@ -284,6 +295,21 @@ class S4DBase(BaseModel):
                 "For 2D/3D data, use ResNet, EfficientNet, or Swin."
             )
 
+        for param_name, param_val in (
+            ("d_model", d_model),
+            ("n_layers", n_layers),
+            ("d_state", d_state),
+            ("expand", expand),
+        ):
+            if (
+                isinstance(param_val, bool)
+                or not isinstance(param_val, int)
+                or param_val <= 0
+            ):
+                raise ValueError(
+                    f"{param_name} must be a positive integer, got {param_val!r}."
+                )
+
         self.d_model = d_model
         self.n_layers = n_layers
         self.d_state = d_state
@@ -307,12 +333,13 @@ class S4DBase(BaseModel):
         self.norm_out = nn.LayerNorm(d_model)
 
         # Global aggregation + head
+        head_hidden = max(d_model // 2, 1)
         self.head = nn.Sequential(
             nn.Dropout(dropout_rate),
-            nn.Linear(d_model, d_model // 2),
+            nn.Linear(d_model, head_hidden),
             nn.GELU(),
             nn.Dropout(dropout_rate * 0.5),
-            nn.Linear(d_model // 2, out_size),
+            nn.Linear(head_hidden, out_size),
         )
 
         self._init_weights()

@@ -22,13 +22,21 @@ References:
 Author: Ductho Le (ductho.le@outlook.com)
 """
 
-from typing import Any
+import copy
+from typing import Any, ClassVar
 
 import torch
 import torch.nn as nn
 
 from wavedl.models.base import BaseModel, SpatialShape, compute_num_groups
 from wavedl.models.registry import register_model
+
+
+def _resnet_num_groups(num_channels: int) -> int:
+    """Compute GroupNorm groups while keeping >= 2 channels per group when C > 1."""
+    return compute_num_groups(
+        num_channels, preferred_groups=min(32, max(1, num_channels // 2))
+    )
 
 
 def _get_conv_layers(
@@ -73,12 +81,12 @@ class BasicBlock(nn.Module):
             padding=1,
             bias=False,
         )
-        self.gn1 = nn.GroupNorm(compute_num_groups(out_channels), out_channels)
+        self.gn1 = nn.GroupNorm(_resnet_num_groups(out_channels), out_channels)
         self.relu = nn.ReLU(inplace=True)
         self.conv2 = Conv(
             out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False
         )
-        self.gn2 = nn.GroupNorm(compute_num_groups(out_channels), out_channels)
+        self.gn2 = nn.GroupNorm(_resnet_num_groups(out_channels), out_channels)
         self.downsample = downsample
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -121,7 +129,7 @@ class Bottleneck(nn.Module):
 
         # 1x1 reduce
         self.conv1 = Conv(in_channels, out_channels, kernel_size=1, bias=False)
-        self.gn1 = nn.GroupNorm(compute_num_groups(out_channels), out_channels)
+        self.gn1 = nn.GroupNorm(_resnet_num_groups(out_channels), out_channels)
 
         # 3x3 conv
         self.conv2 = Conv(
@@ -132,7 +140,7 @@ class Bottleneck(nn.Module):
             padding=1,
             bias=False,
         )
-        self.gn2 = nn.GroupNorm(compute_num_groups(out_channels), out_channels)
+        self.gn2 = nn.GroupNorm(_resnet_num_groups(out_channels), out_channels)
 
         # 1x1 expand
         self.conv3 = Conv(
@@ -140,7 +148,7 @@ class Bottleneck(nn.Module):
         )
         expanded_channels = out_channels * self.expansion
         self.gn3 = nn.GroupNorm(
-            compute_num_groups(expanded_channels), expanded_channels
+            _resnet_num_groups(expanded_channels), expanded_channels
         )
 
         self.relu = nn.ReLU(inplace=True)
@@ -188,7 +196,33 @@ class ResNetBase(BaseModel):
     ):
         super().__init__(in_shape, out_size)
 
-        self.dim = len(in_shape)
+        if (
+            not isinstance(layers, (list, tuple))
+            or len(layers) != 4
+            or any(
+                isinstance(n, bool) or not isinstance(n, int) or n <= 0 for n in layers
+            )
+        ):
+            raise ValueError(
+                f"layers must be a 4-element sequence of positive integers, got {layers!r}"
+            )
+        if (
+            isinstance(base_width, bool)
+            or not isinstance(base_width, int)
+            or base_width <= 0
+        ):
+            raise ValueError(
+                f"base_width must be a positive integer, got {base_width!r}"
+            )
+        min_size = 8
+        for i, s in enumerate(self.in_shape):
+            if s < min_size:
+                raise ValueError(
+                    f"ResNet requires each spatial axis >= {min_size}, "
+                    f"but axis {i} has size {s}."
+                )
+
+        self.dim = len(self.in_shape)
         self.base_width = base_width
         self.dropout_rate = dropout_rate
         self.in_channels = base_width
@@ -197,7 +231,7 @@ class ResNetBase(BaseModel):
 
         # Stem: 7x7 conv (or equivalent for 1D/3D)
         self.conv1 = Conv(1, base_width, kernel_size=7, stride=2, padding=3, bias=False)
-        self.gn1 = nn.GroupNorm(compute_num_groups(base_width), base_width)
+        self.gn1 = nn.GroupNorm(_resnet_num_groups(base_width), base_width)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = MaxPool(kernel_size=3, stride=2, padding=1)
 
@@ -243,7 +277,7 @@ class ResNetBase(BaseModel):
                     bias=False,
                 ),
                 nn.GroupNorm(
-                    compute_num_groups(out_channels * block.expansion),
+                    _resnet_num_groups(out_channels * block.expansion),
                     out_channels * block.expansion,
                 ),
             )
@@ -296,7 +330,11 @@ class ResNetBase(BaseModel):
     @classmethod
     def get_default_config(cls) -> dict[str, Any]:
         """Return default configuration."""
-        return {"base_width": 64, "dropout_rate": 0.1}
+        return {
+            "base_width": 64,
+            "dropout_rate": 0.1,
+            **copy.deepcopy(getattr(cls, "_variant_defaults", {})),
+        }
 
 
 # =============================================================================
@@ -318,14 +356,17 @@ class ResNet18(ResNetBase):
         dropout_rate: Dropout rate (default: 0.1)
     """
 
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "layers": [2, 2, 2, 2],
+    }
+
     def __init__(self, in_shape: SpatialShape, out_size: int, **kwargs):
-        super().__init__(
-            in_shape=in_shape,
-            out_size=out_size,
-            block=BasicBlock,
-            layers=[2, 2, 2, 2],
+        params = {
+            "block": BasicBlock,
+            **copy.deepcopy(self._variant_defaults),
             **kwargs,
-        )
+        }
+        super().__init__(in_shape=in_shape, out_size=out_size, **params)
 
     def __repr__(self) -> str:
         return (
@@ -347,14 +388,17 @@ class ResNet34(ResNetBase):
         dropout_rate: Dropout rate (default: 0.1)
     """
 
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "layers": [3, 4, 6, 3],
+    }
+
     def __init__(self, in_shape: SpatialShape, out_size: int, **kwargs):
-        super().__init__(
-            in_shape=in_shape,
-            out_size=out_size,
-            block=BasicBlock,
-            layers=[3, 4, 6, 3],
+        params = {
+            "block": BasicBlock,
+            **copy.deepcopy(self._variant_defaults),
             **kwargs,
-        )
+        }
+        super().__init__(in_shape=in_shape, out_size=out_size, **params)
 
     def __repr__(self) -> str:
         return (
@@ -376,14 +420,17 @@ class ResNet50(ResNetBase):
         dropout_rate: Dropout rate (default: 0.1)
     """
 
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "layers": [3, 4, 6, 3],
+    }
+
     def __init__(self, in_shape: SpatialShape, out_size: int, **kwargs):
-        super().__init__(
-            in_shape=in_shape,
-            out_size=out_size,
-            block=Bottleneck,
-            layers=[3, 4, 6, 3],
+        params = {
+            "block": Bottleneck,
+            **copy.deepcopy(self._variant_defaults),
             **kwargs,
-        )
+        }
+        super().__init__(in_shape=in_shape, out_size=out_size, **params)
 
     def __repr__(self) -> str:
         return (
@@ -444,6 +491,14 @@ class PretrainedResNetBase(BaseModel):
                 f"Pretrained ResNet requires 2D input (H, W), got {len(in_shape)}D. "
                 "For 1D/3D data, use resnet18/resnet50 instead."
             )
+
+        min_size = 16
+        for i, s in enumerate(self.in_shape):
+            if s < min_size:
+                raise ValueError(
+                    f"Pretrained ResNet requires each spatial axis >= {min_size}, "
+                    f"but axis {i} has size {s}."
+                )
 
         self.pretrained = pretrained
         self.dropout_rate = dropout_rate

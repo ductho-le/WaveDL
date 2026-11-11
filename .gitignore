@@ -94,16 +94,28 @@ venv.bak/
 # Training outputs
 *.pth
 *.pt
+*.safetensors
+*.onnx
+!examples/**/*.onnx
 wandb/
+demo_results/
+demo_training/
+previous_runs/
+onnx_results.png
 
 # Cache
 *.cache
+*.db
 .accelerate/
 .torch_cache/
+.hf_cache/
 .triton_cache/
 .inductor_cache/
 .matplotlib/
 .fontconfig/
+.wandb/
+.wandb_cache/
+.wandb_config/
 .cache/
 .local/
 

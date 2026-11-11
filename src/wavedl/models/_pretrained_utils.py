@@ -11,6 +11,7 @@ Common components used across multiple models:
 Author: Ductho Le (ductho.le@outlook.com)
 """
 
+import contextlib
 import copy
 import math
 from numbers import Integral
@@ -57,12 +58,14 @@ def get_pool_layer(dim: int) -> type[nn.Module]:
 def _global_response_norm(x, gamma, beta, spatial_dims, eps):
     # Half-precision L2 norms can overflow even when every activation and the
     # final normalized response are representable. Keep the reduction and
-    # modulation in float32, including the zero-initialized gamma product.
-    dtype = torch.promote_types(x.dtype, gamma.dtype)
-    work = x.float() if x.dtype in (torch.float16, torch.bfloat16) else x
+    # modulation in float32, then cast back to x.dtype to preserve AMP dtype.
+    is_low_prec = x.dtype in (torch.float16, torch.bfloat16)
+    work = x.float() if is_low_prec else x
+    gamma_w = gamma.to(dtype=work.dtype)
+    beta_w = beta.to(dtype=work.dtype)
     response = torch.linalg.vector_norm(work, dim=spatial_dims, keepdim=True)
     response = response / (response.mean(dim=1, keepdim=True) + eps)
-    return (gamma * (work * response) + beta + work).to(dtype=dtype)
+    return (gamma_w * (work * response) + beta_w + work).to(dtype=x.dtype)
 
 
 class GRN1d(nn.Module):
@@ -146,6 +149,8 @@ class LayerNormNd(nn.Module):
 
     def __init__(self, normalized_shape: int, dim: int, eps: float = 1e-6):
         super().__init__()
+        if dim not in (1, 2, 3):
+            raise ValueError(f"Unsupported dimension: {dim}. Expected 1, 2, or 3.")
         self.weight = nn.Parameter(torch.ones(normalized_shape))
         self.bias = nn.Parameter(torch.zeros(normalized_shape))
         self.eps = eps
@@ -169,6 +174,8 @@ class LayerNormNd(nn.Module):
             x = x.permute(0, 2, 3, 4, 1)
             x = F.layer_norm(x, self.normalized_shape, self.weight, self.bias, self.eps)
             x = x.permute(0, 4, 1, 2, 3)
+        else:
+            raise ValueError(f"Unsupported dimension: {self.dim}")
         return x
 
 
@@ -205,12 +212,15 @@ class DropPath(nn.Module):
         if self.drop_prob == 1.0:
             return x * 0.0
 
-        keep_prob = 1 - self.drop_prob
-        # Shape: (batch_size, 1, 1, ...) for broadcasting
+        keep_prob = 1.0 - self.drop_prob
+        # Shape: (batch_size, 1, 1, ...) for broadcasting.
+        # Sample and scale in FP32 so small drop probabilities (< 1/256) do not
+        # quantize keep_prob to 1.0 or introduce gain drift under BF16/FP16 AMP.
         shape = (x.shape[0],) + (1,) * (x.ndim - 1)
-        random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
-        random_tensor.floor_()  # Binarize
-        return x.div(keep_prob) * random_tensor
+        random_tensor = (
+            keep_prob + torch.rand(shape, dtype=torch.float32, device=x.device)
+        ).floor_()
+        return x * random_tensor.div_(keep_prob).to(dtype=x.dtype)
 
 
 # =============================================================================
@@ -221,15 +231,24 @@ class DropPath(nn.Module):
 def freeze_backbone(
     model: nn.Module,
     exclude_patterns: list[str] | None = None,
+    *,
+    eval_frozen: bool = True,
 ) -> int:
     """
     Freeze backbone parameters, keeping specified layers trainable.
+
+    Note:
+        ``BaseModel`` subclasses should prefer ``self._freeze_backbone_modules(...)``
+        (with ``self.freeze_backbone = True``) so ``model.train()`` continues to keep
+        frozen BatchNorm/Dropout submodules in ``eval()`` mode across training epochs.
 
     Args:
         model: The model whose parameters to freeze
         exclude_patterns: List of patterns to exclude from freezing.
             Module paths matching a pattern or its descendants stay trainable.
             Default: ["classifier", "head", "fc"]
+        eval_frozen: Put frozen normalization/dropout submodules into eval mode
+            so BatchNorm running stats do not drift during fine-tuning.
 
     Returns:
         Number of parameters frozen
@@ -240,14 +259,24 @@ def freeze_backbone(
     if exclude_patterns is None:
         exclude_patterns = ["classifier", "head", "fc"]
 
+    def _is_excluded(path: str) -> bool:
+        return any(
+            path == pattern or path.startswith(pattern + ".")
+            for pattern in exclude_patterns
+        )
+
     frozen_count = 0
     for name, param in model.named_parameters():
-        if not any(
-            name == pattern or name.startswith(pattern + ".")
-            for pattern in exclude_patterns
-        ):
+        if not _is_excluded(name):
             param.requires_grad = False
             frozen_count += param.numel()
+
+    if eval_frozen:
+        for mod_name, module in model.named_modules():
+            if mod_name and not _is_excluded(mod_name):
+                params = list(module.parameters())
+                if not params or all(not p.requires_grad for p in params):
+                    module.eval()
 
     return frozen_count
 
@@ -275,14 +304,15 @@ def build_regression_head(
     Returns:
         nn.Sequential regression head
     """
+    mid_dim = max(hidden_dim // 2, 1)
     return nn.Sequential(
         nn.Dropout(dropout_rate),
         nn.Linear(in_features, hidden_dim),
         nn.SiLU(inplace=True),
         nn.Dropout(dropout_rate * 0.5),
-        nn.Linear(hidden_dim, hidden_dim // 2),
+        nn.Linear(hidden_dim, mid_dim),
         nn.SiLU(inplace=True),
-        nn.Linear(hidden_dim // 2, out_size),
+        nn.Linear(mid_dim, out_size),
     )
 
 
@@ -297,14 +327,14 @@ def adapt_input_channels(
     For pretrained models, averages RGB weights to grayscale.
 
     Args:
-        conv_layer: Original conv layer (expects 3 input channels)
+        conv_layer: Original conv layer (1D/2D/3D)
         new_in_channels: New number of input channels (default: 1)
         pretrained: Whether to adapt pretrained weights
 
     Returns:
         New conv layer with adapted input channels
     """
-    if not isinstance(conv_layer, nn.Conv2d):
+    if not isinstance(conv_layer, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
         raise NotImplementedError(f"Unsupported layer type: {type(conv_layer)}")
     if (
         not isinstance(new_in_channels, Integral)
@@ -329,7 +359,6 @@ def adapt_input_channels(
         ),
         requires_grad=conv_layer.weight.requires_grad,
     )
-    new_conv.reset_parameters()
     if pretrained:
         with torch.no_grad():
             if new_in_channels == conv_layer.in_channels:
@@ -338,11 +367,14 @@ def adapt_input_channels(
                 weight = conv_layer.weight.mean(dim=1, keepdim=True)
             else:
                 repeats = math.ceil(new_in_channels / conv_layer.in_channels)
-                weight = conv_layer.weight.repeat(1, repeats, 1, 1)[:, :new_in_channels]
+                repeat_shape = (1, repeats) + (1,) * (conv_layer.weight.ndim - 2)
+                weight = conv_layer.weight.repeat(*repeat_shape)[:, :new_in_channels]
                 weight = weight * (conv_layer.in_channels / new_in_channels)
             new_conv.weight.copy_(weight)
             if conv_layer.bias is not None:
                 new_conv.bias.copy_(conv_layer.bias)
+    else:
+        new_conv.reset_parameters()
     return new_conv
 
 
@@ -404,13 +436,48 @@ def adapt_first_conv_for_single_channel(
         setattr(parent, final_attr, new_conv)
 
 
+def infer_backbone_features(
+    backbone: nn.Module,
+    in_shape: tuple[int, ...],
+    in_channels: int = 1,
+) -> int:
+    """
+    Infer the flattened feature dimension emitted by a backbone via a dummy pass.
+
+    Several ``timm`` backbones (e.g. MIT EfficientViT) apply projection layers inside
+    ``forward_head(..., pre_logits=True)`` when ``num_classes=0``, so ``backbone.num_features``
+    differs from the actual output width. Probing in ``eval()`` mode preserves pretrained
+    BatchNorm running statistics and supports ``batch_size=1`` on small spatial inputs.
+    """
+    was_training = backbone.training
+    param_or_buf = next(backbone.parameters(), None)
+    if param_or_buf is None:
+        param_or_buf = next(backbone.buffers(), None)
+    device = param_or_buf.device if param_or_buf is not None else torch.device("cpu")
+    dtype = (
+        param_or_buf.dtype
+        if param_or_buf is not None and param_or_buf.is_floating_point()
+        else torch.float32
+    )
+    backbone.eval()
+    try:
+        with torch.no_grad():
+            dummy = torch.zeros(1, in_channels, *in_shape, device=device, dtype=dtype)
+            features = backbone(dummy)
+            if features.ndim > 2:
+                features = features.flatten(1)
+            return int(features.shape[-1])
+    finally:
+        backbone.train(was_training)
+
+
 def find_and_adapt_input_convs(
     backbone: nn.Module,
     pretrained: bool = True,
     adapt_all: bool = False,
 ) -> int:
     """
-    Find and adapt Conv2d layers with 3 input channels for single-channel input.
+    Find and adapt Conv layers with 3 input channels for single-channel input.
 
     This is useful for timm-style models where the exact path to the first
     conv layer may vary or where multiple layers need adaptation.
@@ -418,7 +485,7 @@ def find_and_adapt_input_convs(
     Args:
         backbone: The backbone model to adapt
         pretrained: Whether to adapt pretrained weights by averaging RGB channels
-        adapt_all: If True, adapt all Conv2d layers with 3 input channels.
+        adapt_all: If True, adapt all ungrouped 3-channel Conv layers.
                    If False (default), only adapt the first one found.
 
     Returns:
@@ -432,22 +499,35 @@ def find_and_adapt_input_convs(
         ...     model.backbone, pretrained=True, adapt_all=True
         ... )
     """
+    conv_types = (nn.Conv1d, nn.Conv2d, nn.Conv3d)
     adapted_count = 0
+    adapted_ids: set[int] = set()
 
     for name, module in backbone.named_modules():
+        if not name or id(module) in adapted_ids:
+            continue
         if not hasattr(module, "in_channels") or module.in_channels != 3:
             continue
 
         # Check if this is a wrapper with inner .conv attribute
-        if hasattr(module, "conv") and isinstance(module.conv, nn.Conv2d):
+        if hasattr(module, "conv") and isinstance(module.conv, conv_types):
             old_conv = module.conv
-            module.conv = adapt_input_channels(
+            if old_conv.in_channels != 3 or old_conv.groups != 1:
+                continue
+            new_conv = adapt_input_channels(
                 old_conv, new_in_channels=1, pretrained=pretrained
             )
+            module.conv = new_conv
+            with contextlib.suppress(AttributeError):
+                module.in_channels = 1
+            adapted_ids.add(id(old_conv))
+            adapted_ids.add(id(new_conv))
             adapted_count += 1
 
-        elif isinstance(module, nn.Conv2d):
-            # Direct Conv2d - need to replace it in parent
+        elif isinstance(module, conv_types):
+            if module.groups != 1:
+                continue
+            # Direct Conv - need to replace it in parent
             parts = name.split(".")
             parent = backbone
             for part in parts[:-1]:
@@ -466,6 +546,8 @@ def find_and_adapt_input_convs(
             else:
                 setattr(parent, child_name, new_conv)
 
+            adapted_ids.add(id(module))
+            adapted_ids.add(id(new_conv))
             adapted_count += 1
 
         if not adapt_all and adapted_count > 0:

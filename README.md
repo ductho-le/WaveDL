@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="logos/wavedl_logo.png" alt="WaveDL Logo" width="500">
+<img src="https://raw.githubusercontent.com/ductho-le/WaveDL/main/logos/wavedl_logo.png" alt="WaveDL Logo" width="500">
 
 ### A Scalable Deep Learning Framework for Wave-Based Inverse Problems
 
@@ -13,7 +13,7 @@
 [![Try it on Colab](https://img.shields.io/badge/Try_it_on_Colab-8E44AD?style=plastic&logo=googlecolab&logoColor=white)](https://colab.research.google.com/github/ductho-le/WaveDL/blob/main/notebooks/demo.ipynb)
 <br>
 [![Downloads](https://img.shields.io/badge/dynamic/json?url=https://pypistats.org/api/packages/wavedl/recent?period=month%26mirrors=false&query=data.last_month&style=plastic&logo=pypi&logoColor=white&color=9ACD32&label=Downloads&suffix=/month)](https://pypistats.org/packages/wavedl)
-[![License: MIT](https://img.shields.io/badge/License-MIT-orange.svg?style=plastic)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-orange.svg?style=plastic)](https://github.com/ductho-le/WaveDL/blob/main/LICENSE)
 [![DOI](https://img.shields.io/badge/DOI-10.1016/j.cpc.2026.110400-008080.svg?style=plastic)](https://doi.org/10.1016/j.cpc.2026.110400)
 
 **Production-ready • Multi-GPU DDP • Memory-Efficient • Plug-and-Play**
@@ -165,7 +165,7 @@ and ONNX 1.22+. Install a compatible PyTorch/torchvision pair for your CPU or
 CUDA/ROCm platform in a dedicated environment. Changes under `[Unreleased]`
 are available from source until the next package release.
 
-See [security and deployment boundaries](.github/SECURITY.md) for vulnerability
+See [security and deployment boundaries](https://github.com/ductho-le/WaveDL/blob/main/.github/SECURITY.md) for vulnerability
 reporting procedures, safe deserialization practices, and secure data handling guidelines.
 
 #### From Source (for development)
@@ -177,7 +177,7 @@ pip install -e ".[dev]"
 ```
 
 > [!NOTE]
-> Python 3.11+ required. For contributor setup (pre-commit hooks), see [CONTRIBUTING.md](.github/CONTRIBUTING.md).
+> Python 3.11+ required. For contributor setup (pre-commit hooks), see [CONTRIBUTING.md](https://github.com/ductho-le/WaveDL/blob/main/.github/CONTRIBUTING.md).
 
 ### Quick Start
 
@@ -233,6 +233,8 @@ wavedl-train --list_models
 > selects an available checkpoint. Epoch checkpoints preserve the optimizer and
 > learning-rate schedule. Emergency checkpoints replay the interrupted epoch and
 > are not exact recovery; OneCycle recovery requires an epoch-boundary checkpoint.
+> OneCycle resumes preserve the saved update budget; increasing `--epochs` beyond
+> that budget requires a fresh run rather than extending the existing cycle.
 > Use `--resume <checkpoint_directory>` to select one explicitly. `--fresh` archives
 > prior training artifacts under `previous_runs/` and cannot be combined with `--resume`.
 > Use a separate output/cache directory for every independent concurrent run.
@@ -417,6 +419,7 @@ WaveDL/
 │       ├── test.py               # Testing & inference script
 │       ├── hpo.py                # Hyperparameter optimization
 │       ├── launcher.py           # Training launcher (wavedl-train)
+│       ├── gui/                  # Local Web Studio (wavedl-gui)
 │       │
 │       ├── models/               # Model Zoo (20+ architectures, 70+ variants)
 │       │   ├── registry.py       # Model factory (@register_model)
@@ -563,19 +566,19 @@ table above when selecting a model.
 | `wavenet` | 4.0M | 1D |
 | `wavenet_large` | 15M | 1D |
 | **ResNet3D** — 3D Residual Network |||
-| `resnet3d_18` | 33.2M | 3D |
-| `mc3_18` — Mixed Convolution 3D | 11.5M | 3D |
+| `resnet3d_18` ⭐ | 33.2M | 3D |
+| `mc3_18` ⭐ — Mixed Convolution 3D | 11.5M | 3D |
 | **U-Net** — U-shaped Network |||
 | `unet_regression` | 31.0M | 1D/2D/3D |
 | `unet_field` 🗺️ | ~31.0M | 2D |
 
 
-⭐ = **Pretrained on ImageNet** (recommended for smaller datasets). Weights are downloaded automatically on first use.
+⭐ = **Pretrained weights available** (ImageNet-1K for 2D models, Kinetics-400 for 3D ResNet3D/MC3; recommended for smaller datasets). Weights are downloaded automatically on first use.
 
 🗺️ = **Dense 2D field output**. Unmarked models produce regression vectors.
 
 - **Cache location**: `~/.cache/torch/hub/checkpoints/` (or `./.torch_cache/` on HPC if home is not writable)
-- **Use pretrained weights**: Pass `--pretrained` (default: train from scratch). Only effective for `*_pretrained` model variants marked with ⭐ above.
+- **Use pretrained weights**: Pass `--pretrained` (default: train from scratch). Effective for all models marked with ⭐ above.
 
 **💡 HPC Users**: If compute nodes block internet, pre-download weights on the login node:
 
@@ -674,6 +677,7 @@ print(f'\n✓ All {len(urls) + len(timm_models)} pretrained weight files cached!
 | `--workers` | `-1` | DataLoader workers per GPU (-1=auto-detect) |
 | `--seed` | `2025` | Random seed |
 | `--output_dir` | `.` | Output directory for checkpoints |
+| `--cache_dir` | `None` | Optional shared directory for dataset caches (defaults to `--output_dir`) |
 | `--selection_metric` | `loss` | Select checkpoints by configured loss or normalized `mse`; CV supports `loss` |
 | `--allow_pickle` | `False` | Opt in to loading trusted legacy NPZ object arrays |
 | `--resume` | `None` | Checkpoint to resume (auto-detected if not set) |
@@ -690,7 +694,6 @@ print(f'\n✓ All {len(urls) + len(timm_models)} pretrained weight files cached!
 |----------|---------|-------------|
 | `--compile` | `False` | Enable `torch.compile` (recommended for long runs) |
 | `--precision` | `bf16` | Mixed precision mode (`bf16`, `fp16`, `no`) |
-| `--workers` | `-1` | DataLoader workers per GPU (-1=auto, up to 16) |
 | `--wandb` | `False` | Enable W&B logging |
 | `--wandb_watch` | `False` | Enable W&B gradient watching (adds overhead) |
 | `--project_name` | `DL-Training` | W&B project name |
@@ -723,14 +726,14 @@ WaveDL automatically enables performance optimizations for modern GPUs:
 |----------|---------|-------------|
 | `--num_gpus` | **Auto-detected** | Number of GPUs to use. By default, automatically detected via `nvidia-smi`. Set explicitly to override |
 | `--num_machines` | `1` | Number of machines in distributed setup |
-| `--mixed_precision` | `bf16` | Precision mode: `bf16`, `fp16`, or `no` |
+| `--precision` | `bf16` | Precision mode: `bf16`, `fp16`, or `no` |
 | `--dynamo_backend` | `no` | PyTorch Dynamo backend |
 
 **Environment Variables (for logging):**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `WANDB_MODE` | `offline` | WandB mode: `offline` or `online` |
+| `WANDB_MODE` | `offline` (HPC) / `online` (local) | WandB mode: `offline` or `online` |
 
 </details>
 
@@ -894,7 +897,7 @@ compile: false
 seed: 2025
 ```
 
-> See [`configs/config.yaml`](configs/config.yaml) for the complete template with all available options documented.
+> See [`configs/config.yaml`](https://github.com/ductho-le/WaveDL/blob/main/configs/config.yaml) for the complete template with all available options documented.
 
 </details>
 
@@ -1056,7 +1059,7 @@ wavedl-train --data_path train.npz --model cnn --lr 3.2e-4 --batch_size 128 ...
 | Models | Vector: cnn, resnet18, resnet34; dense: unet_field | `--models X Y Z` |
 | Optimizers | [all 6](#optimizers) | `--optimizers X Y` |
 | Schedulers | [all 8](#learning-rate-schedulers) | `--schedulers X Y` |
-| Losses | [all 6](#loss-functions) | `--losses X Y` |
+| Losses | [5 unweighted losses](#loss-functions) | `--losses X Y` (all 6 supported) |
 | Learning rate | 1e-5 → 1e-2 | (always searched) |
 | Batch size | Vector: 16, 32, 64, 128; dense: 1, 2, 4, 8 | `--batch_sizes N ...` |
 
@@ -1092,7 +1095,7 @@ wavedl-train --data_path train.npz --model cnn --lr 3.2e-4 --batch_size 128 ...
 | `--inprocess` | `False` | Run trials in-process (enables pruning) |
 | `--optimizers` | all 6 | Optimizers to search |
 | `--schedulers` | all 8 | Schedulers to search |
-| `--losses` | all 6 | Losses to search |
+| `--losses` | 5 unweighted | Losses to search (pass `--losses` to include `weighted_mse`) |
 | `--batch_sizes` | Target-aware | Batch sizes to search |
 | `--n_jobs` | `-1` | Parallel trials (-1 = auto-detect GPUs) |
 | `--max_epochs` | `50` | Max epochs per trial |
@@ -1246,7 +1249,7 @@ The `examples/` folder contains a **complete, ready-to-run example** for **mater
 **Sample Dispersion Data:**
 
 <p align="center">
-  <img src="examples/elasticity_prediction/dispersion_samples.png" alt="Dispersion curve samples" width="700"><br>
+  <img src="https://raw.githubusercontent.com/ductho-le/WaveDL/main/examples/elasticity_prediction/dispersion_samples.png" alt="Dispersion curve samples" width="700"><br>
   <em>Test samples showing the wavenumber-frequency relationship for different plate properties</em>
 </p>
 
@@ -1280,59 +1283,59 @@ wavedl-test --checkpoint ./examples/elasticity_prediction/best_checkpoint \
 **Training Progress:**
 
 <p align="center">
-  <img src="examples/elasticity_prediction/training_curves.png" alt="Training curves" width="600"><br>
+  <img src="https://raw.githubusercontent.com/ductho-le/WaveDL/main/examples/elasticity_prediction/training_curves.png" alt="Training curves" width="600"><br>
   <em>Training and validation loss with <code>plateau</code> learning rate schedule</em>
 </p>
 
 **Inference Results:**
 
 <p align="center">
-  <img src="examples/elasticity_prediction/test_results/scatter_all.png" alt="Scatter plot" width="700"><br>
+  <img src="https://raw.githubusercontent.com/ductho-le/WaveDL/main/examples/elasticity_prediction/test_results/scatter_all.png" alt="Scatter plot" width="700"><br>
   <em>Figure 1: Predictions vs ground truth for all three elastic parameters</em>
 </p>
 
 <p align="center">
-  <img src="examples/elasticity_prediction/test_results/error_histogram.png" alt="Error histogram" width="700"><br>
+  <img src="https://raw.githubusercontent.com/ductho-le/WaveDL/main/examples/elasticity_prediction/test_results/error_histogram.png" alt="Error histogram" width="700"><br>
   <em>Figure 2: Distribution of prediction errors showing near-zero mean bias</em>
 </p>
 
 <p align="center">
-  <img src="examples/elasticity_prediction/test_results/residuals.png" alt="Residual plot" width="700"><br>
+  <img src="https://raw.githubusercontent.com/ductho-le/WaveDL/main/examples/elasticity_prediction/test_results/residuals.png" alt="Residual plot" width="700"><br>
   <em>Figure 3: Residuals vs predicted values (no heteroscedasticity detected)</em>
 </p>
 
 <p align="center">
-  <img src="examples/elasticity_prediction/test_results/bland_altman.png" alt="Bland-Altman plot" width="700"><br>
+  <img src="https://raw.githubusercontent.com/ductho-le/WaveDL/main/examples/elasticity_prediction/test_results/bland_altman.png" alt="Bland-Altman plot" width="700"><br>
   <em>Figure 4: Bland-Altman analysis with ±1.96 SD limits of agreement</em>
 </p>
 
 <p align="center">
-  <img src="examples/elasticity_prediction/test_results/qq_plot.png" alt="Q-Q plot" width="700"><br>
+  <img src="https://raw.githubusercontent.com/ductho-le/WaveDL/main/examples/elasticity_prediction/test_results/qq_plot.png" alt="Q-Q plot" width="700"><br>
   <em>Figure 5: Q-Q plots confirming normally distributed prediction errors</em>
 </p>
 
 <p align="center">
-  <img src="examples/elasticity_prediction/test_results/error_correlation.png" alt="Error correlation" width="300"><br>
+  <img src="https://raw.githubusercontent.com/ductho-le/WaveDL/main/examples/elasticity_prediction/test_results/error_correlation.png" alt="Error correlation" width="300"><br>
   <em>Figure 6: Error correlation matrix between parameters</em>
 </p>
 
 <p align="center">
-  <img src="examples/elasticity_prediction/test_results/relative_error.png" alt="Relative error" width="700"><br>
+  <img src="https://raw.githubusercontent.com/ductho-le/WaveDL/main/examples/elasticity_prediction/test_results/relative_error.png" alt="Relative error" width="700"><br>
   <em>Figure 7: Relative error (%) vs true value for each parameter</em>
 </p>
 
 <p align="center">
-  <img src="examples/elasticity_prediction/test_results/error_cdf.png" alt="Error CDF" width="500"><br>
+  <img src="https://raw.githubusercontent.com/ductho-le/WaveDL/main/examples/elasticity_prediction/test_results/error_cdf.png" alt="Error CDF" width="500"><br>
   <em>Figure 8: Cumulative error distribution — 95% of predictions within indicated bounds</em>
 </p>
 
 <p align="center">
-  <img src="examples/elasticity_prediction/test_results/prediction_vs_index.png" alt="Prediction vs index" width="700"><br>
+  <img src="https://raw.githubusercontent.com/ductho-le/WaveDL/main/examples/elasticity_prediction/test_results/prediction_vs_index.png" alt="Prediction vs index" width="700"><br>
   <em>Figure 9: True vs predicted values by sample index</em>
 </p>
 
 <p align="center">
-  <img src="examples/elasticity_prediction/test_results/error_boxplot.png" alt="Error box plot" width="400"><br>
+  <img src="https://raw.githubusercontent.com/ductho-le/WaveDL/main/examples/elasticity_prediction/test_results/error_boxplot.png" alt="Error box plot" width="400"><br>
   <em>Figure 10: Error distribution summary (median, quartiles, outliers)</em>
 </p>
 
@@ -1379,8 +1382,8 @@ Beyond the material characterization example above, the WaveDL pipeline can be a
 
 | Resource | Description |
 |----------|-------------|
-| Technical Paper | In-depth framework description *(coming soon)* |
-| [`_template.py`](src/wavedl/models/_template.py) | Template for custom architectures |
+| [Technical Paper](https://doi.org/10.1016/j.cpc.2026.110400) | In-depth framework description (*Computer Physics Communications*, 2026) |
+| [`_template.py`](https://github.com/ductho-le/WaveDL/blob/main/src/wavedl/models/_template.py) | Template for custom architectures |
 
 ---
 
@@ -1434,15 +1437,15 @@ This research was enabled in part by support provided by [Compute Ontario](https
 <br>
 
 <p align="center">
-  <a href="https://www.ualberta.ca/"><img src="logos/ualberta.png" alt="University of Alberta" height="60"></a>
+  <a href="https://www.ualberta.ca/"><img src="https://raw.githubusercontent.com/ductho-le/WaveDL/main/logos/ualberta.png" alt="University of Alberta" height="60"></a>
   &emsp;&emsp;
-  <a href="https://albertainnovates.ca/"><img src="logos/alberta_innovates.png" alt="Alberta Innovates" height="60"></a>
+  <a href="https://albertainnovates.ca/"><img src="https://raw.githubusercontent.com/ductho-le/WaveDL/main/logos/alberta_innovates.png" alt="Alberta Innovates" height="60"></a>
   &emsp;&emsp;
-  <a href="https://www.nserc-crsng.gc.ca/"><img src="logos/nserc.png" alt="NSERC" height="60"></a>
+  <a href="https://www.nserc-crsng.gc.ca/"><img src="https://raw.githubusercontent.com/ductho-le/WaveDL/main/logos/nserc.png" alt="NSERC" height="60"></a>
 </p>
 
 <p align="center">
-  <a href="https://alliancecan.ca/"><img src="logos/drac.png" alt="Digital Research Alliance of Canada" height="50"></a>
+  <a href="https://alliancecan.ca/"><img src="https://raw.githubusercontent.com/ductho-le/WaveDL/main/logos/drac.png" alt="Digital Research Alliance of Canada" height="50"></a>
 </p>
 
 ---

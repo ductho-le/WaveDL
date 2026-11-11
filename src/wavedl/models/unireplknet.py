@@ -7,9 +7,8 @@ A dimension-agnostic implementation of UniRepLKNet featuring ultra-large kernels
 wave-based problems where spatial correlations span large distances.
 
 **Key Features**:
-    - Large kernels (13x13 to 31x31) via efficient decomposition
-    - Dilated small kernel reparam for efficient training
-    - SE (Squeeze-and-Excitation) attention
+    - Large depthwise kernels (13x13 to 31x31 in 2D; up to 63 in 1D)
+    - SE (Squeeze-and-Excitation) channel attention
     - GRN (Global Response Normalization) from ConvNeXt V2
     - Dimension-agnostic: supports 1D, 2D, 3D inputs
 
@@ -265,14 +264,28 @@ class UniRepLKNetBase(BaseModel):
     ):
         super().__init__(in_shape, out_size)
 
-        self.dim = len(in_shape)
+        self.dim = len(self.in_shape)
         self.depths = depths
         self.dims = dims
+
+        if (
+            not depths
+            or len(depths) != len(dims)
+            or any(
+                isinstance(d, bool) or not isinstance(d, int) or d <= 0 for d in depths
+            )
+            or any(
+                isinstance(c, bool) or not isinstance(c, int) or c <= 0 for c in dims
+            )
+        ):
+            raise ValueError(
+                f"depths ({depths!r}) and dims ({dims!r}) must be non-empty integer lists of equal length with positive values."
+            )
 
         # Validate minimum spatial size (matches ConvNeXt/ConvNeXtV2 siblings):
         # stem stride-4 × (len(depths)-1) stride-2 downsamplers.
         min_size = 4 * (2 ** (len(depths) - 1))
-        for i, s in enumerate(in_shape):
+        for i, s in enumerate(self.in_shape):
             if s < min_size:
                 raise ValueError(
                     f"UniRepLKNet requires each spatial axis >= {min_size}, "
@@ -281,11 +294,18 @@ class UniRepLKNetBase(BaseModel):
                     f"downsamplers = {min_size}x)"
                 )
 
-        # Default kernel sizes: larger in early stages, smaller in later stages
-        # Early stages: large receptive field for low-level features
-        # Later stages: smaller kernels sufficient for high-level features
+        # Keep defaults dimension-independent for legacy checkpoint compatibility.
+        # Callers can explicitly select smaller kernels for lower-cost 3D models.
         if kernel_sizes is None:
             kernel_sizes = [31, 29, 17, 13]
+
+        if len(kernel_sizes) != len(depths) or any(
+            isinstance(k, bool) or not isinstance(k, int) or k < 1 or k % 2 == 0
+            for k in kernel_sizes
+        ):
+            raise ValueError(
+                f"kernel_sizes must be a list of {len(depths)} positive odd integers, got {kernel_sizes!r}"
+            )
 
         Conv = get_conv_layer(self.dim)
         Pool = get_pool_layer(self.dim)
@@ -334,14 +354,15 @@ class UniRepLKNetBase(BaseModel):
                 self.downsamples.append(downsample)
 
         # Global pooling and head
+        head_hidden = max(dims[-1] // 2, 1)
         self.norm = nn.LayerNorm(dims[-1], eps=1e-6)
         self.global_pool = Pool(1)
         self.head = nn.Sequential(
             nn.Dropout(dropout_rate),
-            nn.Linear(dims[-1], dims[-1] // 2),
+            nn.Linear(dims[-1], head_hidden),
             nn.GELU(),
             nn.Dropout(dropout_rate * 0.5),
-            nn.Linear(dims[-1] // 2, out_size),
+            nn.Linear(head_hidden, out_size),
         )
 
         # Initialize weights

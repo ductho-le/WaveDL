@@ -6,15 +6,15 @@ This module provides a centralized registry for neural network architectures,
 enabling dynamic model selection via command-line arguments.
 
 **Dimensionality Coverage**:
-    - 1D (waveforms): TCN, CNN, ResNet, ConvNeXt, ConvNeXt V2, DenseNet, ViT, Mamba, WaveNet, S4D
-    - 2D (images): CNN, ResNet, ConvNeXt, ConvNeXt V2, DenseNet, ViT, UNet,
-                   EfficientNet, MobileNetV3, RegNet, Swin, MaxViT, FastViT,
+    - 1D (waveforms): TCN, CNN, ResNet, ConvNeXt, ConvNeXt V2, DenseNet, UNet, UniRepLKNet, ViT, Mamba, WaveNet, S4D
+    - 2D (images): CNN, ResNet, ConvNeXt, ConvNeXt V2, DenseNet, ViT, UNet, UniRepLKNet,
+                   EfficientNet, EfficientNetV2, MobileNetV3, RegNet, Swin, MaxViT, FastViT,
                    CAFormer, PoolFormer, Vision Mamba, EfficientViT
-    - 3D (volumes): ResNet3D, CNN, ResNet, ConvNeXt, ConvNeXt V2, DenseNet
+    - 3D (volumes): ResNet3D, CNN, ResNet, ConvNeXt, ConvNeXt V2, DenseNet, UNet, UniRepLKNet
 
 **Output Coverage**:
     - Vector regression: every registered architecture except ``unet_field``
-    - Dense 2D regression: ``unet_field``
+    - Dense spatial field regression: ``unet_field``
 
 Usage:
     from wavedl.models import get_model, list_models, MODEL_REGISTRY
@@ -46,6 +46,8 @@ Author: Ductho Le (ductho.le@outlook.com)
 
 # Import registry first (no dependencies)
 # Import base class (depends only on torch)
+import importlib.util
+
 from .base import BaseModel
 
 # Import model implementations (triggers registration via decorators)
@@ -91,12 +93,18 @@ from .s4d import S4D, S4DLarge, S4DSmall
 from .swin import SwinBase, SwinSmall, SwinTiny
 from .tcn import TCN, TCNLarge, TCNSmall
 from .unet import UNetField, UNetRegression
+from .unireplknet import (
+    UniRepLKNetBaseLarge,
+    UniRepLKNetSmall,
+    UniRepLKNetTiny,
+)
 from .vit import ViTBase_, ViTSmall, ViTTiny
 from .wavenet import WaveNet, WaveNetLarge, WaveNetSmall
 
 
-# Optional timm-based models (imported conditionally)
-try:
+# Optional timm-based models (imported conditionally when timm is installed)
+_HAS_TIMM_MODELS = importlib.util.find_spec("timm") is not None
+if _HAS_TIMM_MODELS:
     from .caformer import CaFormerM36, CaFormerS18, CaFormerS36, PoolFormerS12
     from .efficientvit import (
         EfficientViTB1,
@@ -106,15 +114,6 @@ try:
     )
     from .fastvit import FastViTS12, FastViTSA12, FastViTT8, FastViTT12
     from .maxvit import MaxViTBaseLarge, MaxViTSmall, MaxViTTiny
-    from .unireplknet import (
-        UniRepLKNetBaseLarge,
-        UniRepLKNetSmall,
-        UniRepLKNetTiny,
-    )
-
-    _HAS_TIMM_MODELS = True
-except ImportError:
-    _HAS_TIMM_MODELS = False
 
 
 # Export public API (sorted alphabetically per RUF022)
@@ -169,6 +168,9 @@ __all__ = [
     "TCNSmall",
     "UNetField",
     "UNetRegression",
+    "UniRepLKNetBaseLarge",
+    "UniRepLKNetSmall",
+    "UniRepLKNetTiny",
     "ViTBase_",
     "ViTSmall",
     "ViTTiny",
@@ -186,27 +188,87 @@ __all__ = [
     "register_model",
 ]
 
-# Add timm-based models to __all__ if available
+# Add timm-based models to __all__ if available (preserving RUF022 order)
 if _HAS_TIMM_MODELS:
-    __all__.extend(
-        [
-            "CaFormerM36",
-            "CaFormerS18",
-            "CaFormerS36",
-            "EfficientViTB1",
-            "EfficientViTB2",
-            "EfficientViTL2",
-            "EfficientViTM1",
-            "FastViTS12",
-            "FastViTSA12",
-            "FastViTT8",
-            "FastViTT12",
-            "MaxViTBaseLarge",
-            "MaxViTSmall",
-            "MaxViTTiny",
-            "PoolFormerS12",
-            "UniRepLKNetBaseLarge",
-            "UniRepLKNetSmall",
-            "UniRepLKNetTiny",
-        ]
-    )
+    __all__ = [
+        "CNN",
+        "MC3_18",
+        "MODEL_REGISTRY",
+        "S4D",
+        "TCN",
+        "BaseModel",
+        "CaFormerM36",
+        "CaFormerS18",
+        "CaFormerS36",
+        "ConvNeXtBase_",
+        "ConvNeXtSmall",
+        "ConvNeXtTiny",
+        "ConvNeXtTinyPretrained",
+        "ConvNeXtV2Base",
+        "ConvNeXtV2BaseLarge",
+        "ConvNeXtV2Small",
+        "ConvNeXtV2Tiny",
+        "ConvNeXtV2TinyPretrained",
+        "DenseNet121",
+        "DenseNet121Pretrained",
+        "DenseNet169",
+        "EfficientNetB0",
+        "EfficientNetB2",
+        "EfficientNetB4",
+        "EfficientNetB7",
+        "EfficientNetV2L",
+        "EfficientNetV2M",
+        "EfficientNetV2S",
+        "EfficientViTB1",
+        "EfficientViTB2",
+        "EfficientViTL2",
+        "EfficientViTM1",
+        "FastViTS12",
+        "FastViTSA12",
+        "FastViTT8",
+        "FastViTT12",
+        "Mamba1D",
+        "MaxViTBaseLarge",
+        "MaxViTSmall",
+        "MaxViTTiny",
+        "MobileNetV3Large",
+        "MobileNetV3Small",
+        "PoolFormerS12",
+        "RegNetY1_6GF",
+        "RegNetY3_2GF",
+        "RegNetY8GF",
+        "RegNetY400MF",
+        "RegNetY800MF",
+        "ResNet3D18",
+        "ResNet18",
+        "ResNet18Pretrained",
+        "ResNet34",
+        "ResNet50",
+        "ResNet50Pretrained",
+        "S4DLarge",
+        "S4DSmall",
+        "SwinBase",
+        "SwinSmall",
+        "SwinTiny",
+        "TCNLarge",
+        "TCNSmall",
+        "UNetField",
+        "UNetRegression",
+        "UniRepLKNetBaseLarge",
+        "UniRepLKNetSmall",
+        "UniRepLKNetTiny",
+        "ViTBase_",
+        "ViTSmall",
+        "ViTTiny",
+        "VimBase",
+        "VimSmall",
+        "VimTiny",
+        "WaveNet",
+        "WaveNetLarge",
+        "WaveNetSmall",
+        "build_model",
+        "get_model",
+        "import_model_modules",
+        "list_models",
+        "register_model",
+    ]

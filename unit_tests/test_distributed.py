@@ -131,6 +131,27 @@ class TestBroadcastValue:
 
         assert result == 10**15
 
+    def test_multi_process_propagates_rank0_value_to_worker(
+        self, mock_accelerator_multi_gpu, monkeypatch
+    ):
+        """Non-main rank receives rank-0 value when dist.broadcast overwrites tensor."""
+        from wavedl.utils import distributed
+
+        mock_accelerator_multi_gpu.device = torch.device("cpu")
+        mock_accelerator_multi_gpu.is_main_process = False
+
+        def fake_broadcast(tensor, src=0):
+            assert src == 0
+            tensor.fill_(777)
+
+        monkeypatch.setattr(distributed.dist, "is_initialized", lambda: True)
+        monkeypatch.setattr(distributed.dist, "get_backend", lambda: "gloo")
+        monkeypatch.setattr(distributed.dist, "broadcast", fake_broadcast)
+
+        result = broadcast_value(12, mock_accelerator_multi_gpu)
+        assert result == 777
+        assert isinstance(result, int)
+
 
 # ==============================================================================
 # SYNC TENSOR TESTS
@@ -194,6 +215,32 @@ class TestSyncTensor:
             "reduction", "sum"
         )
         assert reduction_arg == "sum"
+
+    def test_max_min_reduction_multi_process(
+        self, mock_accelerator_multi_gpu, monkeypatch
+    ):
+        """max/min reductions use dist.all_reduce without mutating caller's tensor."""
+        from wavedl.utils import distributed
+
+        mock_accelerator_multi_gpu.device = torch.device("cpu")
+        orig = torch.tensor([1.0, 5.0])
+
+        def fake_all_reduce(tensor, op=None):
+            if op == distributed.dist.ReduceOp.MAX:
+                tensor.copy_(torch.tensor([9.0, 5.0]))
+            elif op == distributed.dist.ReduceOp.MIN:
+                tensor.copy_(torch.tensor([0.5, 2.0]))
+
+        monkeypatch.setattr(distributed.dist, "is_initialized", lambda: True)
+        monkeypatch.setattr(distributed.dist, "get_backend", lambda: "gloo")
+        monkeypatch.setattr(distributed.dist, "all_reduce", fake_all_reduce)
+
+        max_res = sync_tensor(orig, mock_accelerator_multi_gpu, reduction="max")
+        min_res = sync_tensor(orig, mock_accelerator_multi_gpu, reduction="min")
+
+        assert torch.allclose(max_res, torch.tensor([9.0, 5.0]))
+        assert torch.allclose(min_res, torch.tensor([0.5, 2.0]))
+        assert torch.allclose(orig, torch.tensor([1.0, 5.0]))
 
 
 # ==============================================================================

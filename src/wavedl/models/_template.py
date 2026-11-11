@@ -64,15 +64,27 @@ class TemplateModel(BaseModel):
         in_shape: tuple,
         out_size: int,
         hidden_dim: int = 256,
-        dropout: float = 0.1,
+        dropout_rate: float = 0.1,
         **kwargs,  # Accept extra kwargs for flexibility
     ):
         # REQUIRED: Call parent __init__ with in_shape and out_size
         super().__init__(in_shape, out_size)
 
+        if len(self.in_shape) != 2:
+            raise ValueError(
+                f"TemplateModel requires 2D input (H, W), got {len(self.in_shape)}D."
+            )
+        if min(self.in_shape) < 16:
+            raise ValueError(
+                f"TemplateModel requires spatial axes >= 16 (3 MaxPool2d(2) layers + BatchNorm2d), got {self.in_shape}."
+            )
+
+        if "dropout" in kwargs:
+            dropout_rate = kwargs.pop("dropout")
+
         # Store hyperparameters as attributes (optional but recommended)
         self.hidden_dim = hidden_dim
-        self.dropout_rate = dropout
+        self.dropout_rate = dropout_rate
 
         # =================================================================
         # BUILD YOUR ARCHITECTURE HERE
@@ -103,14 +115,20 @@ class TemplateModel(BaseModel):
         )
 
         # Example: Regression head
+        head_hidden = max(hidden_dim // 2, 1)
         self.head = nn.Sequential(
             nn.Flatten(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_dim, head_hidden),
             nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim // 2, out_size),
+            nn.Dropout(dropout_rate),
+            nn.Linear(head_hidden, out_size),
         )
+
+    @classmethod
+    def get_default_config(cls) -> dict:
+        """Return default model hyperparameters."""
+        return {"hidden_dim": 256, "dropout_rate": 0.1}
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

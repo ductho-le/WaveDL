@@ -25,11 +25,70 @@ Version: 1.0.0
 import argparse
 import logging
 import math
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+
+class _WaveDLSafeLoader(yaml.SafeLoader):
+    """YAML SafeLoader supporting YAML 1.2 scientific notation (e.g., 1e-4)."""
+
+
+_WaveDLSafeLoader.add_implicit_resolver(
+    "tag:yaml.org,2002:float",
+    re.compile(
+        r"""^(?:
+         [-+]?(?:[0-9][0-9_]*)?\.[0-9_]*(?:[eE][-+]?[0-9]+)?
+        |[-+]?(?:[0-9][0-9_]*)(?:[eE][-+]?[0-9]+)
+        |\.[0-9_]+(?:[eE][-+][0-9]+)?
+        |[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*
+        |[-+]?\.(?:inf|Inf|INF)
+        |\.(?:nan|NaN|NAN))$""",
+        re.X,
+    ),
+    list("-+0123456789."),
+)
+
+# Known nested YAML section prefixes allowed to map to flat CLI argument names.
+_KNOWN_CONFIG_SECTIONS: tuple[str, ...] = (
+    "cross_validation",
+    "hyperparameters",
+    "checkpointing",
+    "constraints",
+    "performance",
+    "optimizer",
+    "scheduler",
+    "training",
+    "logging",
+    "output",
+    "model",
+    "wandb",
+    "loss",
+    "data",
+    "cv",
+)
+
+
+def _strip_known_section_prefix(key: str) -> str | None:
+    """Strip a recognized nested YAML section prefix (if any) from ``key``."""
+    for section in _KNOWN_CONFIG_SECTIONS:
+        prefix = f"{section}_"
+        if key.startswith(prefix) and len(key) > len(prefix):
+            return key[len(prefix) :]
+    return None
+
+
+def _normalize_yaml_bool_choices(config: dict[str, Any]) -> dict[str, Any]:
+    """Normalize YAML 1.1 boolean ``no`` (parsed as ``False``) for precision keys."""
+    normalized = dict(config)
+    for key, value in list(normalized.items()):
+        stripped = _strip_known_section_prefix(key) or key
+        if stripped in {"precision", "mixed_precision"} and value is False:
+            normalized[key] = "no"
+    return normalized
 
 
 def load_config(config_path: str | Path) -> dict[str, Any]:
@@ -57,7 +116,7 @@ def load_config(config_path: str | Path) -> dict[str, Any]:
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
     with open(config_path, encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+        config = yaml.load(f, Loader=_WaveDLSafeLoader)
 
     if config is None:
         config = {}
@@ -68,6 +127,7 @@ def load_config(config_path: str | Path) -> dict[str, Any]:
 
     # Handle nested configs (e.g., optimizer.lr -> optimizer_lr)
     config = _flatten_config(config)
+    config = _normalize_yaml_bool_choices(config)
 
     return config
 
@@ -136,10 +196,13 @@ def merge_config_with_args(
     if parser is not None:
         import sys
 
-        # Check both '--flag value' and '--flag=value' forms in sys.argv.
-        # The latter is a single token (e.g., '--workers=-1') so a plain
-        # set-membership check would miss it.
-        argv_tokens = sys.argv
+        # Check both '--flag value' and '--flag=value' forms in sys.argv,
+        # stopping at '--' (end-of-options marker).
+        argv_tokens: list[str] = []
+        for tok in sys.argv[1:]:
+            if tok == "--":
+                break
+            argv_tokens.append(tok)
         for action in parser._option_string_actions.values():
             if action.dest == "help":
                 continue
@@ -154,28 +217,32 @@ def merge_config_with_args(
     # into the comma-separated string form expected by str-typed list args
     # (betas/milestones/loss_weights). merge bypasses argparse type casting.
     arg_types: dict[str, Any] = {}
+    arg_choices: dict[str, Any] = {}
     sequence_args: set[str] = set()
     if parser is not None:
         for action in parser._actions:
             if action.type is not None:
                 arg_types[action.dest] = action.type
+            if action.choices is not None:
+                arg_choices[action.dest] = action.choices
             if action.nargs or isinstance(action, argparse._AppendAction):
                 sequence_args.add(action.dest)
 
+    config = _normalize_yaml_bool_choices(config)
+
     # Apply config values only where CLI didn't override
     for key, value in config.items():
-        target_key = key
-        if not hasattr(args, key) and "_" in key:
+        target_key = "import_modules" if key == "import" else key
+        if not hasattr(args, target_key):
             # Nested YAML key (e.g., "optimizer_lr" from {optimizer: {lr: ...}}).
-            # Try removing the namespace prefix to match the argparse destination.
-            stripped = key.split("_", 1)[1]
-            if hasattr(args, stripped):
+            # Only strip recognized section prefixes so flat typos (e.g.
+            # "test_data_path") never silently overwrite valid options.
+            stripped = _strip_known_section_prefix(key)
+            if stripped == "import":
+                stripped = "import_modules"
+            if stripped is not None and hasattr(args, stripped):
                 target_key = stripped
-                logging.warning(
-                    f"Config: key '{key}' did not match an argument directly; "
-                    f"mapped to '{stripped}' by stripping the prefix. "
-                    "Verify this is intended (not a typo)."
-                )
+                logging.debug(f"Config: mapped nested key '{key}' -> '{stripped}'")
 
         if hasattr(args, target_key):
             # Skip if user explicitly set this via CLI
@@ -184,17 +251,32 @@ def merge_config_with_args(
                     f"Config key '{target_key}' skipped: CLI override detected"
                 )
                 continue
-            # Coerce native YAML sequences (e.g. betas: [0.9, 0.999]) to the
-            # comma-separated string the str-typed arg + later .split(",") expects.
             if (
-                target_key not in sequence_args
-                and isinstance(value, (list, tuple))
-                and (
-                    arg_types.get(target_key) is str
-                    or isinstance(getattr(args, target_key, None), str)
-                )
+                value is False
+                and target_key in arg_choices
+                and "no" in arg_choices[target_key]
             ):
-                value = ",".join(str(v) for v in value)
+                value = "no"
+            # Wrap scalar YAML values for multi-value list arguments (e.g.
+            # constraint: "y0 > 0" -> ["y0 > 0"]).
+            if (
+                target_key in sequence_args
+                and value is not None
+                and not isinstance(value, (list, tuple))
+            ):
+                value = [value]
+            elif target_key in sequence_args and isinstance(value, tuple):
+                value = list(value)
+            # Coerce native YAML sequences (e.g. betas: [0.9, 0.999]) or numeric
+            # scalars (e.g. milestones: 30) to the string form expected by str args.
+            expects_str = arg_types.get(target_key) is str or isinstance(
+                getattr(args, target_key, None), str
+            )
+            if target_key not in sequence_args and expects_str:
+                if isinstance(value, (list, tuple)):
+                    value = ",".join(str(v) for v in value)
+                elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                    value = str(value)
             setattr(args, target_key, value)
         elif not ignore_unknown:
             logging.warning(f"Unknown config key: {key}")
@@ -227,13 +309,26 @@ def save_config(
     if exclude_keys is None:
         exclude_keys = ["list_models", "fresh", "resume"]
 
+    def _sanitize_yaml_value(val: Any) -> Any:
+        if isinstance(val, Path):
+            return str(val)
+        if isinstance(val, tuple):
+            return [_sanitize_yaml_value(item) for item in val]
+        if isinstance(val, list):
+            return [_sanitize_yaml_value(item) for item in val]
+        if isinstance(val, dict):
+            return {str(k): _sanitize_yaml_value(v) for k, v in val.items()}
+        if hasattr(val, "item") and callable(val.item):
+            try:
+                return val.item()
+            except Exception:
+                return str(val)
+        return val
+
     config = {}
     for key, value in vars(args).items():
-        if key not in exclude_keys:
-            # Convert Path objects to strings
-            if isinstance(value, Path):
-                value = str(value)
-            config[key] = value
+        if key not in exclude_keys and not key.startswith("_"):
+            config[key] = _sanitize_yaml_value(value)
 
     # Add metadata
     from wavedl import __version__
@@ -247,9 +342,82 @@ def save_config(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     with open(output_path, "w", encoding="utf-8") as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False)
 
     return str(output_path)
+
+
+def _config_keys(
+    known_keys: list[str] | None, parser: argparse.ArgumentParser | None
+) -> set[str]:
+    """Resolve accepted flat keys before interpreting nested section prefixes."""
+    internal_keys = {"_metadata", "_explicit_scheduler_factor"}
+    if known_keys is not None:
+        return set(known_keys) | internal_keys
+    if parser is not None:
+        keys = {action.dest for action in parser._actions if action.dest != "help"}
+        for action in parser._actions:
+            keys.update(
+                opt.lstrip("-").replace("-", "_") for opt in action.option_strings
+            )
+        return keys | internal_keys
+    return {
+        "model",
+        "import",
+        "import_modules",
+        "pretrained",
+        "batch_size",
+        "lr",
+        "epochs",
+        "patience",
+        "weight_decay",
+        "grad_clip",
+        "grad_accum_steps",
+        "loss",
+        "huber_delta",
+        "loss_weights",
+        "selection_metric",
+        "optimizer",
+        "momentum",
+        "nesterov",
+        "betas",
+        "scheduler",
+        "scheduler_patience",
+        "min_lr",
+        "scheduler_factor",
+        "warmup_epochs",
+        "step_size",
+        "milestones",
+        "data_path",
+        "cache_dir",
+        "workers",
+        "seed",
+        "deterministic",
+        "cache_validate",
+        "single_channel",
+        "allow_pickle",
+        "cv",
+        "cv_stratify",
+        "cv_bins",
+        "resume",
+        "save_every",
+        "output_dir",
+        "fresh",
+        "compile",
+        "precision",
+        "mixed_precision",
+        "wandb",
+        "wandb_watch",
+        "project_name",
+        "run_name",
+        "config",
+        "list_models",
+        "constraint",
+        "constraint_file",
+        "constraint_weight",
+        "constraint_reduction",
+        *internal_keys,
+    }
 
 
 def validate_config(
@@ -269,6 +437,7 @@ def validate_config(
         List of warning messages (empty if valid)
     """
     warnings = []
+    config = _normalize_yaml_bool_choices(config)
 
     # Known valid options
     from wavedl.models import list_models
@@ -281,26 +450,50 @@ def validate_config(
         "scheduler": list_schedulers(),
     }
 
+    # Build effective view mapping recognized nested section keys (e.g. optimizer_lr -> lr)
+    check_keys = _config_keys(known_keys, parser)
+    effective_config: dict[str, Any] = {}
+    for key, val in config.items():
+        mapped = "import_modules" if key == "import" else key
+        stripped = _strip_known_section_prefix(key)
+        if (
+            mapped not in check_keys
+            and stripped is not None
+            and stripped in check_keys
+            and stripped not in config
+        ):
+            mapped = "import_modules" if stripped == "import" else stripped
+        effective_config.setdefault(mapped, val)
+
     for key, valid_values in valid_options.items():
-        if key in config and config[key] not in valid_values:
+        if key in effective_config and effective_config[key] not in valid_values:
             warnings.append(
-                f"Invalid {key}='{config[key]}'. Valid options: {valid_values}"
+                f"Invalid {key}='{effective_config[key]}'. Valid options: {valid_values}"
             )
 
     # Validate argparse choice-constrained options (precision, mixed_precision,
     # cache_validate, constraint_reduction, ...). merge bypasses argparse, so
     # these `choices=` constraints are otherwise never enforced.
+    comma_list_str_args = {"betas", "milestones", "loss_weights"}
     if parser is not None:
         for action in parser._actions:
-            if action.choices and action.dest in config:
-                if config[action.dest] not in action.choices:
-                    warnings.append(
-                        f"Invalid {action.dest}='{config[action.dest]}'. "
-                        f"Valid options: {list(action.choices)}"
-                    )
-            if action.dest not in config or config[action.dest] is None:
+            if (
+                action.dest not in effective_config
+                or effective_config[action.dest] is None
+            ):
                 continue
-            value = config[action.dest]
+            value = effective_config[action.dest]
+            if value is False and action.choices and "no" in action.choices:
+                value = "no"
+            if (
+                action.choices
+                and action.dest not in valid_options
+                and value not in action.choices
+            ):
+                warnings.append(
+                    f"Invalid {action.dest}='{value}'. "
+                    f"Valid options: {list(action.choices)}"
+                )
             values = value if isinstance(value, (list, tuple)) else [value]
             if action.type in (int, float):
                 for entry in values:
@@ -325,6 +518,7 @@ def validate_config(
             if (
                 not action.nargs
                 and not isinstance(action, argparse._AppendAction)
+                and action.dest not in comma_list_str_args
                 and isinstance(value, (list, tuple))
             ):
                 warnings.append(
@@ -349,7 +543,7 @@ def validate_config(
             1 - 1e-15,
             "Scheduler factor must be between 0 and 1",
         ),
-        "warmup_epochs": (1, math.inf, "Warmup epochs must be positive"),
+        "warmup_epochs": (0, math.inf, "Warmup epochs must be non-negative"),
         "step_size": (1, math.inf, "Scheduler step size must be positive"),
         "save_every": (0, math.inf, "Save interval must be non-negative (0 disables)"),
         "seed": (0, 2**32 - 1, "Seed must fit an unsigned 32-bit integer"),
@@ -359,8 +553,8 @@ def validate_config(
     }
 
     for key, (min_val, max_val, msg) in numeric_checks.items():
-        if key in config:
-            val = config[key]
+        if key in effective_config and effective_config[key] is not None:
+            val = effective_config[key]
             # Type check: ensure value is numeric before comparison
             if type(val) not in (int, float):
                 warnings.append(
@@ -370,103 +564,15 @@ def validate_config(
             if not math.isfinite(val) or not (min_val <= val <= max_val):
                 warnings.append(f"{msg}: got {val}")
 
-    if config.get("cv") == 1:
+    if effective_config.get("cv") == 1:
         warnings.append("CV must be 0 (disabled) or at least 2 folds.")
 
-    # Check for unknown/unrecognized keys (helps catch typos)
-    # Priority: explicit known_keys > parser-derived > hardcoded fallback
-    if known_keys is not None:
-        check_keys = set(known_keys)
-    elif parser is not None:
-        # Derive from parser: always in sync, never lags behind new arguments
-        check_keys = {
-            action.dest for action in parser._actions if action.dest != "help"
-        }
-        # Also accept the raw flag names without leading dashes
-        # (e.g., YAML may use 'pretrained' or 'mixed_precision')
-        for action in parser._actions:
-            for opt in action.option_strings:
-                check_keys.add(opt.lstrip("-").replace("-", "_"))
-        check_keys.add("_metadata")  # Internal metadata key
-    else:
-        # Hardcoded fallback (used when neither parser nor known_keys provided)
-        check_keys = {
-            # Model
-            "model",
-            "import_modules",
-            "pretrained",
-            # Hyperparameters
-            "batch_size",
-            "lr",
-            "epochs",
-            "patience",
-            "weight_decay",
-            "grad_clip",
-            "grad_accum_steps",
-            # Loss
-            "loss",
-            "huber_delta",
-            "loss_weights",
-            "selection_metric",
-            # Optimizer
-            "optimizer",
-            "momentum",
-            "nesterov",
-            "betas",
-            # Scheduler
-            "scheduler",
-            "scheduler_patience",
-            "min_lr",
-            "scheduler_factor",
-            "warmup_epochs",
-            "step_size",
-            "milestones",
-            # Data
-            "data_path",
-            "workers",
-            "seed",
-            "deterministic",
-            "cache_validate",
-            "single_channel",
-            "allow_pickle",
-            # Cross-validation
-            "cv",
-            "cv_stratify",
-            "cv_bins",
-            # Checkpointing
-            "resume",
-            "save_every",
-            "output_dir",
-            "fresh",
-            # Performance
-            "compile",
-            "precision",
-            "mixed_precision",
-            # Logging
-            "wandb",
-            "wandb_watch",
-            "project_name",
-            "run_name",
-            # Config
-            "config",
-            "list_models",
-            # Physical Constraints
-            "constraint",
-            "constraint_file",
-            "constraint_weight",
-            "constraint_reduction",
-            # Metadata (internal)
-            "_metadata",
-        }
-
+    # Check for unknown/unrecognized keys (helps catch typos).
     for key in config:
         if key not in check_keys:
-            # Try stripping namespace prefix for nested YAML keys
-            # (e.g., "optimizer_lr" from {optimizer: {lr: ...}} → check "lr")
-            if "_" in key:
-                stripped = key.split("_", 1)[1]
-                if stripped in check_keys:
-                    continue
+            stripped = _strip_known_section_prefix(key)
+            if stripped is not None and stripped in check_keys:
+                continue
             warnings.append(
                 f"Unknown config key: '{key}' - check for typos or see wavedl-train --help"
             )
@@ -505,5 +611,5 @@ def create_default_config() -> dict[str, Any]:
         "compile": False,
         # Output
         "seed": 2025,
-        "workers": 8,
+        "workers": -1,
     }

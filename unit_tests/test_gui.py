@@ -43,16 +43,20 @@ class TestGUIWorkspace(unittest.TestCase):
         self.addCleanup(self.close_server)
 
     def close_server(self):
+        self.trainer.stop()
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=5)
 
-    def request(self, path, payload=None):
+    def request(self, path, payload=None, extra_headers=None):
         data = json.dumps(payload).encode() if payload is not None else None
+        headers = {"Content-Type": "application/json"}
+        if extra_headers:
+            headers.update(extra_headers)
         request = Request(
             f"http://127.0.0.1:{self.server.server_port}{path}",
             data=data,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
         )
         with urlopen(request, timeout=5) as response:
             return response.read()
@@ -233,6 +237,74 @@ class TestGUIWorkspace(unittest.TestCase):
             self.assertEqual(
                 app._resolve_wavedl_command(), [sys.executable, "-m", "wavedl.launcher"]
             )
+
+    def test_browser_csrf_and_origin_enforcement(self):
+        origin = f"http://127.0.0.1:{self.server.server_port}"
+        # Browser-originated POST without X-WaveDL-Token must be rejected with 403
+        with self.assertRaises(HTTPError) as err:
+            self.request(
+                "/api/config",
+                {"config": {"model": "cnn"}},
+                extra_headers={"Origin": origin},
+            )
+        self.assertEqual(err.exception.code, 403)
+        err.exception.close()
+
+        # Browser-originated POST with valid X-WaveDL-Token succeeds
+        res = json.loads(
+            self.request(
+                "/api/config",
+                {"config": {"model": "cnn"}},
+                extra_headers={
+                    "Origin": origin,
+                    "X-WaveDL-Token": app.SESSION_TOKEN,
+                },
+            )
+        )
+        self.assertTrue(res["ok"])
+
+        # Cross-origin POST must be rejected even with token
+        with self.assertRaises(HTTPError) as cross_err:
+            self.request(
+                "/api/config",
+                {"config": {"model": "cnn"}},
+                extra_headers={
+                    "Origin": "http://evil.example:9999",
+                    "X-WaveDL-Token": app.SESSION_TOKEN,
+                },
+            )
+        self.assertEqual(cross_err.exception.code, 403)
+        cross_err.exception.close()
+
+    def test_config_rejects_non_yaml_extension(self):
+        with self.assertRaises(HTTPError) as err:
+            self.request("/api/config?path=notes.txt")
+        self.assertEqual(err.exception.code, 400)
+        err.exception.close()
+
+    def test_stdlib_yaml_scientific_nested_and_dump_scalars(self):
+        sample_yaml = (
+            "model: cnn\n"
+            "lr: 1e-4\n"
+            "nested:\n"
+            "  alpha: 2.5e-3\n"
+            "  enabled: true\n"
+            "items:\n"
+            "  - true\n"
+            "  - 10\n"
+        )
+        with patch.object(app, "_pyyaml", None):
+            parsed = app.parse_yaml_text(sample_yaml)
+            self.assertAlmostEqual(parsed["lr"], 1e-4)
+            self.assertAlmostEqual(parsed["nested_alpha"], 2.5e-3)
+            self.assertIs(parsed["nested_enabled"], True)
+            self.assertEqual(parsed["items"], [True, 10])
+
+        if app._pyyaml is not None:
+            self.assertEqual(app.parse_yaml_text(sample_yaml), parsed)
+
+        dumped = app._dump_yaml_kv("flags", [True, None, "yes"])
+        self.assertEqual(dumped, 'flags: [true, null, "yes"]')
 
 
 if __name__ == "__main__":

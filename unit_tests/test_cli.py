@@ -808,25 +808,32 @@ class TestHPCDetectGPUs:
 class TestHPCEnvironment:
     """Tests for HPC environment configuration."""
 
-    def test_sets_default_env_vars(self):
+    def test_sets_default_env_vars(self, tmp_path, monkeypatch):
         """Test that default environment variables are set when home is not writable."""
         from wavedl.launcher import setup_environment
 
-        env_vars = ["MPLCONFIGDIR", "WANDB_MODE", "WANDB_DIR"]
-        original = {v: os.environ.pop(v, None) for v in env_vars}
+        env_vars = [
+            "MPLCONFIGDIR",
+            "WANDB_MODE",
+            "WANDB_DIR",
+            "WANDB_CACHE_DIR",
+            "WANDB_CONFIG_DIR",
+            "TORCH_HOME",
+            "HF_HOME",
+            "TRITON_CACHE_DIR",
+            "XDG_CACHE_HOME",
+            "FONTCONFIG_CACHE",
+        ]
+        for var in env_vars:
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.chdir(tmp_path)
 
-        try:
-            # Mock home directory as non-writable (simulates HPC environment)
-            with patch("os.access", return_value=False):
-                setup_environment()
-                assert "MPLCONFIGDIR" in os.environ
-                assert os.environ["WANDB_MODE"] == "offline"
-        finally:
-            for var, val in original.items():
-                if val is not None:
-                    os.environ[var] = val
-                elif var in os.environ:
-                    del os.environ[var]
+        # Mock home directory as non-writable (simulates HPC environment)
+        with patch("os.access", return_value=False):
+            setup_environment()
+            assert "MPLCONFIGDIR" in os.environ
+            assert os.environ["WANDB_MODE"] == "offline"
+            assert str(tmp_path) in os.environ["MPLCONFIGDIR"]
 
 
 class TestHPCParseArgs:
@@ -914,61 +921,56 @@ class TestHPCPrintSummary:
 class TestHPCCacheSetup:
     """Tests for HPC cache directory setup in wavedl.utils."""
 
-    def test_setup_hpc_cache_dirs_respects_existing_env(self):
+    _CACHE_ENV_VARS = (
+        "TORCH_HOME",
+        "HF_HOME",
+        "TRITON_CACHE_DIR",
+        "XDG_CACHE_HOME",
+        "MPLCONFIGDIR",
+        "FONTCONFIG_CACHE",
+    )
+
+    def test_setup_hpc_cache_dirs_respects_existing_env(self, tmp_path, monkeypatch):
         """Test that setup_hpc_cache_dirs respects existing environment variables."""
         from wavedl.utils import setup_hpc_cache_dirs
 
-        # Set a custom value for TORCH_HOME before calling setup
-        original = os.environ.get("TORCH_HOME")
-        try:
-            os.environ["TORCH_HOME"] = "/custom/torch/path"
-            setup_hpc_cache_dirs()
-            # Should not overwrite user-set value
-            assert os.environ["TORCH_HOME"] == "/custom/torch/path"
-        finally:
-            if original:
-                os.environ["TORCH_HOME"] = original
-            elif "TORCH_HOME" in os.environ:
-                del os.environ["TORCH_HOME"]
+        for var in self._CACHE_ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("TORCH_HOME", "/custom/torch/path")
 
-    def test_setup_hpc_cache_dirs_callable(self):
+        setup_hpc_cache_dirs()
+        # Should not overwrite user-set value
+        assert os.environ["TORCH_HOME"] == "/custom/torch/path"
+
+    def test_setup_hpc_cache_dirs_callable(self, tmp_path, monkeypatch):
         """Test that setup_hpc_cache_dirs can be called without error."""
         from wavedl.utils import setup_hpc_cache_dirs
+
+        for var in self._CACHE_ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.chdir(tmp_path)
 
         # Should not raise any exceptions
         setup_hpc_cache_dirs()
 
-    def test_setup_hpc_cache_dirs_creates_dirs_when_home_not_writable(self, temp_dir):
+    def test_setup_hpc_cache_dirs_creates_dirs_when_home_not_writable(
+        self, tmp_path, monkeypatch
+    ):
         """Test that directories are created when home is not writable."""
         from wavedl.utils import setup_hpc_cache_dirs
 
-        original_cwd = os.getcwd()
-        # Save original env vars
-        env_vars = ["TORCH_HOME", "MPLCONFIGDIR", "FONTCONFIG_CACHE"]
-        original_env = {v: os.environ.pop(v, None) for v in env_vars}
+        for var in self._CACHE_ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.chdir(tmp_path)
 
-        try:
-            # Clear env vars so setup_hpc_cache_dirs will try to set them
-            for var in env_vars:
-                if var in os.environ:
-                    del os.environ[var]
+        with patch("os.access", return_value=False):
+            setup_hpc_cache_dirs()
 
-            # Change to temp dir and mock non-writable home
-            os.chdir(temp_dir)
-            with patch("os.access", return_value=False):
-                setup_hpc_cache_dirs()
-
-            # Verify TORCH_HOME was set to a path in temp_dir
-            torch_home = os.environ.get("TORCH_HOME", "")
-            assert ".torch_cache" in torch_home or torch_home == ""
-        finally:
-            os.chdir(original_cwd)
-            # Restore original env vars
-            for var, val in original_env.items():
-                if val is not None:
-                    os.environ[var] = val
-                elif var in os.environ:
-                    del os.environ[var]
+        # Verify TORCH_HOME was set to a path in tmp_path
+        torch_home = os.environ.get("TORCH_HOME", "")
+        assert ".torch_cache" in torch_home
+        assert str(tmp_path) in torch_home
 
 
 class TestTrainSuppressLogging:
@@ -1337,3 +1339,87 @@ class TestScalerPortability:
         )
         assert loaded_scaler["mean"] == 0.5
         assert loaded_scaler["std"] == 2.0
+
+
+# ==============================================================================
+# AUDIT REGRESSION TESTS (UNWRAP, CHECKPOINT MTIME, SPATIAL DENORM)
+# ==============================================================================
+class TestAuditRegressions:
+    """Regression tests for checkpoint unwrap, mtime resolution, and spatial ONNX denorm."""
+
+    def test_unwrap_compiled_model_ignores_custom_module_child(self):
+        """Custom nn.Module with a child named `self.module` must not be unwrapped."""
+        from wavedl.train import _unwrap_compiled_model
+
+        class CustomWithModuleAttr(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.module = torch.nn.Linear(4, 2)
+                self.head = torch.nn.Linear(2, 1)
+
+        custom = CustomWithModuleAttr()
+        accel = MagicMock()
+        accel.unwrap_model = lambda m: m
+        assert _unwrap_compiled_model(accel, custom) is custom
+
+        # Simulated torch.compile OptimizedModule exposes `_orig_mod`
+        wrapper = torch.nn.Module()
+        wrapper._orig_mod = custom
+        assert _unwrap_compiled_model(accel, wrapper) is custom
+
+    def test_load_checkpoint_prefers_fresher_weights_file(self, tmp_path):
+        """When both safetensors and pytorch_model.bin exist, newer mtime wins."""
+        pytest.importorskip("safetensors.torch")
+        from safetensors.torch import save_file
+        from sklearn.preprocessing import StandardScaler
+
+        from wavedl.models.cnn import CNN
+        from wavedl.test import load_checkpoint
+
+        ckpt_dir = tmp_path / "best_checkpoint"
+        ckpt_dir.mkdir()
+
+        scaler = StandardScaler()
+        scaler.fit(np.zeros((4, 3), dtype=np.float32))
+        with open(ckpt_dir / "scaler.pkl", "wb") as f:
+            pickle.dump(scaler, f)
+
+        m_old = CNN(in_shape=(32, 32), out_size=3)
+        m_new = CNN(in_shape=(32, 32), out_size=3)
+        with torch.no_grad():
+            for p in m_old.parameters():
+                p.fill_(0.125)
+            for p in m_new.parameters():
+                p.fill_(0.75)
+
+        st_path = ckpt_dir / "model.safetensors"
+        bin_path = ckpt_dir / "pytorch_model.bin"
+        save_file(m_old.state_dict(), str(st_path))
+        torch.save(m_new.state_dict(), bin_path)
+
+        # Make pytorch_model.bin strictly newer than model.safetensors
+        os.utime(st_path, (1_700_000_000, 1_700_000_000))
+        os.utime(bin_path, (1_700_000_100, 1_700_000_100))
+
+        loaded, _ = load_checkpoint(
+            str(ckpt_dir), in_shape=(32, 32), out_size=3, model_name="cnn"
+        )
+        first_param = next(loaded.parameters())
+        assert torch.allclose(first_param, torch.full_like(first_param, 0.75))
+
+    def test_model_with_denormalization_broadcasts_4d_spatial_fields(self):
+        """1D channel mean_/scale_ (C,) must broadcast cleanly over (N, C, H, W) outputs."""
+        from wavedl.test import ModelWithDenormalization
+
+        class DummyFieldModel(torch.nn.Module):
+            def forward(self, x):
+                return torch.ones(x.size(0), 2, 8, 8, dtype=x.dtype, device=x.device)
+
+        mean = np.array([10.0, 20.0], dtype=np.float32)
+        scale = np.array([2.0, 3.0], dtype=np.float32)
+        wrapped = ModelWithDenormalization(DummyFieldModel(), mean, scale)
+
+        out = wrapped(torch.zeros(3, 1, 8, 8))
+        assert out.shape == (3, 2, 8, 8)
+        assert torch.allclose(out[:, 0], torch.full((3, 8, 8), 12.0))
+        assert torch.allclose(out[:, 1], torch.full((3, 8, 8), 23.0))

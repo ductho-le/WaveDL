@@ -187,6 +187,22 @@ class TCNBase(BaseModel):
                 "For 2D/3D data, use ResNet, EfficientNet, or Swin."
             )
 
+        if not num_channels or any(
+            isinstance(c, bool) or not isinstance(c, int) or c <= 0
+            for c in num_channels
+        ):
+            raise ValueError(
+                f"num_channels must be a non-empty list of positive integers, got {num_channels!r}"
+            )
+        if (
+            isinstance(kernel_size, bool)
+            or not isinstance(kernel_size, int)
+            or kernel_size < 1
+        ):
+            raise ValueError(
+                f"kernel_size must be a positive integer, got {kernel_size!r}"
+            )
+
         self.num_channels = num_channels
         self.kernel_size = kernel_size
         self.dropout_rate = dropout_rate
@@ -236,17 +252,21 @@ class TCNBase(BaseModel):
         return rf
 
     def _init_weights(self):
-        """Initialize weights using Kaiming initialization."""
+        """Initialize weights using Kaiming/Xavier initialization."""
         for m in self.modules():
-            if isinstance(m, (nn.Conv1d, nn.Linear)):
-                # Kaiming init with 'relu' gain (~√2); a reasonable approximation
-                # for GELU activation (PyTorch has no native GELU gain support).
+            if isinstance(m, nn.Conv1d):
                 nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode="fan_in", nonlinearity="relu")
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.GroupNorm):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
+        if isinstance(self.head[-1], nn.Linear):
+            nn.init.xavier_uniform_(self.head[-1].weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

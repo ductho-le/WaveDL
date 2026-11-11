@@ -21,7 +21,8 @@ References:
 Author: Ductho Le (ductho.le@outlook.com)
 """
 
-from typing import Any
+import copy
+from typing import Any, ClassVar
 
 import torch
 import torch.nn as nn
@@ -154,6 +155,37 @@ class DenseNetBase(BaseModel):
     ):
         super().__init__(in_shape, out_size)
 
+        if not block_config or any(
+            isinstance(n, bool) or not isinstance(n, int) or n <= 0
+            for n in block_config
+        ):
+            raise ValueError(
+                f"block_config must be a non-empty list of positive integers, got {block_config!r}"
+            )
+        for param_name, param_val in (
+            ("growth_rate", growth_rate),
+            ("num_init_features", num_init_features),
+            ("bn_size", bn_size),
+        ):
+            if (
+                isinstance(param_val, bool)
+                or not isinstance(param_val, int)
+                or param_val <= 0
+            ):
+                raise ValueError(
+                    f"{param_name} must be a positive integer, got {param_val!r}"
+                )
+        if not (0.0 < compression <= 1.0):
+            raise ValueError(f"compression must be in (0, 1], got {compression!r}")
+
+        min_size = max(1, (1 << (len(block_config) + 1)) - 3)
+        for i, s in enumerate(self.in_shape):
+            if s < min_size:
+                raise ValueError(
+                    f"DenseNet with {len(block_config)} blocks requires each spatial axis >= {min_size}, "
+                    f"but axis {i} has size {s}."
+                )
+
         self.dim = len(in_shape)
         self.growth_rate = growth_rate
         self.dropout_rate = dropout_rate
@@ -242,7 +274,15 @@ class DenseNetBase(BaseModel):
     @classmethod
     def get_default_config(cls) -> dict[str, Any]:
         """Return default configuration."""
-        return {"growth_rate": 32, "dropout_rate": 0.1}
+        return {
+            "block_config": [6, 12, 24, 16],
+            "growth_rate": 32,
+            "num_init_features": 64,
+            "bn_size": 4,
+            "compression": 0.5,
+            "dropout_rate": 0.1,
+            **copy.deepcopy(getattr(cls, "_variant_defaults", {})),
+        }
 
 
 # =============================================================================
@@ -264,9 +304,15 @@ class DenseNet121(DenseNetBase):
         dropout_rate: Dropout rate (default: 0.1)
     """
 
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "block_config": [6, 12, 24, 16],
+    }
+
     def __init__(self, in_shape: SpatialShape, out_size: int, **kwargs):
         super().__init__(
-            in_shape=in_shape, out_size=out_size, block_config=[6, 12, 24, 16], **kwargs
+            in_shape=in_shape,
+            out_size=out_size,
+            **{**copy.deepcopy(self._variant_defaults), **kwargs},
         )
 
     def __repr__(self) -> str:
@@ -287,9 +333,15 @@ class DenseNet169(DenseNetBase):
         dropout_rate: Dropout rate (default: 0.1)
     """
 
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "block_config": [6, 12, 32, 32],
+    }
+
     def __init__(self, in_shape: SpatialShape, out_size: int, **kwargs):
         super().__init__(
-            in_shape=in_shape, out_size=out_size, block_config=[6, 12, 32, 32], **kwargs
+            in_shape=in_shape,
+            out_size=out_size,
+            **{**copy.deepcopy(self._variant_defaults), **kwargs},
         )
 
     def __repr__(self) -> str:
@@ -345,6 +397,14 @@ class DenseNet121Pretrained(BaseModel):
                 f"Pretrained DenseNet requires 2D input (H, W), got {len(in_shape)}D. "
                 "For 1D/3D data, use densenet121 instead."
             )
+
+        min_size = 29
+        for i, s in enumerate(in_shape):
+            if s < min_size:
+                raise ValueError(
+                    f"Pretrained DenseNet requires each spatial axis >= {min_size}, "
+                    f"but axis {i} has size {s}."
+                )
 
         self.pretrained = pretrained
         self.dropout_rate = dropout_rate

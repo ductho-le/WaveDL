@@ -50,12 +50,52 @@ COLORS = {
 }
 
 
-def _is_latex_available() -> bool:
-    """Check if LaTeX is available for matplotlib rendering."""
-    import shutil
+_latex_available_cache: bool | None = None
 
-    # usetex needs dvipng to rasterize PNG output; latex alone is not enough.
-    return all(shutil.which(tool) for tool in ("latex", "dvipng"))
+
+def _is_latex_available() -> bool:
+    """Check if a working LaTeX + dvipng + type1cm toolchain is available."""
+    global _latex_available_cache
+    if _latex_available_cache is not None:
+        return _latex_available_cache
+
+    import shutil
+    import subprocess
+
+    # usetex needs both latex and dvipng, plus type1cm.sty (missing on minimal TeX installs).
+    if not all(shutil.which(tool) for tool in ("latex", "dvipng")):
+        _latex_available_cache = False
+        return False
+
+    kpsewhich = shutil.which("kpsewhich")
+    if kpsewhich is not None:
+        try:
+            res = subprocess.run(
+                [kpsewhich, "type1cm.sty"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if res.returncode != 0 or not res.stdout.strip():
+                _latex_available_cache = False
+                return False
+        except (subprocess.SubprocessError, OSError):
+            _latex_available_cache = False
+            return False
+
+    _latex_available_cache = True
+    return True
+
+
+def _escape_latex_label(label: str) -> str:
+    """Escape plain-text parameter names when Matplotlib text.usetex is enabled."""
+    if not bool(plt.rcParams.get("text.usetex", False)) or "$" in label:
+        return label
+    escaped = label
+    for ch in ("_", "%", "&", "#"):
+        escaped = escaped.replace(f"\\{ch}", ch).replace(ch, f"\\{ch}")
+    return escaped
 
 
 def configure_matplotlib_style():
@@ -310,11 +350,25 @@ class StreamingFieldMetrics:
         prediction = np.asarray(prediction)
         if target.shape != prediction.shape:
             raise ValueError("Targets and predictions must have matching shapes.")
+        if (
+            target.dtype.kind not in "biuf"
+            or prediction.dtype.kind not in "biuf"
+            or not np.isfinite(target).all()
+            or not np.isfinite(prediction).all()
+        ):
+            raise ValueError(
+                "Targets and predictions must contain only finite real values."
+            )
         if self.track_relative_l2 and target.ndim > 2 and len(target):
-            # Per-sample, per-channel relative L2 over the spatial axes.
-            spatial_axes = tuple(range(2, target.ndim))
-            target64 = target.astype(np.float64, copy=False)
-            error64 = prediction.astype(np.float64, copy=False) - target64
+            # Canonicalize unchannelized 3D (N, H, W) fields to (N, 1, H, W)
+            # before computing per-sample, per-channel relative L2 over spatial axes.
+            target_l2 = target[:, np.newaxis] if target.ndim == 3 else target
+            pred_l2 = prediction[:, np.newaxis] if prediction.ndim == 3 else prediction
+            if target_l2.shape[1] != self.channels:
+                raise ValueError(f"Expected {self.channels} field channel(s).")
+            spatial_axes = tuple(range(2, target_l2.ndim))
+            target64 = target_l2.astype(np.float64, copy=False)
+            error64 = pred_l2.astype(np.float64, copy=False) - target64
             true_norm = np.sqrt(np.sum(np.square(target64), axis=spatial_axes))
             error_norm = np.sqrt(np.sum(np.square(error64), axis=spatial_axes))
             self.sum_relative_l2 += (error_norm / np.maximum(true_norm, 1e-12)).sum(
@@ -365,13 +419,24 @@ class StreamingFieldMetrics:
         if self.count < 2:
             nan = np.full(self.channels, np.nan)
             return nan, nan.copy()
+        # Scale-aware variance floor prevents float64 centered-moment rounding
+        # noise on constant large-offset fields (e.g. 0.1 * 1e9) from exploding R².
+        var_tol_true = (
+            np.square(1e-14 * np.maximum(1.0, np.abs(self.mean_true))) * self.count
+        )
+        var_tol_pred = (
+            np.square(1e-14 * np.maximum(1.0, np.abs(self.mean_pred))) * self.count
+        )
         # Match sklearn's finite convention for constant target channels:
         # perfect predictions score 1; any nonzero residual scores 0.
         r2_values = np.where(self.sum_squared_error == 0.0, 1.0, 0.0)
-        variable = self.centered_true > 0.0
+        variable = self.centered_true > var_tol_true
         r2_values[variable] = 1.0 - (
             self.sum_squared_error[variable] / self.centered_true[variable]
         )
+        if self.count < 3:
+            return r2_values, np.zeros(self.channels, dtype=np.float64)
+        valid_corr = variable & (self.centered_pred > var_tol_pred)
         correlation_denominator = np.sqrt(self.centered_true) * np.sqrt(
             self.centered_pred
         )
@@ -379,7 +444,7 @@ class StreamingFieldMetrics:
             self.centered_cross,
             correlation_denominator,
             out=np.zeros(self.channels, dtype=np.float64),
-            where=correlation_denominator > 0.0,
+            where=valid_corr & (correlation_denominator > 0.0),
         )
         return r2_values, np.clip(correlation_values, -1.0, 1.0)
 
@@ -429,13 +494,10 @@ def _prepare_plot_data(
 ) -> tuple[np.ndarray, np.ndarray, list[str], int]:
     """Prepare data for plotting: reshape, sample, and generate param names."""
     y_true, y_pred = _validated_metric_arrays(y_true, y_pred)
-    # Compute plotting statistics in double precision, matching reported metrics.
-    y_true = np.asarray(y_true, dtype=np.float64)
-    y_pred = np.asarray(y_pred, dtype=np.float64)
-
     num_params = y_true.shape[1]
 
-    # Subsample if needed. Use a seeded local generator so figures are
+    # Subsample BEFORE allocating float64 copies (critical for dense 2D fields
+    # where y_true has N*H*W rows). Use a seeded local generator so figures are
     # reproducible across runs and the global numpy RNG state is left untouched.
     if max_samples and len(y_true) > max_samples:
         rng = np.random.default_rng(seed)
@@ -443,9 +505,15 @@ def _prepare_plot_data(
         y_true = y_true[indices]
         y_pred = y_pred[indices]
 
-    # Generate default param names if needed
+    # Compute plotting statistics in double precision, matching reported metrics.
+    y_true = np.asarray(y_true, dtype=np.float64)
+    y_pred = np.asarray(y_pred, dtype=np.float64)
+
+    # Generate default param names if needed, escaping LaTeX specials when usetex=True
     if param_names is None or len(param_names) != num_params:
         param_names = [f"P{i}" for i in range(num_params)]
+    else:
+        param_names = [_escape_latex_label(str(name)) for name in param_names]
 
     return y_true, y_pred, param_names, num_params
 
@@ -777,16 +845,16 @@ def create_training_curves(
         # Snap to clean decade boundaries
         log_min = np.floor(np.log10(vmin))
         log_max = np.ceil(np.log10(vmax))
-        # Generate n uniformly spaced ticks as powers of 10
-        log_ticks = np.linspace(log_min, log_max, n_ticks)
-        # Round to nearest integer power of 10 for clean numbers
-        log_ticks = np.round(log_ticks)
-        ticks = 10.0**log_ticks
-        # Remove duplicates while preserving order
-        ticks = list(dict.fromkeys(ticks))
+        # Generate n uniformly spaced integer exponents for clean powers of 10
+        exponents = list(
+            dict.fromkeys(
+                int(np.round(exp)) for exp in np.linspace(log_min, log_max, n_ticks)
+            )
+        )
+        ticks = [10.0**exp for exp in exponents]
         ax.set_yticks(ticks)
-        # Format all tick labels as 10^n
-        labels = [f"$10^{{{int(np.log10(t))}}}$" for t in ticks]
+        # Format all tick labels as 10^n directly from integer exponents
+        labels = [f"$10^{{{exp}}}$" for exp in exponents]
         ax.set_yticklabels(labels)
         ax.minorticks_off()
 
@@ -941,6 +1009,7 @@ def plot_qq(
     y_true: np.ndarray,
     y_pred: np.ndarray,
     param_names: list[str] | None = None,
+    max_samples: int = 50000,
 ) -> plt.Figure:
     """
     Generate Q-Q plots to check if prediction errors are normally distributed.
@@ -952,6 +1021,7 @@ def plot_qq(
         y_true: Ground truth values of shape (N, num_targets)
         y_pred: Predicted values of shape (N, num_targets)
         param_names: Optional list of parameter names for titles
+        max_samples: Maximum samples to plot (caps memory/rendering on dense fields)
 
     Returns:
         Matplotlib Figure object
@@ -960,7 +1030,7 @@ def plot_qq(
     from scipy import stats
 
     y_true, y_pred, param_names, num_params = _prepare_plot_data(
-        y_true, y_pred, param_names
+        y_true, y_pred, param_names, max_samples=max_samples
     )
 
     # Calculate errors
@@ -1219,9 +1289,10 @@ def plot_relative_error(
                 y=mean_rel, color=COLORS["accent"], linestyle="-", lw=1.2, label="Mean"
             )
 
+        use_tex = bool(plt.rcParams.get("text.usetex", False))
         ax.set_title(f"{param_names[i]}")
         ax.set_xlabel("True Value")
-        ax.set_ylabel("Relative Error (\\%)")
+        ax.set_ylabel("Relative Error (\\%)" if use_tex else "Relative Error (%)")
         ax.grid(True)
         ax.legend(fontsize=FONT_SIZE_TICKS, loc="best", fancybox=False, framealpha=1.0)
 
@@ -1238,6 +1309,7 @@ def plot_error_cdf(
     y_pred: np.ndarray,
     param_names: list[str] | None = None,
     use_relative: bool = True,
+    max_samples: int = 50000,
 ) -> plt.Figure:
     """
     Generate cumulative distribution function (CDF) of prediction errors.
@@ -1250,22 +1322,24 @@ def plot_error_cdf(
         y_pred: Predicted values of shape (N, num_targets)
         param_names: Optional list of parameter names for legend
         use_relative: If True, plot relative error (%), else absolute error
+        max_samples: Maximum samples to plot (caps memory/rendering on dense fields)
 
     Returns:
         Matplotlib Figure object
     """
     _ensure_style_configured()
     y_true, y_pred, param_names, num_params = _prepare_plot_data(
-        y_true, y_pred, param_names
+        y_true, y_pred, param_names, max_samples=max_samples
     )
 
+    use_tex = bool(plt.rcParams.get("text.usetex", False))
     # Calculate errors
     if use_relative:
         with np.errstate(divide="ignore", invalid="ignore"):
             errors = np.abs((y_pred - y_true) / y_true) * 100
             # Keep inf/nan as NaN — exclude from CDF rather than understating
             errors = np.nan_to_num(errors, nan=np.nan, posinf=np.nan, neginf=np.nan)
-        xlabel = r"Relative Error\;$(\%)$"
+        xlabel = r"Relative Error\;$(\%)$" if use_tex else "Relative Error (%)"
     else:
         errors = np.abs(y_pred - y_true)
         xlabel = "Absolute Error"
@@ -1297,10 +1371,18 @@ def plot_error_cdf(
         ax.axvline(x=p95_val, color=color, linestyle=":")
 
     # Reference lines
-    ax.axhline(y=95, color="gray", linestyle="--", lw=0.8, label=r"95\%")
+    ax.axhline(
+        y=95,
+        color="gray",
+        linestyle="--",
+        lw=0.8,
+        label=r"95\%" if use_tex else "95%",
+    )
 
     ax.set_xlabel(xlabel)
-    ax.set_ylabel(r"Cumulative Percentage\;$(\%)$")
+    ax.set_ylabel(
+        r"Cumulative Percentage\;$(\%)$" if use_tex else "Cumulative Percentage (%)"
+    )
     ax.set_title("Cumulative Error Distribution")
     ax.legend(fontsize=FONT_SIZE_TICKS, loc="best", fancybox=False, framealpha=1.0)
     ax.grid(True)
@@ -1383,6 +1465,7 @@ def plot_error_boxplot(
     y_pred: np.ndarray,
     param_names: list[str] | None = None,
     use_relative: bool = False,
+    max_samples: int = 50000,
 ) -> plt.Figure:
     """
     Generate box plots comparing error distributions across parameters.
@@ -1395,13 +1478,14 @@ def plot_error_boxplot(
         y_pred: Predicted values of shape (N, num_targets)
         param_names: Optional list of parameter names for x-axis
         use_relative: If True, plot relative error (%), else absolute error
+        max_samples: Maximum samples to plot (caps memory/rendering on dense fields)
 
     Returns:
         Matplotlib Figure object
     """
     _ensure_style_configured()
     y_true, y_pred, param_names, num_params = _prepare_plot_data(
-        y_true, y_pred, param_names
+        y_true, y_pred, param_names, max_samples=max_samples
     )
 
     # Calculate errors

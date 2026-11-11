@@ -42,5 +42,5 @@ The `--constraint` CLI option accepts mathematical penalty expressions (such as 
 - Dynamic code evaluation (`eval()`, `exec()`, or arbitrary imports) is prohibited and blocked at parse time.
 
 ### 4. Experiment Tracking & Environment
-- **WandB**: By default, WaveDL sets `WANDB_MODE=offline` unless configured otherwise, preventing accidental transmission of telemetry or model outputs to external services on sensitive HPC systems.
+- **WandB**: On HPC clusters and environments with non-writable home directories, `wavedl-train` automatically sets `WANDB_MODE=offline` unless configured otherwise, preventing accidental transmission of telemetry or model outputs on compute nodes. On local workstations, set `WANDB_MODE=offline` explicitly if you require air-gapped logging when `--wandb` is enabled.
 - **Multi-Process Communication**: Distributed Data Parallel (DDP) communication operates over standard PyTorch distributed backends (NCCL for NVIDIA GPUs, Gloo for CPU/macOS). Ensure that your compute nodes communicate across isolated, secure internal cluster networks.

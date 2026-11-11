@@ -113,6 +113,22 @@ class ResNet3DBase(BaseModel):
                 "For 1D data, use TCN. For 2D data, use standard ResNet."
             )
 
+        min_spatial = (4, 8, 8)
+        for i, (s, req) in enumerate(zip(self.in_shape, min_spatial)):
+            if s < req:
+                raise ValueError(
+                    f"ResNet3D requires input shape >= {min_spatial} along (D, H, W), "
+                    f"but axis {i} has size {s}."
+                )
+        if (
+            isinstance(regression_hidden, bool)
+            or not isinstance(regression_hidden, int)
+            or regression_hidden <= 0
+        ):
+            raise ValueError(
+                f"regression_hidden must be a positive integer, got {regression_hidden!r}"
+            )
+
         self.pretrained = pretrained
         self.dropout_rate = dropout_rate
         self.freeze_backbone = freeze_backbone
@@ -126,14 +142,15 @@ class ResNet3DBase(BaseModel):
         in_features = self.backbone.fc.in_features
 
         # Replace fc with regression head
+        mid_hidden = max(regression_hidden // 2, 1)
         self.backbone.fc = nn.Sequential(
             nn.Dropout(dropout_rate),
             nn.Linear(in_features, regression_hidden),
             nn.ReLU(inplace=True),
             nn.Dropout(dropout_rate * 0.5),
-            nn.Linear(regression_hidden, regression_hidden // 2),
+            nn.Linear(regression_hidden, mid_hidden),
             nn.ReLU(inplace=True),
-            nn.Linear(regression_hidden // 2, out_size),
+            nn.Linear(mid_hidden, out_size),
         )
 
         # Adapt before freezing so the replacement stem is frozen too.
@@ -144,22 +161,11 @@ class ResNet3DBase(BaseModel):
 
     def _adapt_stem_for_single_channel(self):
         """Modify stem conv to accept 1 channel, averaging pretrained RGB weights."""
-        old_conv = self.backbone.stem[0]
-        new_conv = nn.Conv3d(
-            1,
-            old_conv.out_channels,
-            kernel_size=old_conv.kernel_size,
-            stride=old_conv.stride,
-            padding=old_conv.padding,
-            bias=old_conv.bias is not None,
+        from wavedl.models._pretrained_utils import adapt_first_conv_for_single_channel
+
+        adapt_first_conv_for_single_channel(
+            self.backbone, "stem.0", pretrained=self.pretrained
         )
-        if self.pretrained:
-            with torch.no_grad():
-                # Average RGB weights for grayscale initialization
-                new_conv.weight.copy_(old_conv.weight.mean(dim=1, keepdim=True))
-                if old_conv.bias is not None:
-                    new_conv.bias.copy_(old_conv.bias)
-        self.backbone.stem[0] = new_conv
 
     def _freeze_backbone(self):
         """Freeze feature extraction while retaining the regression head."""

@@ -177,8 +177,46 @@ def get_optimizer_with_param_groups(
         ...     "adamw", model, lr=1e-3, weight_decay=1e-4
         ... )
     """
+    use_default_norm_detection = no_decay_keywords is None
     if no_decay_keywords is None:
         no_decay_keywords = ["bias", "norm", "bn", "ln", "gamma", "beta"]
+
+    norm_param_ids: set[int] = set()
+    explicit_no_decay_names: set[str] = set()
+    default_special_tokens = {
+        "pos_embed",
+        "cls_token",
+        "layer_scale",
+        "block_scale",
+        "res_scale",
+        "relative_position_bias_table",
+        "attention_biases",
+        "a_log",
+        "log_dt",
+        "a_real",
+        "a_imag",
+    }
+    if use_default_norm_detection:
+        no_wd_fn = getattr(model, "no_weight_decay", None)
+        if callable(no_wd_fn):
+            explicit_no_decay_names = set(no_wd_fn())
+
+        norm_types = (
+            torch.nn.modules.batchnorm._NormBase,
+            torch.nn.GroupNorm,
+            torch.nn.LayerNorm,
+            torch.nn.modules.instancenorm._InstanceNorm,
+            torch.nn.LocalResponseNorm,
+        )
+        if hasattr(torch.nn, "RMSNorm"):
+            norm_types = (*norm_types, torch.nn.RMSNorm)
+        for module in model.modules():
+            cls_name = type(module).__name__
+            if isinstance(module, norm_types) or cls_name.endswith(
+                ("Norm", "Norm1d", "Norm2d", "Norm3d", "NormNd")
+            ):
+                for p in module.parameters(recurse=False):
+                    norm_param_ids.add(id(p))
 
     decay_params = []
     no_decay_params = []
@@ -187,8 +225,29 @@ def get_optimizer_with_param_groups(
         if not param.requires_grad:
             continue
 
-        # Check if any no-decay keyword is in parameter name
-        if any(kw in name_param.lower() for kw in no_decay_keywords):
+        lower_name = name_param.lower()
+        leaf_name = lower_name.rsplit(".", 1)[-1]
+        path_parts = set(lower_name.split("."))
+        name_tokens = set(lower_name.replace(".", "_").split("_"))
+        if use_default_norm_detection:
+            is_no_decay = (
+                param.ndim <= 1
+                or id(param) in norm_param_ids
+                or getattr(param, "_no_weight_decay", False)
+                or name_param in explicit_no_decay_names
+                or leaf_name in explicit_no_decay_names
+                or bool(path_parts & default_special_tokens)
+                or leaf_name in default_special_tokens
+                or any(
+                    kw.lower() in name_tokens or lower_name.endswith(f".{kw.lower()}")
+                    for kw in no_decay_keywords
+                )
+            )
+        else:
+            is_no_decay = getattr(param, "_no_weight_decay", False) or any(
+                kw.lower() in lower_name for kw in no_decay_keywords
+            )
+        if is_no_decay:
             no_decay_params.append(param)
         else:
             decay_params.append(param)
@@ -209,8 +268,9 @@ def get_optimizer_with_param_groups(
             }
         )
 
-    # Fall back to all parameters if grouping fails
+    # Fall back to trainable parameters if grouping produces no groups
     if not param_groups:
-        param_groups = [{"params": model.parameters()}]
+        trainable = [p for p in model.parameters() if p.requires_grad]
+        param_groups = [{"params": trainable, "weight_decay": 0.0}]
 
     return get_optimizer(name, param_groups, lr=lr, weight_decay=0.0, **kwargs)

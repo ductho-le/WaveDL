@@ -26,16 +26,21 @@ def register_model(name: str):
 
     Example:
         @register_model("resnet50")
-        class ResNet50(nn.Module):
+        class ResNet50(BaseModel):
             ...
 
     Raises:
-        ValueError: If a model with the same name is already registered
+        ValueError: If model name is empty or already registered
+        TypeError: If decorated object is not a ``torch.nn.Module`` subclass
     """
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("Model name must be a non-empty string.")
 
     def decorator(cls: type[nn.Module]) -> type[nn.Module]:
-        name_lower = name.lower()
-        if name_lower in MODEL_REGISTRY:
+        if not isinstance(cls, type):
+            raise TypeError(f"Registered model '{name}' must be a class, got {cls!r}.")
+        name_lower = name.strip().lower()
+        if name_lower in MODEL_REGISTRY and MODEL_REGISTRY[name_lower] is not cls:
             raise ValueError(
                 f"Model '{name}' is already registered. "
                 f"Choose a unique name or check for duplicate imports."
@@ -97,8 +102,8 @@ def build_model(
 
     Example:
         model = build_model("cnn", in_shape=(500, 500), out_size=5)  # 2D
-        model = build_model("cnn1d", in_shape=(1024,), out_size=3)       # 1D
-        model = build_model("cnn3d", in_shape=(64, 128, 128), out_size=5) # 3D
+        model = build_model("cnn", in_shape=(1024,), out_size=3)     # 1D
+        model = build_model("cnn", in_shape=(64, 128, 128), out_size=5) # 3D
     """
     ModelClass = get_model(name)
     return ModelClass(in_shape=in_shape, out_size=out_size, **kwargs)
@@ -118,7 +123,16 @@ def import_model_modules(modules: list[str]) -> None:
 
     for name in modules:
         if not name.endswith(".py"):
-            importlib.import_module(name)
+            prior_registry = MODEL_REGISTRY.copy()
+            already_loaded = name in sys.modules
+            try:
+                importlib.import_module(name)
+            except BaseException:
+                if not already_loaded:
+                    sys.modules.pop(name, None)
+                MODEL_REGISTRY.clear()
+                MODEL_REGISTRY.update(prior_registry)
+                raise
             continue
         path = Path(name).resolve(strict=True)
         module_name = (

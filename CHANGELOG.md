@@ -9,16 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Add GUI testing and ONNX export with a shared job runner and live console
-- Bundle WaveDL Studio as `wavedl-gui` (also `python -m wavedl.gui`), with a packaged HTML interface, current-directory workspaces, YAML editing, and training subprocess logs; no additional dependencies
+- **WaveDL Studio**: Bundle a browser interface available through `wavedl-gui` or `python -m wavedl.gui`, with current-directory workspaces, YAML editing, and training, testing, and ONNX export jobs sharing a live console; no additional dependencies
+- **Dataset caching**: Add `--cache_dir` to `wavedl-train` and reuse a preprocessed dataset cache across sequential HPO trials
+- **MATLAB data**: Support legacy MAT v5/v7 files alongside HDF5-based v7.3 files
 
 ### Fixed
 
-- Preserve GUI job state after failed process launches so users can retry; quote YAML reserved strings and fall back from LaTeX plotting when dvipng is unavailable
-- Preserve positional compatibility in `train_single_trial()` while adding keyword-only gradient clipping; record the best validation loss before returning a pruned trial
-- Validate diagnostic plot inputs consistently and support dense-field targets; render relative-error boxplot percent labels correctly with and without LaTeX
-- Export all built-in registered model classes and detect YAML-configured WandB logging in the launcher summary
-- Launch the distributed smoke check with a static IPv4 rendezvous configured before worker startup, including macOS loopback defaults
+- **Pretrained backbones**: Infer actual feature widths and safely adapt single-channel convolutions for EfficientViT and FastViT, including wrappers with read-only `in_channels`
+- **Model numerics**: Preserve activation dtype in global response normalization and avoid low-precision sampling errors in stochastic depth; validate Swin input sizes and warn when patch embedding truncates border pixels
+- **Mixed-precision training**: Unscale FP16 gradients before rescaling partial accumulation windows, without unscaling twice during gradient clipping
+- **Distributed training**: Synchronize auto-resume checkpoint selection across ranks and move loss buffers to the accelerator device after wrapping physical constraints
+- **Checkpoint I/O**: Remove DDP and compiled-model wrappers from portable weights, atomically replace checkpoint metadata and standalone weight files, stage emergency checkpoints before publication, and prefer the newest weights in multi-format checkpoints
+- **OneCycle resume**: Preserve the saved learning-rate schedule and reject requests that exceed its update budget before training resumes
+- **Cache validation**: Rebuild caches when switching to a stronger validation mode so stale data cannot be certified with a new source fingerprint
+- **Cross-validation metrics**: Apply target scaling exactly once when reporting physical MAE for vector and dense-field targets
+- **Configuration**: Accept scientific-notation YAML values, normalize list and precision options, and preserve valid flat keys such as `scheduler_patience`, `scheduler_factor`, and `cv_bins` when validating nested sections
+- **ONNX export**: Broadcast channel de-normalization buffers correctly over dense fields, scale validation tolerances to physical units, and validate the requested opset against the supported range of 11–20
+- **GUI reliability**: Validate session tokens, request origins, and YAML paths; support IPv6, retry failed job launches, quote YAML reserved strings, use the correct exponential-scheduler default, and provide a clipboard fallback outside secure contexts
+- **In-process HPO**: Preserve positional compatibility in `train_single_trial()` when adding keyword-only gradient clipping and record the best validation loss before returning a pruned trial
+- **Plotting**: Validate diagnostic inputs, support dense-field targets, render relative-error percentages correctly, and fall back from LaTeX when `dvipng` is unavailable
+- **Public API and launcher**: Export all built-in registered model classes and recognize YAML-configured WandB logging in the launcher summary
+- **Release checks**: Give reusable lint and test workflows distinct concurrency groups so they cannot cancel each other during a release
+- **Distributed smoke check**: Configure a static IPv4 rendezvous before worker startup, including macOS loopback defaults
 
 ## [1.9.0] - 2026-10-11
 

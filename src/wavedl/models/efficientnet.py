@@ -92,6 +92,14 @@ class EfficientNetBase(BaseModel):
                 "For 1D/3D data, use ResNet or CNN instead."
             )
 
+        min_size = 16
+        for i, s in enumerate(self.in_shape):
+            if s < min_size:
+                raise ValueError(
+                    f"EfficientNet requires each spatial axis >= {min_size}, "
+                    f"but axis {i} has size {s}."
+                )
+
         self.pretrained = pretrained
         self.dropout_rate = dropout_rate
         self.freeze_backbone = freeze_backbone
@@ -113,7 +121,6 @@ class EfficientNetBase(BaseModel):
         )
 
         # Adapt first conv for single-channel input
-        # EfficientNet expects 3 channels, we'll expand grayscale
         self._adapt_input_channels()
 
         # Optionally freeze backbone
@@ -121,30 +128,12 @@ class EfficientNetBase(BaseModel):
             self._freeze_backbone()
 
     def _adapt_input_channels(self):
-        """Modify first conv to accept single-channel input.
+        """Modify first conv to accept single-channel input."""
+        from wavedl.models._pretrained_utils import adapt_first_conv_for_single_channel
 
-        Instead of expanding 1→3 channels in forward (which triples memory),
-        we replace the first conv layer with a 1-channel version and initialize
-        weights as the mean of the pretrained RGB filters.
-        """
-        # EfficientNet stem conv is at: features[0][0]
-        old_conv = self.backbone.features[0][0]
-        new_conv = nn.Conv2d(
-            1,  # Single channel input
-            old_conv.out_channels,
-            kernel_size=old_conv.kernel_size,
-            stride=old_conv.stride,
-            padding=old_conv.padding,
-            dilation=old_conv.dilation,
-            groups=old_conv.groups,
-            padding_mode=old_conv.padding_mode,
-            bias=old_conv.bias is not None,
+        adapt_first_conv_for_single_channel(
+            self.backbone, "features.0.0", pretrained=self.pretrained
         )
-        if self.pretrained:
-            # Initialize with mean of pretrained RGB weights
-            with torch.no_grad():
-                new_conv.weight.copy_(old_conv.weight.mean(dim=1, keepdim=True))
-        self.backbone.features[0][0] = new_conv
 
     def _freeze_backbone(self):
         """Freeze feature extraction while retaining the regression head."""

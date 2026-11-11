@@ -25,15 +25,14 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.model_selection import KFold, StratifiedKFold
 from torch.utils.data import DataLoader
 
 from .data import _as_finite_float32
+from .metrics import StreamingFieldMetrics
 from .targets import (
     canonicalize_targets,
     create_target_scaler,
-    flatten_targets_by_channel,
 )
 
 
@@ -212,8 +211,8 @@ def train_fold(
         model.eval()
         val_loss = 0.0
         val_samples = 0
-        all_preds = []
-        all_targets = []
+        scale_flat = np.asarray(scaler.scale_, dtype=np.float64).reshape(-1)
+        epoch_tracker = StreamingFieldMetrics(len(scale_flat), scale_flat)
 
         with torch.inference_mode():
             for x, y in val_loader:
@@ -233,22 +232,14 @@ def train_fold(
                 val_loss += loss.item() * x.size(0)
                 val_samples += x.size(0)
 
-                all_preds.append(pred.detach().cpu())
-                all_targets.append(y.detach().cpu())
+                epoch_tracker.update(
+                    y.detach().cpu().numpy(),
+                    pred.detach().cpu().numpy(),
+                )
 
         avg_val_loss = val_loss / val_samples
-
-        # Compute metrics (guard for tiny datasets)
-        y_pred = torch.cat(all_preds).numpy()
-        y_true = torch.cat(all_targets).numpy()
-        metric_true = flatten_targets_by_channel(y_true)
-        metric_pred = flatten_targets_by_channel(y_pred)
-        r2 = (
-            r2_score(metric_true, metric_pred)
-            if len(metric_true) >= 2
-            else float("nan")
-        )
-        mae = np.abs((y_pred - y_true) * scaler.scale_).mean()
+        r2, _pcc, mae_per_channel = epoch_tracker.compute()
+        mae = float(np.mean(mae_per_channel))
 
         history.append(
             {
@@ -279,13 +270,14 @@ def train_fold(
             logger.info(f"    Fold {fold + 1}: Early stopping at epoch {epoch + 1}")
             break
 
-    # Restore best model and compute final metrics
+    # Restore best model and compute final metrics via streaming accumulator
     if best_state:
         model.load_state_dict(best_state)
 
     model.eval()
-    all_preds = []
-    all_targets = []
+    scale_flat = np.asarray(scaler.scale_, dtype=np.float64).reshape(-1)
+    norm_tracker = StreamingFieldMetrics(len(scale_flat), np.ones_like(scale_flat))
+    phys_tracker = StreamingFieldMetrics(len(scale_flat), scale_flat)
 
     with torch.inference_mode():
         for x, y in val_loader:
@@ -296,43 +288,30 @@ def train_fold(
                     f"Model output shape {tuple(pred.shape)} does not match "
                     f"target shape {tuple(y.shape)}."
                 )
-            all_preds.append(pred.detach().cpu())
-            all_targets.append(y.detach().cpu())
+            y_np = y.detach().cpu().numpy()
+            pred_np = pred.detach().cpu().numpy()
+            norm_tracker.update(y_np, pred_np)
+            # The tracker converts normalized absolute errors to physical units.
+            phys_tracker.update(y_np, pred_np)
 
-    y_pred = torch.cat(all_preds).numpy()
-    y_true = torch.cat(all_targets).numpy()
-
-    # Inverse transform for physical units
-    y_pred_phys = scaler.inverse_transform(y_pred)
-    y_true_phys = scaler.inverse_transform(y_true)
-    metric_pred = flatten_targets_by_channel(y_pred)
-    metric_true = flatten_targets_by_channel(y_true)
-    metric_pred_phys = flatten_targets_by_channel(y_pred_phys)
-    metric_true_phys = flatten_targets_by_channel(y_true_phys)
+    r2_mean, _pcc, mae_norm_channels = norm_tracker.compute()
+    r2_per_channel, _ = norm_tracker.per_channel()
+    _, _, mae_phys_channels = phys_tracker.compute()
 
     results = {
         "fold": fold + 1,
         "best_val_loss": best_val_loss,
-        "r2": (
-            r2_score(metric_true, metric_pred)
-            if len(metric_true) >= 2
-            else float("nan")
-        ),
-        "mae_normalized": mean_absolute_error(metric_true, metric_pred),
-        "mae_physical": mean_absolute_error(metric_true_phys, metric_pred_phys),
+        "r2": r2_mean,
+        "mae_normalized": float(np.mean(mae_norm_channels)),
+        "mae_physical": float(np.mean(mae_phys_channels)),
         "epochs_trained": len(history),
         "history": history,
     }
 
     # Per-target metrics (guard for tiny folds)
-    for i in range(metric_true.shape[1]):
-        if len(metric_true) >= 2:
-            results[f"r2_target_{i}"] = r2_score(metric_true[:, i], metric_pred[:, i])
-        else:
-            results[f"r2_target_{i}"] = float("nan")
-        results[f"mae_target_{i}"] = mean_absolute_error(
-            metric_true_phys[:, i], metric_pred_phys[:, i]
-        )
+    for i in range(len(scale_flat)):
+        results[f"r2_target_{i}"] = float(r2_per_channel[i])
+        results[f"mae_target_{i}"] = float(mae_phys_channels[i])
 
     return results
 
@@ -364,7 +343,7 @@ def run_cross_validation(
     scheduler_name: str = "plateau",
     # Scheduler config
     scheduler_patience: int = 10,
-    scheduler_factor: float = 0.5,
+    scheduler_factor: float | None = None,
     min_lr: float = 1e-6,
     # Optimizer config
     betas: tuple[float, float] = (0.9, 0.999),
@@ -472,9 +451,21 @@ def run_cross_validation(
         num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
         # Heuristic: 4-16 workers per GPU, bounded by available CPU cores
         workers = min(16, max(2, (cpu_count - 2) // max(1, num_gpus)))
-        logger.info(
-            f"⚙️  Auto-detected workers: {workers} (CPUs: {cpu_count}, GPUs: {num_gpus})"
-        )
+        try:
+            from multiprocessing.shared_memory import SharedMemory
+
+            shm = SharedMemory(create=True, size=1024)
+            shm.close()
+            shm.unlink()
+        except Exception:
+            logger.warning(
+                "⚠️  POSIX shared memory (/dev/shm) unavailable; falling back to workers=0."
+            )
+            workers = 0
+        else:
+            logger.info(
+                f"⚙️  Auto-detected workers: {workers} (CPUs: {cpu_count}, GPUs: {num_gpus})"
+            )
 
     logger.info(f"🚀 K-Fold Cross-Validation ({folds} folds)")
     logger.info(f"   Model: {model_name} | Device: {device}")
@@ -548,6 +539,7 @@ def run_cross_validation(
             y_val_scaled.astype(np.float32),
             expected_spatial_ndim=spatial_ndim,
         )
+        del X_train, X_val, y_train, y_val, y_train_scaled, y_val_scaled
 
         train_loader = DataLoader(
             train_ds,
@@ -602,15 +594,20 @@ def run_cross_validation(
             momentum=momentum,
             nesterov=nesterov,
         )
+        effective_factor = (
+            (0.95 if scheduler_name == "exponential" else 0.5)
+            if scheduler_factor is None
+            else scheduler_factor
+        )
         scheduler = get_scheduler(
             scheduler_name,
             optimizer,
             epochs=epochs,
             steps_per_epoch=len(train_loader) if scheduler_name == "onecycle" else None,
             patience=scheduler_patience,
-            factor=scheduler_factor,
+            factor=effective_factor,
             min_lr=min_lr,
-            gamma=scheduler_factor,
+            gamma=effective_factor,
             step_size=step_size,
             milestones=milestones,
             warmup_epochs=warmup_epochs,
@@ -723,15 +720,29 @@ def run_cross_validation(
             f"MAE={np.nanmean(mae_target):.4f}±{np.nanstd(mae_target):.4f}"
         )
 
+    def _json_safe(obj: Any) -> Any:
+        if isinstance(obj, (float, np.floating)):
+            val = float(obj)
+            return val if np.isfinite(val) else None
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, dict):
+            return {k: _json_safe(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [_json_safe(v) for v in obj]
+        return obj
+
     # Save summary (without bulky history to keep JSON small)
-    with open(os.path.join(output_dir, "cv_summary.json"), "w") as f:
-        summary_save = {
-            **summary,
-            "fold_results": [
-                {k: v for k, v in r.items() if k != "history"} for r in fold_results
-            ],
-        }
-        json.dump(summary_save, f, indent=2)
+    with open(os.path.join(output_dir, "cv_summary.json"), "w", encoding="utf-8") as f:
+        summary_save = _json_safe(
+            {
+                **summary,
+                "fold_results": [
+                    {k: v for k, v in r.items() if k != "history"} for r in fold_results
+                ],
+            }
+        )
+        json.dump(summary_save, f, indent=2, allow_nan=False)
 
     # Save detailed results as CSV
     results_df = pd.DataFrame(

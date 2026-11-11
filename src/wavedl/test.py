@@ -83,14 +83,6 @@ from wavedl.utils import (  # noqa: E402
 )
 
 
-# Optional dependencies for sparse matrix handling (now handled in utils/data.py)
-try:
-    from scipy.sparse import issparse
-
-    HAS_SCIPY = True
-except ImportError:
-    HAS_SCIPY = False
-
 try:
     from safetensors.torch import load_file as load_safetensors
 
@@ -184,7 +176,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--batch_size", type=int, default=128, help="Batch size for inference"
     )
-    parser.add_argument("--workers", type=int, default=0, help="DataLoader workers")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        help="DataLoader workers (-1=auto-detect based on CPU cores)",
+    )
 
     # Output options
     parser.add_argument(
@@ -225,7 +222,7 @@ def parse_args() -> argparse.Namespace:
         "--export_opset",
         type=int,
         default=17,
-        help="ONNX opset version (11-17, higher = newer ops)",
+        help="ONNX opset version (11-20, higher = newer ops)",
     )
     parser.add_argument(
         "--no_denorm",
@@ -242,7 +239,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.batch_size < 1:
+        parser.error("--batch_size must be >= 1.")
+    if args.workers < -1:
+        parser.error("--workers must be -1 (auto-detect) or >= 0.")
+    if args.input_channels is not None and args.input_channels < 1:
+        parser.error("--input_channels must be >= 1.")
+    if args.out_size is not None and args.out_size < 1:
+        parser.error("--out_size must be >= 1.")
+    return args
 
 
 # ==============================================================================
@@ -349,6 +355,10 @@ def load_checkpoint(
 
     if not checkpoint_dir.exists():
         raise FileNotFoundError(f"Checkpoint directory not found: {checkpoint_dir}")
+    if not checkpoint_dir.is_dir():
+        raise NotADirectoryError(
+            f"Expected a checkpoint directory (e.g., 'best_checkpoint/'), got file: {checkpoint_dir}"
+        )
 
     # Load training metadata
     meta_path = checkpoint_dir / "training_meta.pkl"
@@ -452,25 +462,44 @@ def load_checkpoint(
         model_name, in_shape=in_shape, out_size=out_size, **model_kwargs
     )
 
-    # Load weights (check multiple formats in order of preference)
-    weight_path = None
-    for fname in [
+    # Load weights (prefer newest file if multiple formats exist, tie-breaking by format)
+    weight_filenames = [
         "model.safetensors",
         "model.bin",
         "pytorch_model.bin",
         "model.pth",
         "model_weights.pth",
-    ]:
-        candidate = checkpoint_dir / fname
-        if candidate.exists():
-            weight_path = candidate
-            break
-
-    if weight_path is None:
+    ]
+    existing_weights = [
+        (idx, checkpoint_dir / fname)
+        for idx, fname in enumerate(weight_filenames)
+        if (checkpoint_dir / fname).exists()
+    ]
+    if not existing_weights:
         raise FileNotFoundError(
             f"No model weights found in {checkpoint_dir}. "
             "Expected one of: model.safetensors, model.bin, "
             "pytorch_model.bin, model.pth, model_weights.pth"
+        )
+    if len(existing_weights) == 1:
+        weight_path = existing_weights[0][1]
+    else:
+        # Prefer significantly newer mtime (> 1.0s newer) so a retrain saved with
+        # safe_serialization=False (pytorch_model.bin) is not shadowed by a stale
+        # model.safetensors; break ties using the canonical format order.
+        newest_mtime = max(p.stat().st_mtime for _, p in existing_weights)
+        fresh_candidates = [
+            (idx, p)
+            for idx, p in existing_weights
+            if newest_mtime - p.stat().st_mtime <= 1.0
+        ]
+        fresh_candidates.sort(key=lambda item: item[0])
+        weight_path = fresh_candidates[0][1]
+        logging.warning(
+            "   ⚠️ Multiple weight files found in %s (%s); loading %s",
+            checkpoint_dir,
+            ", ".join(p.name for _, p in existing_weights),
+            weight_path.name,
         )
 
     if HAS_SAFETENSORS and weight_path.suffix == ".safetensors":
@@ -506,6 +535,7 @@ def load_checkpoint(
     state_dict = cleaned_dict
 
     model.load_state_dict(state_dict)
+    model._wavedl_model_name = model_name
     model.eval()
 
     logging.info(f"   ✔ Loaded weights from: {weight_path.name}")
@@ -513,13 +543,15 @@ def load_checkpoint(
     # Load scaler
     # Prefer the checkpoint-local scaler so copied/moved checkpoints remain
     # self-contained even when their new parent has an unrelated scaler.
-    scaler_path = checkpoint_dir / "scaler.pkl"
-    if not scaler_path.exists():
-        scaler_path = checkpoint_dir.parent / "scaler.pkl"
+    local_scaler_path = checkpoint_dir / "scaler.pkl"
+    parent_scaler_path = checkpoint_dir.parent / "scaler.pkl"
+    scaler_path = (
+        local_scaler_path if local_scaler_path.exists() else parent_scaler_path
+    )
 
     if not scaler_path.exists():
         raise FileNotFoundError(
-            f"Scaler not found. Expected at: {checkpoint_dir.parent}/scaler.pkl"
+            f"Scaler not found. Checked: {local_scaler_path} and {parent_scaler_path}"
         )
 
     with open(scaler_path, "rb") as f:
@@ -589,13 +621,27 @@ def run_inference(
     model = model.to(device)
     model.eval()
 
+    if num_workers < 0:
+        if len(X) <= batch_size:
+            num_workers = 0
+        else:
+            try:
+                from multiprocessing.shared_memory import SharedMemory
+
+                _probe = SharedMemory(create=True, size=64)
+                _probe.close()
+                _probe.unlink()
+                num_workers = min(4, max(1, (os.cpu_count() or 2) // 2))
+            except Exception:
+                num_workers = 0
+
     dataset = TensorDataset(X)
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=device.type in ("cuda", "mps"),
+        pin_memory=device.type == "cuda",
     )
 
     predictions = []
@@ -665,10 +711,15 @@ class ModelWithDenormalization(nn.Module):
         """Forward pass with integrated de-normalization."""
         # Get normalized predictions from base model
         normalized_preds = self.model(x)
+        scale = self.scaler_scale
+        mean_residual = self.scaler_mean_residual
+        mean = self.scaler_mean
+        if normalized_preds.ndim == 4 and scale.ndim == 1:
+            scale = scale.reshape(1, -1, 1, 1)
+            mean_residual = mean_residual.reshape(1, -1, 1, 1)
+            mean = mean.reshape(1, -1, 1, 1)
         # Apply inverse transform: original = normalized * scale + mean
-        return (
-            normalized_preds * self.scaler_scale + self.scaler_mean_residual
-        ) + self.scaler_mean
+        return (normalized_preds * scale + mean_residual) + mean
 
 
 def export_to_onnx(
@@ -694,7 +745,7 @@ def export_to_onnx(
         model: Trained PyTorch model in eval mode
         sample_input: Sample input tensor for tracing (N, C, *spatial_dims)
         output_path: Path to save the ONNX model
-        opset_version: ONNX opset version (11-17, default 17)
+        opset_version: ONNX opset version (11-20, default 17)
         validate: Whether to validate the exported model
         model_name: Model name embedded in ONNX metadata
 
@@ -721,11 +772,11 @@ def export_to_onnx(
             model=model, scaler_mean=scaler.mean_, scaler_scale=scaler.scale_
         )
 
-    # Validate opset up front (the documented supported range is 11-17) so a
+    # Validate opset up front (the documented supported range is 11-20) so a
     # bad --export_opset fails with a clear message rather than deep in the exporter.
-    if not (11 <= opset_version <= 17):
+    if not (11 <= opset_version <= 20):
         raise ValueError(
-            f"export_opset must be between 11 and 17, got {opset_version}."
+            f"export_opset must be between 11 and 20, got {opset_version}."
         )
 
     # Ensure model is in eval mode on CPU for consistent export
@@ -885,10 +936,19 @@ def _validate_onnx_export(
         )
         onnx_output = ort_session.run(None, {"input": sample_input.numpy()})[0]
 
-        # Numerical comparison
+        # Numerical comparison (scale absolute tolerance when physical-unit
+        # de-normalization is embedded so large scales like GPa do not trigger
+        # false positives near zero where rtol * |y| vanishes).
+        effective_atol = atol
+        scaler_scale = getattr(pytorch_model, "scaler_scale", None)
+        if isinstance(scaler_scale, torch.Tensor) and scaler_scale.numel() > 0:
+            max_scale = float(scaler_scale.detach().abs().max().item())
+            if np.isfinite(max_scale) and max_scale > 1.0:
+                effective_atol = atol * max_scale
+
         max_diff = np.abs(pytorch_output - onnx_output).max()
 
-        if np.allclose(pytorch_output, onnx_output, rtol=rtol, atol=atol):
+        if np.allclose(pytorch_output, onnx_output, rtol=rtol, atol=effective_atol):
             logging.info(f"   ✔ Numerical validation passed (max diff: {max_diff:.2e})")
             return True
         else:
@@ -1220,11 +1280,15 @@ def plot_field_results(
         axes[0, 2].set_title("Error")
         fig.suptitle(f"Dense output sample {sample_idx}")
 
-        for fmt in formats:
-            normalized_format = fmt.lower().strip(".")
-            path = output_path / f"field_sample_{sample_idx:03d}.{normalized_format}"
-            fig.savefig(path, dpi=FIGURE_DPI, format=normalized_format)
-        plt.close(fig)
+        try:
+            for fmt in formats:
+                normalized_format = fmt.lower().strip(".")
+                path = (
+                    output_path / f"field_sample_{sample_idx:03d}.{normalized_format}"
+                )
+                fig.savefig(path, dpi=FIGURE_DPI, format=normalized_format)
+        finally:
+            plt.close(fig)
 
     if channel_count > shown_channels:
         logging.warning(
@@ -1293,12 +1357,14 @@ def plot_results(
     def save_figure(fig, basename):
         """Save figure in all requested formats."""
         saved_formats = []
-        for fmt in formats:
-            fmt = fmt.lower().strip(".")
-            filepath = output_dir / f"{basename}.{fmt}"
-            fig.savefig(filepath, dpi=FIGURE_DPI, bbox_inches="tight", format=fmt)
-            saved_formats.append(fmt)
-        plt.close(fig)
+        try:
+            for fmt in formats:
+                fmt = fmt.lower().strip(".")
+                filepath = output_dir / f"{basename}.{fmt}"
+                fig.savefig(filepath, dpi=FIGURE_DPI, bbox_inches="tight", format=fmt)
+                saved_formats.append(fmt)
+        finally:
+            plt.close(fig)
         logging.info(f"   ✔ Saved: {basename} ({', '.join(saved_formats)})")
 
     # 1. Scatter plot - predictions vs ground truth
@@ -1369,29 +1435,43 @@ def main():
         device = torch.device("cpu")
     logger.info(f"Using device: {device}")
 
+    # Peek training_meta.pkl before loading data so shallow 3D volumes (D <= 16
+    # or W <= 4) automatically receive input_channels=1 instead of being
+    # misclassified as multi-channel 2D or channels-last 2D.
+    meta_in_shape = None
+    meta_target_shape = None
+    meta_model_name = None
+    meta_path = Path(args.checkpoint) / "training_meta.pkl"
+    if meta_path.is_file():
+        try:
+            with open(meta_path, "rb") as f:
+                _meta = pickle.load(f)
+            meta_in_shape = _meta.get("in_shape")
+            meta_model_name = _meta.get("model_name")
+            if _meta.get("target_shape") is not None:
+                meta_target_shape = tuple(_meta["target_shape"])
+        except Exception:
+            pass
+
+    effective_input_channels = (
+        1
+        if (
+            args.input_channels is None
+            and meta_in_shape is not None
+            and len(meta_in_shape) == 3
+        )
+        else args.input_channels
+    )
+
     # Load test data
     X_test, y_test = load_data_for_inference(
         args.data_path,
         format=args.format,
         input_key=args.input_key,
         output_key=args.output_key,
-        input_channels=args.input_channels,
+        input_channels=effective_input_channels,
         allow_pickle=args.allow_pickle,
     )
-    # Derive in_shape: prefer training_meta.pkl (authoritative) over data tensor.
-    # This prevents shallow 3D volumes from being misinterpreted as multi-channel 2D.
-    meta_in_shape = None
-    meta_target_shape = None
-    meta_path = Path(args.checkpoint) / "training_meta.pkl"
-    if meta_path.exists():
-        try:
-            with open(meta_path, "rb") as f:
-                _meta = pickle.load(f)
-            meta_in_shape = _meta.get("in_shape")
-            if _meta.get("target_shape") is not None:
-                meta_target_shape = tuple(_meta["target_shape"])
-        except Exception:
-            pass
 
     data_in_shape = tuple(X_test.shape[2:])
 
@@ -1406,11 +1486,21 @@ def main():
             logger.info(
                 f"   Added channel dim to match checkpoint: {tuple(X_test.shape)}"
             )
+        elif (
+            X_test.ndim == expected_ndim + 1
+            and X_test.shape[1] == 1
+            and X_test.shape[2] == 1
+            and tuple(X_test.shape[3:]) == in_shape
+        ):
+            X_test = X_test.squeeze(2)
+            logger.info(
+                f"   Removed redundant singleton dim to match checkpoint: {tuple(X_test.shape)}"
+            )
         if in_shape != tuple(X_test.shape[2:]):
-            logger.warning(
-                f"   ⚠️ in_shape from checkpoint {in_shape} differs from data "
-                f"{tuple(X_test.shape[2:])}. Using checkpoint shape. "
-                f"Pass --input_channels to override."
+            raise ValueError(
+                f"Input spatial shape from data {tuple(X_test.shape[2:])} does not match "
+                f"checkpoint in_shape {in_shape}. Pass --input_channels to override "
+                f"channel detection or verify test data dimensions."
             )
     else:
         in_shape = data_in_shape
@@ -1483,12 +1573,20 @@ def main():
 
     # Handle ONNX export if requested
     if args.export == "onnx":
+        resolved_model_name = (
+            args.model
+            or getattr(model, "_wavedl_model_name", None)
+            or meta_model_name
+            or Path(args.checkpoint).resolve().parent.name
+            or "wavedl"
+        )
         # Determine output path
         if args.export_path:
             export_path = args.export_path
         else:
-            model_name = args.model or Path(args.checkpoint).parent.name.split("_")[0]
-            export_path = str(Path(args.output_dir) / f"{model_name}_model.onnx")
+            export_path = str(
+                Path(args.output_dir) / f"{resolved_model_name}_model.onnx"
+            )
 
         # Export with sample input for tracing
         if len(X_test) == 0:
@@ -1502,7 +1600,10 @@ def main():
             validate=True,
             scaler=scaler,
             include_denorm=not args.no_denorm,  # De-normalization ON by default
-            model_name=args.model or type(model).__name__,
+            model_name=args.model
+            or getattr(model, "_wavedl_model_name", None)
+            or meta_model_name
+            or type(model).__name__,
         )
 
         if success:
@@ -1624,9 +1725,9 @@ def main():
             print(f"Output params:    {n_params}")
         print("-" * 80)
         for i, name in enumerate(param_names):
-            print(
-                f"  {name:12s}: mean={y_pred[:, i].mean():.6f}, std={y_pred[:, i].std():.6f}"
-            )
+            col_mean = float(y_pred[:, i].mean(dtype=np.float64))
+            col_std = float(y_pred[:, i].std(dtype=np.float64))
+            print(f"  {name:12s}: mean={col_mean:.6f}, std={col_std:.6f}")
         print("=" * 80)
 
         # Save predictions (without targets)

@@ -1,37 +1,40 @@
 """
-EfficientViT: Memory-Efficient Vision Transformer with Cascaded Group Attention
-================================================================================
+EfficientViT: Memory-Efficient Vision Transformers
+===================================================
 
-EfficientViT (MIT) achieves state-of-the-art speed-accuracy trade-off by using
-cascaded group attention (CGA) which reduces computational redundancy in
-multi-head self-attention while maintaining model capability.
+Wraps ``timm`` EfficientViT backbones spanning both families:
+- **EfficientViT-M** (Microsoft Research, Liu et al., CVPR 2023): Cascaded Group Attention (CGA)
+- **EfficientViT-B/L** (MIT Han Lab, Cai et al., ICCV 2023): Multi-Scale Linear Attention
 
 **Key Features**:
-    - Cascaded Group Attention (CGA): Linear complexity attention
-    - Memory-efficient design for edge deployment
-    - Faster than Swin Transformer with similar accuracy
-    - Excellent for real-time NDE applications
+    - Linear-complexity or cascaded group attention for fast high-resolution vision
+    - Memory-efficient design for edge and real-time NDE deployment
+    - Faster than Swin Transformer with competitive accuracy
 
 **Variants**:
-    - efficientvit_m1: 2.6M params (mobile, ultra-lightweight)
-    - efficientvit_b1: 7.5M params (small)
-    - efficientvit_b2: 21.8M params (medium)
-    - efficientvit_l2: 60.5M params (large)
+    - efficientvit_m1: ~3.0M params (mobile, Cascaded Group Attention)
+    - efficientvit_b1: ~9.1M params (small, Multi-Scale Linear Attention)
+    - efficientvit_b2: ~24.3M params (medium, Multi-Scale Linear Attention)
+    - efficientvit_l2: ~63.7M params (large, Multi-Scale Linear Attention)
 
 **Requirements**:
     - timm >= 0.9.0 (for EfficientViT models)
 
-Reference:
-    Liu, X., et al. (2023). EfficientViT: Memory Efficient Vision Transformer
-    with Cascaded Group Attention. CVPR 2023.
-    https://arxiv.org/abs/2305.07027
+References:
+    - Liu, X., et al. (2023). EfficientViT: Memory Efficient Vision Transformer
+      with Cascaded Group Attention. CVPR 2023. https://arxiv.org/abs/2305.07027
+    - Cai, H., et al. (2023). EfficientViT: Multi-Scale Linear Attention for
+      High-Resolution Dense Prediction. ICCV 2023. https://arxiv.org/abs/2205.14756
 
 Author: Ductho Le (ductho.le@outlook.com)
 """
 
 import torch
 
-from wavedl.models._pretrained_utils import build_regression_head
+from wavedl.models._pretrained_utils import (
+    build_regression_head,
+    infer_backbone_features,
+)
 from wavedl.models.base import BaseModel
 from wavedl.models.registry import register_model
 
@@ -83,17 +86,26 @@ class EfficientViTBase(BaseModel):
                 f"EfficientViT requires 2D input (H, W), got {len(in_shape)}D"
             )
 
+        min_size = 16
+        for i, s in enumerate(self.in_shape):
+            if s < min_size:
+                raise ValueError(
+                    f"EfficientViT requires each spatial axis >= {min_size}, "
+                    f"but axis {i} has size {s}."
+                )
+
         self.pretrained = pretrained
         self.freeze_backbone = freeze_backbone
         self.model_name = model_name
+        self.dropout_rate = dropout_rate
         self._target_size = None
         if "m1" in model_name or model_name.startswith("efficientvit_m"):
-            if in_shape != (224, 224):
+            if self.in_shape != (224, 224):
                 self._target_size = (224, 224)
                 import warnings
 
                 warnings.warn(
-                    f"EfficientViT input {in_shape} will be interpolated to "
+                    f"EfficientViT input {self.in_shape} will be interpolated to "
                     f"{self._target_size} for attention window compatibility.",
                     UserWarning,
                     stacklevel=3,
@@ -102,36 +114,29 @@ class EfficientViTBase(BaseModel):
         # Load from timm
         try:
             import timm
+        except ImportError as e:
+            raise ImportError(
+                "timm >= 0.9.0 is required for EfficientViT. "
+                "Install with: pip install timm>=0.9.0"
+            ) from e
 
+        try:
             self.backbone = timm.create_model(
                 model_name,
                 pretrained=pretrained,
                 num_classes=0,  # Remove classifier
-            )
-
-            # Get feature dimension (eval mode to preserve pretrained BN stats)
-            with torch.no_grad():
-                self.backbone.eval()
-                dummy_shape = (
-                    self._target_size if self._target_size is not None else in_shape
-                )
-                dummy = torch.zeros(1, 3, *dummy_shape)
-                features = self.backbone(dummy)
-                in_features = features.shape[-1]
-                self.backbone.train()
-
-        except ImportError:
-            raise ImportError(
-                "timm >= 0.9.0 is required for EfficientViT. "
-                "Install with: pip install timm>=0.9.0"
             )
         except Exception as e:
             raise RuntimeError(
                 f"Failed to load EfficientViT model '{model_name}': {e}"
             ) from e
 
-        # Adapt input channels (3 -> 1)
+        # Adapt input channels (3 -> 1) before probing actual output width
         self._adapt_input_channels()
+        probe_shape = (
+            self._target_size if self._target_size is not None else self.in_shape
+        )
+        in_features = infer_backbone_features(self.backbone, probe_shape, in_channels=1)
 
         # Regression head
         self.head = build_regression_head(in_features, out_size, dropout_rate)
@@ -148,11 +153,8 @@ class EfficientViTBase(BaseModel):
         )
 
         if adapted_count == 0:
-            import warnings
-
-            warnings.warn(
-                "Could not adapt EfficientViT input channels. Model may fail.",
-                stacklevel=2,
+            raise RuntimeError(
+                f"Could not adapt input channels for EfficientViT model '{self.model_name}'."
             )
 
     def _freeze_backbone(self):
@@ -171,6 +173,10 @@ class EfficientViTBase(BaseModel):
                 )
         features = self.backbone(x)
         return self.head(features)
+
+    @classmethod
+    def get_default_config(cls) -> dict[str, bool | float]:
+        return {"pretrained": True, "freeze_backbone": False, "dropout_rate": 0.3}
 
 
 # =============================================================================

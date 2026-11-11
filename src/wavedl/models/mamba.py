@@ -13,10 +13,10 @@ for long sequences and high-resolution images.
     - Works for 1D (time-series) and 2D (images)
 
 **Variants**:
-    - mamba_1d: For 1D time-series (alternative to TCN)
-    - vim_tiny: 7M params for 2D images
-    - vim_small: 26M params for 2D images
-    - vim_base: 98M params for 2D images
+    - mamba_1d: ~3.4M params for 1D time-series (alternative to TCN)
+    - vim_tiny: ~6.6M params for 2D images
+    - vim_small: ~51.1M params for 2D images
+    - vim_base: ~201.4M params for 2D images
 
 **Dependencies**:
     - PyTorch only; this module does not automatically dispatch to mamba-ssm
@@ -28,6 +28,10 @@ Reference:
 
 Author: Ductho Le (ductho.le@outlook.com)
 """
+
+import copy
+from numbers import Integral
+from typing import Any, ClassVar
 
 import torch
 import torch.nn as nn
@@ -95,15 +99,29 @@ class SelectiveSSM(nn.Module):
     ):
         super().__init__()
 
+        for param_name, param_val in (
+            ("d_model", d_model),
+            ("d_state", d_state),
+            ("d_conv", d_conv),
+            ("expand", expand),
+            ("chunk_size", chunk_size),
+        ):
+            if (
+                not isinstance(param_val, Integral)
+                or isinstance(param_val, bool)
+                or param_val <= 0
+            ):
+                raise ValueError(f"{param_name} must be a positive integer.")
+
+        d_model = int(d_model)
+        d_state = int(d_state)
+        d_conv = int(d_conv)
+        expand = int(expand)
+        chunk_size = int(chunk_size)
+
         self.d_model = d_model
         self.d_state = d_state
         self.d_inner = d_model * expand
-        if (
-            not isinstance(chunk_size, int)
-            or isinstance(chunk_size, bool)
-            or chunk_size <= 0
-        ):
-            raise ValueError("chunk_size must be a positive integer.")
         self.chunk_size = chunk_size
         self.register_buffer("scan_version", torch.tensor(2, dtype=torch.int64))
 
@@ -194,25 +212,43 @@ class SelectiveSSM(nn.Module):
         x = F.silu(x)
 
         # SSM parameters from input
+        orig_dtype = x.dtype
         x_proj = self.x_proj(x)  # (B, L, d_state*2 + 1)
-        # NOTE: delta is derived from a single shared scalar channel (a reduced-rank
-        # simplification of the reference Mamba, which uses a dt_rank>1 projection).
-        # This pure-PyTorch fallback trades some selectivity for simplicity/speed.
-        delta = F.softplus(self.dt_proj(x_proj[:, :, :1]))  # (B, L, d_inner)
+        dt_in = x_proj[:, :, :1]
         B_param = x_proj[:, :, 1 : self.d_state + 1]  # (B, L, d_state)
         C_param = x_proj[:, :, self.d_state + 1 :]  # (B, L, d_state)
 
-        # Discretize A
-        A = -torch.exp(self.A_log)  # (d_state,)
+        # Run discretization and associative scan in at least float32 so half/bf16
+        # activations cannot overflow delta * B * x or quantize decay states.
+        with torch.amp.autocast(device_type=x.device.type, enabled=False):
+            scan_dtype = torch.float64 if orig_dtype == torch.float64 else torch.float32
+            x_scan = x.to(dtype=scan_dtype)
+            delta = F.softplus(
+                F.linear(
+                    dt_in.to(dtype=scan_dtype),
+                    self.dt_proj.weight.to(dtype=scan_dtype),
+                    self.dt_proj.bias.to(dtype=scan_dtype)
+                    if self.dt_proj.bias is not None
+                    else None,
+                )
+            )
+            B_scan = B_param.to(dtype=scan_dtype)
+            C_scan = C_param.to(dtype=scan_dtype)
+            A = -torch.exp(self.A_log.to(dtype=scan_dtype))
+            D_scan = self.D.to(dtype=scan_dtype)
 
-        # Use chunked scan for long sequences, direct scan for short
-        if L > MAX_SAFE_SEQUENCE_LENGTH:
-            y = self._chunked_selective_scan(x, delta, A, B_param, C_param, self.D)
-        else:
-            y = self._selective_scan_single(x, delta, A, B_param, C_param, self.D)
+            # Use chunked scan for long sequences, direct scan for short
+            if L > MAX_SAFE_SEQUENCE_LENGTH:
+                y = self._chunked_selective_scan(
+                    x_scan, delta, A, B_scan, C_scan, D_scan
+                )
+            else:
+                y = self._selective_scan_single(
+                    x_scan, delta, A, B_scan, C_scan, D_scan
+                )
 
         # Gating
-        y = y * F.silu(z)
+        y = y.to(dtype=orig_dtype) * F.silu(z)
 
         # Output projection
         return self.out_proj(y)
@@ -275,7 +311,10 @@ class SelectiveSSM(nn.Module):
         batch_size, seq_len, d_inner = x.shape
         if seq_len == 0:
             raise ValueError("Selective scan requires a nonempty sequence.")
-        h_state = x.new_zeros(batch_size, d_inner, self.d_state)
+        state_dtype = torch.promote_types(x.dtype, A.dtype)
+        h_state = torch.zeros(
+            batch_size, d_inner, self.d_state, device=x.device, dtype=state_dtype
+        )
         y_chunks = []
         for start in range(0, seq_len, self.chunk_size):
             end = min(start + self.chunk_size, seq_len)
@@ -397,31 +436,41 @@ class Mamba1DBase(BaseModel):
 
         if len(in_shape) != 1:
             raise ValueError(f"Mamba1D requires 1D input (L,), got {len(in_shape)}D")
+        if (
+            not isinstance(n_layers, Integral)
+            or isinstance(n_layers, bool)
+            or n_layers <= 0
+        ):
+            raise ValueError(f"n_layers must be a positive integer, got {n_layers!r}")
 
-        self.d_model = d_model
+        self.d_model = int(d_model)
 
         # Input projection
-        self.input_proj = nn.Linear(1, d_model)
+        self.input_proj = nn.Linear(1, self.d_model)
 
         # Positional encoding
-        self.pos_embed = nn.Parameter(torch.zeros(1, in_shape[0], d_model))
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.in_shape[0], self.d_model))
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
 
         # Mamba blocks
         self.blocks = nn.ModuleList(
-            [MambaBlock(d_model, d_state, d_conv, expand) for _ in range(n_layers)]
+            [
+                MambaBlock(self.d_model, d_state, d_conv, expand)
+                for _ in range(int(n_layers))
+            ]
         )
 
         # Final norm
         self.norm = nn.LayerNorm(d_model)
 
         # Regression head
+        head_hidden = max(d_model // 2, 1)
         self.head = nn.Sequential(
             nn.Dropout(dropout_rate),
-            nn.Linear(d_model, d_model // 2),
+            nn.Linear(d_model, head_hidden),
             nn.GELU(),
             nn.Dropout(dropout_rate * 0.5),
-            nn.Linear(d_model // 2, out_size),
+            nn.Linear(head_hidden, out_size),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -452,10 +501,15 @@ class Mamba1DBase(BaseModel):
         x = x.transpose(1, 2)  # (B, L, 1)
         x = self.input_proj(x)  # (B, L, d_model)
 
-        # Add positional encoding to covered positions only;
+        # Add positional encoding out-of-place to covered positions only;
         # positions beyond pos_embed length receive no encoding.
-        embed_len = min(L, pos_len)
-        x[:, :embed_len, :] = x[:, :embed_len, :] + self.pos_embed[:, :embed_len, :]
+        if pos_len >= L:
+            x = x + self.pos_embed[:, :L, :]
+        else:
+            x = torch.cat(
+                [x[:, :pos_len, :] + self.pos_embed, x[:, pos_len:, :]],
+                dim=1,
+            )
 
         # Mamba blocks
         for block in self.blocks:
@@ -467,6 +521,17 @@ class Mamba1DBase(BaseModel):
         # Final norm and head
         x = self.norm(x)
         return self.head(x)
+
+    @classmethod
+    def get_default_config(cls) -> dict[str, int | float]:
+        return {
+            "d_model": 256,
+            "n_layers": 8,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2,
+            "dropout_rate": 0.1,
+        }
 
 
 # =============================================================================
@@ -502,20 +567,50 @@ class VisionMambaBase(BaseModel):
                 f"VisionMamba requires 2D input (H, W), got {len(in_shape)}D"
             )
 
+        if (
+            not isinstance(patch_size, Integral)
+            or isinstance(patch_size, bool)
+            or patch_size <= 0
+        ):
+            raise ValueError(
+                f"patch_size must be a positive integer, got {patch_size!r}"
+            )
+        if (
+            not isinstance(n_layers, Integral)
+            or isinstance(n_layers, bool)
+            or n_layers <= 0
+        ):
+            raise ValueError(f"n_layers must be a positive integer, got {n_layers!r}")
+
+        patch_size = int(patch_size)
+        d_model = int(d_model)
+        n_layers = int(n_layers)
+
         self.patch_size = patch_size
         self.d_model = d_model
+        # Version 2 places cls_token at the sequence midpoint (Zhu et al., ICML 2024)
+        # so both forward and backward SSM branches scan image patches into cls_token.
+        # Legacy checkpoints without vim_version load with _cls_at_midpoint=False.
+        self.register_buffer("vim_version", torch.tensor(2, dtype=torch.int64))
+        self._cls_at_midpoint = True
 
-        H, W = in_shape
+        H, W = self.in_shape
+        if patch_size > H or patch_size > W:
+            raise ValueError(
+                f"VisionMamba input shape ({H}, {W}) must be >= patch_size ({patch_size}) "
+                f"along each axis."
+            )
         h_rem, w_rem = H % patch_size, W % patch_size
         if h_rem != 0 or w_rem != 0:
             import warnings
 
+            h_aligned = ((H + patch_size - 1) // patch_size) * patch_size
+            w_aligned = ((W + patch_size - 1) // patch_size) * patch_size
             warnings.warn(
                 f"Input shape ({H}, {W}) not divisible by patch_size "
                 f"{patch_size}. Border pixels will be dropped "
                 f"(H: {h_rem}, W: {w_rem}). Consider padding to "
-                f"({((H // patch_size) + 1) * patch_size}, "
-                f"{((W // patch_size) + 1) * patch_size}).",
+                f"({h_aligned}, {w_aligned}).",
                 UserWarning,
                 stacklevel=2,
             )
@@ -547,12 +642,43 @@ class VisionMambaBase(BaseModel):
         self.norm = nn.LayerNorm(d_model)
 
         # Regression head
+        head_hidden = max(d_model // 2, 1)
         self.head = nn.Sequential(
             nn.Dropout(dropout_rate),
-            nn.Linear(d_model, d_model // 2),
+            nn.Linear(d_model, head_hidden),
             nn.GELU(),
             nn.Dropout(dropout_rate * 0.5),
-            nn.Linear(d_model // 2, out_size),
+            nn.Linear(head_hidden, out_size),
+        )
+
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        ver_key = f"{prefix}vim_version"
+        ver = state_dict.get(ver_key)
+        if ver is None:
+            # Preserve bit-exact behavior for legacy VisionMamba checkpoints
+            self._cls_at_midpoint = False
+            state_dict[ver_key] = torch.tensor(
+                1, dtype=torch.int64, device=self.vim_version.device
+            )
+        else:
+            self._cls_at_midpoint = ver.numel() == 1 and int(ver.item()) >= 2
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -563,15 +689,27 @@ class VisionMambaBase(BaseModel):
         Returns:
             (B, out_size) regression output
         """
+        self.validate_input_shape(x, in_channels=1)
         B = x.shape[0]
 
         # Patch embedding
         x = self.patch_embed(x)  # (B, d_model, H', W')
         x = x.flatten(2).transpose(1, 2)  # (B, num_patches, d_model)
 
-        # Prepend CLS token
+        # Insert CLS token (midpoint in v2 so both causal & reverse scans reach CLS)
         cls_tokens = self.cls_token.expand(B, -1, -1)
-        x = torch.cat([cls_tokens, x], dim=1)  # (B, 1 + num_patches, d_model)
+        if self._cls_at_midpoint:
+            cls_idx = x.shape[1] // 2
+            x = torch.cat([x[:, :cls_idx], cls_tokens, x[:, cls_idx:]], dim=1)
+        else:
+            cls_idx = 0
+            x = torch.cat([cls_tokens, x], dim=1)
+
+        if x.shape[1] != self.pos_embed.shape[1]:
+            raise ValueError(
+                f"VisionMamba expected {self.num_patches} patches from in_shape={self.in_shape} "
+                f"(patch_size={self.patch_size}), got {x.shape[1] - 1} patches."
+            )
 
         # Add positional embedding
         x = x + self.pos_embed
@@ -581,11 +719,24 @@ class VisionMambaBase(BaseModel):
             x = block(x)
 
         # Extract CLS token
-        cls_output = x[:, 0]  # (B, d_model)
+        cls_output = x[:, cls_idx]  # (B, d_model)
 
         # Final norm and head
         cls_output = self.norm(cls_output)
         return self.head(cls_output)
+
+    @classmethod
+    def get_default_config(cls) -> dict[str, Any]:
+        return {
+            "patch_size": 16,
+            "d_model": 192,
+            "n_layers": 12,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2,
+            "dropout_rate": 0.1,
+            **copy.deepcopy(getattr(cls, "_variant_defaults", {})),
+        }
 
 
 # =============================================================================
@@ -607,10 +758,29 @@ class Mamba1D(Mamba1DBase):
         >>> out = model(x)  # (4, 3)
     """
 
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "d_model": 256,
+        "n_layers": 8,
+    }
+
+    @classmethod
+    def get_default_config(cls) -> dict[str, Any]:
+        return {
+            "d_model": 256,
+            "n_layers": 8,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2,
+            "dropout_rate": 0.1,
+            **copy.deepcopy(cls._variant_defaults),
+        }
+
     def __init__(self, in_shape: tuple[int], out_size: int, **kwargs):
-        kwargs.setdefault("d_model", 256)
-        kwargs.setdefault("n_layers", 8)
-        super().__init__(in_shape=in_shape, out_size=out_size, **kwargs)
+        super().__init__(
+            in_shape=in_shape,
+            out_size=out_size,
+            **{**copy.deepcopy(self._variant_defaults), **kwargs},
+        )
 
     def __repr__(self) -> str:
         return f"Mamba1D(in_shape={self.in_shape}, out_size={self.out_size})"
@@ -630,11 +800,18 @@ class VimTiny(VisionMambaBase):
         >>> out = model(x)  # (4, 3)
     """
 
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "patch_size": 16,
+        "d_model": 192,
+        "n_layers": 12,
+    }
+
     def __init__(self, in_shape: tuple[int, int], out_size: int, **kwargs):
-        kwargs.setdefault("patch_size", 16)
-        kwargs.setdefault("d_model", 192)
-        kwargs.setdefault("n_layers", 12)
-        super().__init__(in_shape=in_shape, out_size=out_size, **kwargs)
+        super().__init__(
+            in_shape=in_shape,
+            out_size=out_size,
+            **{**copy.deepcopy(self._variant_defaults), **kwargs},
+        )
 
     def __repr__(self) -> str:
         return f"VisionMamba_Tiny(in_shape={self.in_shape}, out_size={self.out_size})"
@@ -649,11 +826,18 @@ class VimSmall(VisionMambaBase):
     Pure PyTorch implementation with O(n) complexity.
     """
 
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "patch_size": 16,
+        "d_model": 384,
+        "n_layers": 24,
+    }
+
     def __init__(self, in_shape: tuple[int, int], out_size: int, **kwargs):
-        kwargs.setdefault("patch_size", 16)
-        kwargs.setdefault("d_model", 384)
-        kwargs.setdefault("n_layers", 24)
-        super().__init__(in_shape=in_shape, out_size=out_size, **kwargs)
+        super().__init__(
+            in_shape=in_shape,
+            out_size=out_size,
+            **{**copy.deepcopy(self._variant_defaults), **kwargs},
+        )
 
     def __repr__(self) -> str:
         return f"VisionMamba_Small(in_shape={self.in_shape}, out_size={self.out_size})"
@@ -668,11 +852,18 @@ class VimBase(VisionMambaBase):
     Pure PyTorch implementation with O(n) complexity.
     """
 
+    _variant_defaults: ClassVar[dict[str, Any]] = {
+        "patch_size": 16,
+        "d_model": 768,
+        "n_layers": 24,
+    }
+
     def __init__(self, in_shape: tuple[int, int], out_size: int, **kwargs):
-        kwargs.setdefault("patch_size", 16)
-        kwargs.setdefault("d_model", 768)
-        kwargs.setdefault("n_layers", 24)
-        super().__init__(in_shape=in_shape, out_size=out_size, **kwargs)
+        super().__init__(
+            in_shape=in_shape,
+            out_size=out_size,
+            **{**copy.deepcopy(self._variant_defaults), **kwargs},
+        )
 
     def __repr__(self) -> str:
         return f"VisionMamba_Base(in_shape={self.in_shape}, out_size={self.out_size})"
