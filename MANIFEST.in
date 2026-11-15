@@ -1,4 +1,4 @@
-include LICENSE README.md CHANGELOG.md CITATION.cff pyproject.toml
+include LICENSE THIRD_PARTY_NOTICES.md README.md CHANGELOG.md CITATION.cff pyproject.toml
 recursive-include .github *.md
 recursive-include src/wavedl *.py *.html
 recursive-include unit_tests *.py

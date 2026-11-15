@@ -103,6 +103,12 @@ def get_primary_dim(model_name: str) -> int:
 
 def get_test_config(model_name: str, dim: int | None = None) -> tuple:
     """Get appropriate test configuration for a model."""
+    # Fixed-geometry models have dedicated tests for their real input/output
+    # contracts; arbitrary 64x64, single-channel fixtures cannot exercise them.
+    model_class = get_model(model_name)
+    if getattr(model_class, "fixed_in_shape", None) is not None:
+        pytest.skip("Fixed-geometry model covered by its dedicated architecture tests")
+
     if dim is None:
         dim = get_primary_dim(model_name)
 

@@ -145,6 +145,20 @@ from wavedl.utils import (
     scaler_target_shape,
     wait_for_everyone,
 )
+from wavedl.utils.gan import (
+    OpenFWIPixelLoss,
+    validate_adversarial_options,
+    wgan_gp_step,
+)
+from wavedl.utils.openfwi import (
+    MinMaxTargetScaler,
+    StreamingNormalizedMetrics,
+    add_preprocessing_arguments,
+    configure_tf32,
+    preprocessing_from_args,
+    uses_preprocessed_pipeline,
+    validate_input_channels,
+)
 
 
 try:
@@ -224,6 +238,9 @@ def _build_model_for_targets(
     target_shape = scaler_target_shape(scaler, out_dim)
     model_kwargs = dict(kwargs)
     model_class = get_model(model_name)
+    in_channels = model_kwargs.get("in_channels", 1)
+    validate_input_channels(model_class, in_channels, model_name)
+    model_kwargs["in_channels"] = in_channels
     if len(target_shape) > 1 and not getattr(
         model_class, "supports_spatial_output", False
     ):
@@ -253,6 +270,8 @@ def _validate_resume_metadata(
     in_shape: tuple[int, ...],
     out_dim: int,
     target_shape: tuple[int, ...],
+    in_channels: int | None = None,
+    preprocessing: dict | None = None,
 ) -> None:
     """Reject checkpoints that describe a different model or target contract."""
 
@@ -277,6 +296,19 @@ def _validate_resume_metadata(
             f"(current {tuple(target_shape)})"
         )
 
+    if in_channels is not None and metadata.get("in_channels", 1) != in_channels:
+        mismatches.append(
+            f"in_channels={metadata.get('in_channels', 1)} (current {in_channels})"
+        )
+    if preprocessing is not None:
+        saved_preprocessing = metadata.get("preprocessing")
+        if saved_preprocessing is not None and saved_preprocessing != preprocessing:
+            mismatches.append("preprocessing changed")
+        elif saved_preprocessing is None and (
+            preprocessing.get("input_transform", "none") != "none"
+            or preprocessing.get("target_scaling", "standard") != "standard"
+        ):
+            mismatches.append("preprocessing differs from legacy defaults")
     if mismatches:
         raise ValueError(
             "Checkpoint is incompatible with the current training run: "
@@ -571,7 +603,7 @@ def parse_args() -> tuple[argparse.Namespace, argparse.ArgumentParser]:
         "--data_path",
         type=str,
         default="train_data.npz",
-        help="Path to NPZ, HDF5, or MAT v7.3 dataset",
+        help="Path to NPZ, HDF5, MAT v7.3 dataset, or .txt OpenFWI manifest",
     )
     parser.add_argument(
         "--workers",
@@ -706,6 +738,41 @@ def parse_args() -> tuple[argparse.Namespace, argparse.ArgumentParser]:
     )
     parser.add_argument("--run_name", type=str, default=None, help="WandB run name")
 
+    parser.add_argument(
+        "--val_data_path",
+        help="Fixed validation dataset instead of a random split (selects checkpoints on this set)",
+    )
+    parser.add_argument(
+        "--input_channels",
+        type=int,
+        default=None,
+        help="Channels-first 2D input channel count; use --single_channel for shallow 3D volumes",
+    )
+    parser.add_argument(
+        "--no_tf32",
+        action="store_true",
+        help="Disable matmul and cuDNN TF32; OpenFWI reproduction requires --precision no --no_tf32",
+    )
+    parser.add_argument(
+        "--adversarial",
+        choices=["none", "wgan-gp"],
+        default="none",
+        help="WGAN-GP replaces --loss with lambda_g1v*L1 + lambda_g2v*MSE (validation: pixels only); uses AdamW, no gradient clipping",
+    )
+    parser.add_argument("--lambda_g1v", type=float, default=100.0)
+    parser.add_argument("--lambda_g2v", type=float, default=100.0)
+    parser.add_argument("--lambda_adv", type=float, default=1.0)
+    parser.add_argument("--lambda_gp", type=float, default=10.0)
+    parser.add_argument("--n_critic", type=int, default=5)
+    parser.add_argument("--d_lr", type=float, default=1e-4)
+    parser.add_argument(
+        "--gan_betas",
+        type=float,
+        nargs=2,
+        default=[0.0, 0.9],
+        help="AdamW betas for both GAN optimizers (overrides --betas)",
+    )
+    add_preprocessing_arguments(parser)
     args = parser.parse_args()
     return args, parser  # Returns (Namespace, ArgumentParser)
 
@@ -786,6 +853,34 @@ def _clean_state_dict_prefixes(state_dict: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
+def _save_critic_checkpoint(directory, accelerator, critic, optimizer, scheduler):
+    """Save explicit GAN components for portable and emergency resume."""
+    if critic is not None:
+        _atomic_torch_save(
+            {
+                "model_d": _clean_state_dict_prefixes(
+                    _unwrap_compiled_model(accelerator, critic).state_dict()
+                ),
+                "optimizer_d": optimizer.state_dict(),
+                "scheduler_d": scheduler.state_dict(),
+            },
+            os.path.join(directory, "critic.pt"),
+        )
+
+
+def _restore_critic_checkpoint(directory, accelerator, critic, optimizer, scheduler):
+    """Require all GAN state rather than silently restarting the critic."""
+    path = os.path.join(directory, "critic.pt")
+    if not os.path.isfile(path):
+        raise ValueError(
+            f"WGAN-GP resume requires critic weights/optimizer/scheduler: {path}"
+        )
+    state = torch.load(path, map_location="cpu", weights_only=True)
+    _unwrap_compiled_model(accelerator, critic).load_state_dict(state["model_d"])
+    optimizer.load_state_dict(state["optimizer_d"])
+    scheduler.load_state_dict(state["scheduler_d"])
+
+
 def _save_best_checkpoint(
     accelerator,
     model,
@@ -797,6 +892,9 @@ def _save_best_checkpoint(
     scaler,
     logger,
     target_shape: tuple | None = None,
+    critic=None,
+    critic_optimizer=None,
+    critic_scheduler=None,
 ) -> None:
     """
     Save best checkpoint with metadata.
@@ -819,6 +917,9 @@ def _save_best_checkpoint(
 
     if accelerator.is_main_process:
         _remove_stale_safetensors(ckpt_dir)
+        _save_critic_checkpoint(
+            ckpt_dir, accelerator, critic, critic_optimizer, critic_scheduler
+        )
         resolved_target_shape = (
             target_shape
             if target_shape is not None
@@ -831,6 +932,9 @@ def _save_best_checkpoint(
                 "patience_ctr": 0,
                 "model_name": args.model,
                 "in_shape": in_shape,
+                "in_channels": vars(args).get("in_channels", 1),
+                "preprocessing": vars(args).get("preprocessing", {}),
+                "adversarial": vars(args).get("adversarial", "none"),
                 "out_dim": out_dim,
                 "target_shape": resolved_target_shape,
             },
@@ -1027,7 +1131,12 @@ def train_single_trial(
 
             # Build model
             model, _target_shape = _build_model_for_targets(
-                model_name, in_shape, out_dim, target_scaler, pretrained=False
+                model_name,
+                in_shape,
+                out_dim,
+                target_scaler,
+                pretrained=False,
+                in_channels=getattr(args, "in_channels", 1),
             )
             model = model.to(device)
 
@@ -1280,6 +1389,17 @@ def main():
     if args.fresh and args.resume:
         parser.error("--fresh and --resume are mutually exclusive.")
 
+    try:
+        validate_adversarial_options(args, get_model(args.model))
+    except ValueError as exc:
+        parser.error(str(exc))
+    configure_tf32(args)
+    args.preprocessing = preprocessing_from_args(args)
+    if args.cv > 0 and uses_preprocessed_pipeline(args, args.preprocessing):
+        parser.error(
+            "Cross-validation does not yet support OpenFWI/preprocessed sources or fixed validation. Use standard training."
+        )
+
     # Handle --cv flag (cross-validation mode)
     if args.cv > 0:
         if args.selection_metric != "loss":
@@ -1461,6 +1581,14 @@ def main():
 def _run_training(args, accelerator):
     """Run training with cleanup guaranteed by the public entry point."""
     set_seed(args.seed)
+    configure_tf32(args)
+    gan_mode = getattr(args, "adversarial", "none") == "wgan-gp"
+    validate_adversarial_options(args, get_model(args.model))
+    if gan_mode and accelerator.num_processes != 1:
+        raise ValueError(
+            "WGAN-GP currently requires a single process: second-order gradient penalty is not supported with PyTorch DDP (upstream uses Apex)."
+        )
+    critic = critic_optimizer = critic_scheduler = None
 
     # Deterministic mode for scientific reproducibility
     # Disables TF32 and cuDNN benchmark for exact reproducibility (slower)
@@ -1713,6 +1841,7 @@ def _run_training(args, accelerator):
         out_dim,
         scaler,
         pretrained=args.pretrained,
+        in_channels=getattr(args, "in_channels", 1),
     )
 
     if accelerator.is_main_process:
@@ -1785,23 +1914,40 @@ def _run_training(args, accelerator):
     if args.milestones:
         milestones = [int(x.strip()) for x in args.milestones.split(",")]
 
+    # Upstream GAN uses all parameters in AdamW, including BN/bias weight decay.
+    if gan_mode:
+        critic = model.build_discriminator()
+        critic_optimizer = torch.optim.AdamW(
+            critic.parameters(),
+            lr=args.d_lr,
+            betas=tuple(args.gan_betas),
+            weight_decay=args.weight_decay,
+        )
+
     # Create optimizer using factory
     optimizer = get_optimizer(
-        name=args.optimizer,
-        params=model.get_optimizer_groups(args.lr, args.weight_decay),
+        name="adamw" if gan_mode else args.optimizer,
+        params=model.parameters()
+        if gan_mode
+        else model.get_optimizer_groups(args.lr, args.weight_decay),
         lr=args.lr,
         weight_decay=args.weight_decay,
         momentum=args.momentum,
         nesterov=args.nesterov,
-        betas=betas,
+        betas=tuple(args.gan_betas) if gan_mode else betas,
     )
 
     # Create loss function using factory
-    criterion = get_loss(
-        name=args.loss,
-        weights=loss_weights,
-        delta=args.huber_delta,
+    criterion = (
+        OpenFWIPixelLoss(args.lambda_g1v, args.lambda_g2v)
+        if gan_mode
+        else get_loss(name=args.loss, weights=loss_weights, delta=args.huber_delta)
     )
+
+    if gan_mode:
+        logger.info(
+            "WGAN-GP: --loss/--optimizer/--betas/--grad_clip replaced by upstream GAN recipe; validation uses pixel loss only."
+        )
 
     # ==========================================================================
     # PHYSICAL CONSTRAINTS INTEGRATION
@@ -1919,6 +2065,23 @@ def _run_training(args, accelerator):
         # Register scheduler for checkpointing so state is saved/loaded on resume
         accelerator.register_for_checkpointing(scheduler)
 
+    if gan_mode:
+        # Generator remains model/optimizer zero so inference ignores critic files.
+        critic_scheduler = get_scheduler(
+            name=args.scheduler,
+            optimizer=critic_optimizer,
+            epochs=args.epochs,
+            min_lr=args.min_lr,
+            patience=args.scheduler_patience,
+            factor=args.scheduler_factor,
+            gamma=scheduler_gamma,
+            step_size=args.step_size,
+            milestones=milestones,
+            warmup_epochs=args.warmup_epochs,
+        )
+        critic, critic_optimizer = accelerator.prepare(critic, critic_optimizer)
+        accelerator.register_for_checkpointing(critic_scheduler)
+
     if args.resume:
         if os.path.exists(args.resume):
             logger.info(f"🔄 Loading checkpoint from: {args.resume}")
@@ -1934,6 +2097,15 @@ def _run_training(args, accelerator):
                     in_shape,
                     out_dim,
                     target_shape,
+                    in_channels=getattr(args, "in_channels", 1),
+                    preprocessing=getattr(args, "preprocessing", None),
+                )
+
+            if (resume_meta or {}).get("adversarial", "none") != getattr(
+                args, "adversarial", "none"
+            ):
+                raise ValueError(
+                    "Checkpoint adversarial mode differs from this training run."
                 )
 
             # Detect checkpoint format: standalone (from KeyboardInterrupt)
@@ -2026,6 +2198,14 @@ def _run_training(args, accelerator):
                                 )
                             )
                             break
+
+            if gan_mode:
+                _restore_critic_checkpoint(
+                    args.resume, accelerator, critic, critic_optimizer, critic_scheduler
+                )
+                logger.info(
+                    "Restored WGAN-GP critic weights, optimizer and scheduler from critic.pt"
+                )
 
             # Restore training metadata
             if resume_meta is not None:
@@ -2131,7 +2311,26 @@ def _run_training(args, accelerator):
                 desc=f"Epoch {epoch + 1}",
             )
 
-            for x, y in pbar:
+            if gan_mode:
+                critic.train()
+            for batch_index, (x, y) in enumerate(pbar):
+                if gan_mode:
+                    loss = wgan_gp_step(
+                        model,
+                        critic,
+                        optimizer,
+                        critic_optimizer,
+                        criterion,
+                        x,
+                        y,
+                        batch_index,
+                        len(train_dl),
+                        args,
+                        accelerator,
+                    )
+                    train_loss_sum += loss * x.size(0)
+                    train_samples += x.size(0)
+                    continue
                 with accelerator.accumulate(model):
                     # Use mixed precision for forward pass (respects --precision flag)
                     with accelerator.autocast():
@@ -2218,6 +2417,13 @@ def _run_training(args, accelerator):
                 if is_field_output and accelerator.is_main_process
                 else None
             )
+            normalized_metrics = (
+                StreamingNormalizedMetrics()
+                if is_field_output
+                and accelerator.is_main_process
+                and isinstance(scaler, MinMaxTargetScaler)
+                else None
+            )
             field_loss_sum = 0.0
             field_samples = 0
             field_preview_limit = 4
@@ -2266,6 +2472,8 @@ def _run_training(args, accelerator):
                         pred_numpy = gathered_pred_batch.float().cpu().numpy()
                         target_numpy = gathered_target_batch.float().cpu().numpy()
                         field_metrics.update(target_numpy, pred_numpy)
+                        if normalized_metrics is not None:
+                            normalized_metrics.update(target_numpy, pred_numpy)
                         preview_remaining = field_preview_limit - sum(
                             len(batch) for batch in local_preds
                         )
@@ -2352,6 +2560,13 @@ def _run_training(args, accelerator):
                     "epoch_time": round(epoch_time, 2),
                     "total_time": round(total_training_time, 2),
                 }
+                if normalized_metrics is not None:
+                    epoch_stats.update(
+                        {
+                            f"val_{key}": value
+                            for key, value in normalized_metrics.compute().items()
+                        }
+                    )
                 for i, mae in enumerate(avg_mae_per_param):
                     epoch_stats[f"MAE_Phys_P{i}"] = mae
 
@@ -2400,6 +2615,11 @@ def _run_training(args, accelerator):
                     scheduler.step(avg_val_loss)
                 else:
                     scheduler.step()
+                if gan_mode:
+                    if args.scheduler == "plateau":
+                        critic_scheduler.step(avg_val_loss)
+                    else:
+                        critic_scheduler.step()
 
             # ==========================================================================
             # DDP-SAFE CHECKPOINT LOGIC
@@ -2429,6 +2649,9 @@ def _run_training(args, accelerator):
                     scaler=scaler,
                     logger=logger,
                     target_shape=target_shape,
+                    critic=critic,
+                    critic_optimizer=critic_optimizer,
+                    critic_scheduler=critic_scheduler,
                 )
                 if accelerator.is_main_process:
                     # Also save CSV on best model (ensures progress is saved)
@@ -2459,6 +2682,13 @@ def _run_training(args, accelerator):
 
                 if accelerator.is_main_process:
                     _remove_stale_safetensors(ckpt_dir)
+                    _save_critic_checkpoint(
+                        ckpt_dir,
+                        accelerator,
+                        critic,
+                        critic_optimizer,
+                        critic_scheduler,
+                    )
                     _atomic_pickle_dump(
                         {
                             "epoch": epoch + 1,
@@ -2467,6 +2697,9 @@ def _run_training(args, accelerator):
                             # Model info for auto-detection during inference
                             "model_name": args.model,
                             "in_shape": in_shape,
+                            "in_channels": vars(args).get("in_channels", 1),
+                            "preprocessing": vars(args).get("preprocessing", {}),
+                            "adversarial": vars(args).get("adversarial", "none"),
                             "out_dim": out_dim,
                             "target_shape": target_shape,
                         },
@@ -2534,10 +2767,20 @@ def _run_training(args, accelerator):
                         "patience_ctr": patience_ctr,
                         "model_name": args.model,
                         "in_shape": in_shape,
+                        "in_channels": vars(args).get("in_channels", 1),
+                        "preprocessing": vars(args).get("preprocessing", {}),
+                        "adversarial": vars(args).get("adversarial", "none"),
                         "out_dim": out_dim,
                         "target_shape": target_shape,
                     },
                     os.path.join(staging_ckpt, "training_meta.pkl"),
+                )
+                _save_critic_checkpoint(
+                    staging_ckpt,
+                    accelerator,
+                    critic,
+                    critic_optimizer,
+                    critic_scheduler,
                 )
                 _atomic_pickle_dump(scaler, os.path.join(staging_ckpt, "scaler.pkl"))
                 shutil.rmtree(interrupted_ckpt_path, ignore_errors=True)

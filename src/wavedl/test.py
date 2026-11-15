@@ -81,6 +81,13 @@ from wavedl.utils import (  # noqa: E402
     plot_scientific_scatter,
     scaler_target_shape,
 )
+from wavedl.utils.openfwi import (  # noqa: E402
+    MinMaxTargetScaler,
+    StreamingNormalizedMetrics,
+    configure_tf32,
+    transform_inputs,
+    validate_input_channels,
+)
 
 
 try:
@@ -94,6 +101,8 @@ except ImportError:
 # ==============================================================================
 # ARGUMENT PARSING
 # ==============================================================================
+
+
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments for testing."""
     parser = argparse.ArgumentParser(
@@ -112,7 +121,7 @@ def parse_args() -> argparse.Namespace:
         "--data_path",
         type=str,
         required=True,
-        help="Path to test data (NPZ, HDF5, or MAT v7.3 format)",
+        help="Path to test data (NPZ, HDF5, MAT v7.3, or .txt OpenFWI manifest)",
     )
 
     # Model specification
@@ -239,6 +248,11 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
+    parser.add_argument(
+        "--no_tf32",
+        action="store_true",
+        help="Disable matmul and cuDNN TF32 (required for OpenFWI FP32 reproduction)",
+    )
     args = parser.parse_args()
     if args.batch_size < 1:
         parser.error("--batch_size must be >= 1.")
@@ -262,14 +276,14 @@ def load_data_for_inference(
     input_channels: int | None = None,
     *,
     allow_pickle: bool = False,
-) -> tuple[torch.Tensor, torch.Tensor | None]:
+) -> tuple[torch.Tensor | torch.utils.data.Dataset, torch.Tensor | None]:
     """
     Load test data for inference using the unified data loading pipeline.
 
     This is a thin wrapper around utils.data.load_test_data that adds logging.
 
     Args:
-        file_path: Path to data file (NPZ, HDF5, or MAT v7.3)
+        file_path: Data file (NPZ, HDF5, MAT v7.3, or .txt OpenFWI manifest)
         format: Format hint ('auto', 'npz', 'mat', 'hdf5')
         input_key: Custom key for input data (overrides auto-detection)
         output_key: Custom key for output data (overrides auto-detection)
@@ -277,7 +291,7 @@ def load_data_for_inference(
 
     Returns:
         Tuple of:
-            - X: Input tensor with channel dimension (N, 1, *spatial_dims)
+            - X: Input tensor (N, C, *spatial_dims), or lazy Dataset for .txt manifests
             - y: Target tensor ``(N,T)`` or ``(N,C,H,W)``, or None if absent
     """
     from pathlib import Path
@@ -294,6 +308,7 @@ def load_data_for_inference(
             ".mat": "mat",
             ".h5": "hdf5",
             ".hdf5": "hdf5",
+            ".txt": "openfwi",
         }.get(suffix, "npz")
     else:
         format_name = format
@@ -336,6 +351,7 @@ def load_checkpoint(
     out_size: int,
     model_name: str | None = None,
     out_shape: tuple[int, ...] | None = None,
+    in_channels: int | None = None,
 ) -> tuple[nn.Module, Any]:
     """
     Load model and scaler from Accelerate checkpoint directory.
@@ -455,7 +471,15 @@ def load_checkpoint(
 
     # Use pretrained=False: checkpoint weights will overwrite any pretrained weights,
     # so downloading ImageNet weights is wasteful and breaks offline/HPC inference.
-    model_kwargs: dict[str, Any] = {"pretrained": False}
+    checkpoint_channels = (meta or {}).get("in_channels", 1)
+    if in_channels is None:
+        in_channels = checkpoint_channels
+    elif in_channels != checkpoint_channels and meta is not None:
+        raise ValueError(
+            f"Requested in_channels={in_channels} differs from checkpoint in_channels={checkpoint_channels}."
+        )
+    validate_input_channels(model_class, in_channels, model_name)
+    model_kwargs: dict[str, Any] = {"pretrained": False, "in_channels": in_channels}
     if out_shape is not None and len(out_shape) > 1:
         model_kwargs["out_shape"] = out_shape
     model = build_model(
@@ -536,6 +560,8 @@ def load_checkpoint(
 
     model.load_state_dict(state_dict)
     model._wavedl_model_name = model_name
+    model._wavedl_preprocessing = (meta or {}).get("preprocessing", {})
+    model._wavedl_in_channels = in_channels
     model.eval()
 
     logging.info(f"   ✔ Loaded weights from: {weight_path.name}")
@@ -592,7 +618,7 @@ def load_checkpoint(
 @torch.inference_mode()
 def run_inference(
     model: nn.Module,
-    X: torch.Tensor,
+    X: torch.Tensor | torch.utils.data.Dataset,
     batch_size: int = 128,
     device: torch.device | None = None,
     num_workers: int = 0,
@@ -602,7 +628,8 @@ def run_inference(
 
     Args:
         model: Trained model in eval mode
-        X: Input tensor (N, C, *spatial_dims)
+        X: Input tensor (N, C, *spatial_dims), or a lazy manifest input view.
+            Inputs are raw; saved checkpoint preprocessing is applied per batch.
         batch_size: Batch size for inference
         device: Target device (auto-detect if None)
         num_workers: DataLoader workers (0 for single-threaded)
@@ -635,7 +662,7 @@ def run_inference(
             except Exception:
                 num_workers = 0
 
-    dataset = TensorDataset(X)
+    dataset = TensorDataset(X) if isinstance(X, torch.Tensor) else X
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -646,7 +673,11 @@ def run_inference(
 
     predictions = []
 
-    for (batch_x,) in tqdm(loader, desc="Inference", leave=False):
+    for batch in tqdm(loader, desc="Inference", leave=False):
+        batch_x = batch[0] if isinstance(batch, (list, tuple)) else batch
+        batch_x = transform_inputs(
+            batch_x, getattr(model, "_wavedl_preprocessing", None)
+        )
         batch_x = batch_x.to(device, non_blocking=True)
         output = model(batch_x)
         if (
@@ -670,6 +701,18 @@ def run_inference(
 # ==============================================================================
 # ONNX EXPORT
 # ==============================================================================
+class ModelWithInputTransform(nn.Module):
+    """Export wrapper accepting physical/raw inputs, like run_inference."""
+
+    def __init__(self, model, preprocessing):
+        super().__init__()
+        self.model = model
+        self.preprocessing = preprocessing
+
+    def forward(self, x):
+        return self.model(transform_inputs(x, self.preprocessing))
+
+
 class ModelWithDenormalization(nn.Module):
     """
     Wrapper that combines a trained model with scaler inverse transform.
@@ -749,6 +792,11 @@ def export_to_onnx(
         validate: Whether to validate the exported model
         model_name: Model name embedded in ONNX metadata
 
+    Saved input preprocessing is embedded in the graph, so ONNX accepts raw
+    inputs just like run_inference. Its JSON contract is recorded in the
+    ``preprocessing`` ONNX property; ``input_transform_embedded=true`` means
+    callers must not apply the transform again.
+
     Returns:
         True if export and validation successful, False otherwise
 
@@ -762,6 +810,10 @@ def export_to_onnx(
         with the appropriate ONNX runtime for your target platform.
     """
     import warnings
+
+    preprocessing = getattr(model, "_wavedl_preprocessing", {})
+    if preprocessing.get("input_transform", "none") != "none":
+        model = ModelWithInputTransform(model, preprocessing)
 
     # Wrap model with de-normalization if requested
     if include_denorm:
@@ -818,6 +870,7 @@ def export_to_onnx(
                 validate,
                 model_name,
                 include_denorm,
+                preprocessing,
             )
     except Exception as e:
         logging.error(f"   ✘ ONNX export failed: {e}")
@@ -834,6 +887,7 @@ def _export_staged_onnx(
     validate,
     model_name,
     include_denorm,
+    preprocessing=None,
 ):
     import warnings
 
@@ -873,6 +927,11 @@ def _export_staged_onnx(
             "model_name": model_name,
             "output_units": "physical" if include_denorm else "normalized",
             "input_shape": str(tuple(sample_input.shape[1:])),
+            "preprocessing": __import__("json").dumps(
+                preprocessing or {}, sort_keys=True
+            ),
+            "input_units": "raw",
+            "input_transform_embedded": "true",
         },
     )
     onnx.checker.check_model(onnx_model)
@@ -1116,6 +1175,11 @@ def print_results(
     print("=" * 80)
 
     # Per-parameter MAE
+    if "normalized_ssim" in metrics:
+        print("\nOPENFWI NORMALIZED METRICS ([-1,1]; SSIM on [0,1]):")
+        print(f"  MAE:  {metrics['normalized_mae']:.6f}")
+        print(f"  RMSE: {metrics['normalized_rmse']:.6f}")
+        print(f"  SSIM: {metrics['normalized_ssim']:.6f}")
     print("\nPER-CHANNEL MAE:" if is_field else "\nPER-PARAMETER MAE:")
     print("-" * 80)
     for i, name in enumerate(param_names):
@@ -1414,6 +1478,7 @@ def plot_results(
 # ==============================================================================
 def main():
     args = parse_args()
+    configure_tf32(args)
     from wavedl.models import import_model_modules
 
     import_model_modules(args.import_modules)
@@ -1441,12 +1506,14 @@ def main():
     meta_in_shape = None
     meta_target_shape = None
     meta_model_name = None
+    meta_in_channels = None
     meta_path = Path(args.checkpoint) / "training_meta.pkl"
     if meta_path.is_file():
         try:
             with open(meta_path, "rb") as f:
                 _meta = pickle.load(f)
             meta_in_shape = _meta.get("in_shape")
+            meta_in_channels = _meta.get("in_channels")
             meta_model_name = _meta.get("model_name")
             if _meta.get("target_shape") is not None:
                 meta_target_shape = tuple(_meta["target_shape"])
@@ -1460,7 +1527,9 @@ def main():
             and meta_in_shape is not None
             and len(meta_in_shape) == 3
         )
-        else args.input_channels
+        else (
+            args.input_channels if args.input_channels is not None else meta_in_channels
+        )
     )
 
     # Load test data
@@ -1565,6 +1634,7 @@ def main():
         out_size,
         args.model,
         out_shape=target_shape,
+        in_channels=int(X_test.shape[1]),
     )
 
     # Ensure output directory exists before any file operations (including ONNX export)
@@ -1686,6 +1756,14 @@ def main():
 
         # Compute metrics
         metrics = compute_metrics(y_true, y_pred)
+        if isinstance(scaler, MinMaxTargetScaler) and y_true.ndim == 4:
+            normalized_metrics = StreamingNormalizedMetrics()
+            for start in range(0, len(y_true), args.batch_size):
+                end = start + args.batch_size
+                normalized_metrics.update(
+                    scaler.transform(y_true[start:end]), y_pred_scaled[start:end]
+                )
+            metrics.update(normalized_metrics.compute())
 
         # Print results
         print_results(y_true, y_pred, metrics, args.param_names, args.verbose)
