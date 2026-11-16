@@ -293,6 +293,9 @@ channels to keep result directories manageable.
 > [!NOTE]
 > `wavedl-test` auto-detects the model architecture from checkpoint metadata. If unavailable, it falls back to folder name parsing. Use `--model` to override if needed.
 
+`wavedl-test --data_path` also accepts `.txt` OpenFWI manifests. Saved input/target
+preprocessing is restored automatically; `--no_tf32` disables TF32 for evaluation.
+
 ### Dense 2D Field Regression
 
 Use `--model unet_field` for supervised, pixel-wise prediction of an elasticity, stiffness, velocity, density, or similar 2D property map. This model is field-only; continue using `unet_regression` or another vector architecture for `(N, T)` targets. The built-in field model follows WaveDL's existing **single-channel input** convention: store each input as `(H_in, W_in)`, and the data loader adds the channel axis internally.
@@ -353,6 +356,71 @@ storage with adequate quota for large FWI or elastography datasets.
 
 > [!IMPORTANT]
 > This feature implements **supervised dense inversion**: it learns property fields from paired wave measurements and reference maps. It can provide a direct learned estimate or an initialization/prior for an FWI workflow, but it is not full waveform inversion by itself. True FWI requires a differentiable (or adjoint-gradient) wave solver and an iterative observed-versus-simulated data-consistency/misfit loop; that solver loop is not part of the current WaveDL CLI.
+
+### OpenFWI InversionNet
+
+`inversionnet` predicts dense velocity maps with fixed **5×1000×70 inputs →
+1×70×70 outputs** and **24.4M parameters**. Adapted from
+[LANL/OpenFWI](https://github.com/lanl/OpenFWI/tree/48754806b7b4c5877259c6b958a87f4513fcdc0b)
+at pinned commit `48754806b7b4c5877259c6b958a87f4513fcdc0b`, with credit to
+**OmniWave Lab (Youzuo Lin's group, UNC–Chapel Hill) and LANL**.
+
+Official splits follow upstream **split_files**:
+
+| Family | Training | Test (upstream `val`) |
+| --- | --- | --- |
+| Vel | `data/model` 1–48 | 49–60 |
+| Style | `data/model` 1–120 | 121–134 |
+| Fault A | `seis{2,3,4}_1_{0..31}` / `vel{2,3,4}_1_{0..31}` | suffix 32–35 |
+| Fault B | `seis{6,7,8}_1_{0..31}` / `vel{6,7,8}_1_{0..31}` | suffix 32–35 |
+
+Create tab-separated manifests (`<abs input.npy>\t<abs target.npy>` per line).
+For FlatVel-A, whose shards live under `FlatVel_A/data/` and `FlatVel_A/model/`:
+
+```python
+from pathlib import Path
+
+root = Path("~/Datasets/OpenFWI/FlatVel_A").expanduser().resolve()
+Path("manifests").mkdir(exist_ok=True)
+for split, indices in [("train", range(1, 49)), ("test", range(49, 61))]:
+    pairs = [f"{root / 'data' / f'data{i}.npy'}\t{root / 'model' / f'model{i}.npy'}"
+             for i in indices]
+    Path(f"manifests/flatvel-a_{split}.txt").write_text("\n".join(pairs) + "\n")
+```
+
+Train and test with a single GPU, FP32, and TF32 disabled:
+
+```bash
+wavedl-train --num_gpus 1 --model inversionnet \
+  --data_path manifests/flatvel-a_train.txt \
+  --val_data_path manifests/flatvel-a_test.txt \
+  --openfwi_dataset flatvel-a --precision no --no_tf32 \
+  --batch_size 256 --lr 1e-4 --weight_decay 1e-4 --epochs 120 --patience 121 \
+  --optimizer adamw --betas 0.9,0.999 --loss mae --grad_clip 0 \
+  --scheduler linear_warmup --warmup_epochs 0 --workers 4 \
+  --output_dir runs/openfwi/inversionnet-fva-l1
+
+wavedl-test --checkpoint runs/openfwi/inversionnet-fva-l1/best_checkpoint \
+  --data_path manifests/flatvel-a_test.txt --batch_size 32 --workers 0 --no_tf32 \
+  --output_dir runs/openfwi/inversionnet-fva-l1/test
+```
+
+Zero warmup with `linear_warmup` gives constant LR; InversionNet uses AdamW
+weight decay on all parameters, matching upstream. The dataset preset records
+signed-log/min-max preprocessing in checkpoints; testing and ONNX export apply
+it automatically. Shard inputs stay memory-mapped rather than being recached.
+
+FlatVel-A normalized MAE / RMSE / SSIM (single run): WaveDL-trained best checkpoint
+**0.0126 / 0.0203 / 0.9888**, versus official checkpoint **0.0131 / 0.0211 / 0.9895**.
+OpenFWI's protocol selects checkpoints on the **test split**, as reproduced by
+`--val_data_path` above; this is not independent validation.
+
+Cite Wu & Lin (2020), *InversionNet*, IEEE TCI 6:419–433
+([DOI: 10.1109/TCI.2019.2956866](https://doi.org/10.1109/TCI.2019.2956866)),
+and Deng et al. (2022), *OpenFWI*, NeurIPS Datasets & Benchmarks.
+Upstream code is BSD-3-Clause, SSIM originates from MIT-licensed pytorch-ssim,
+and data are separately **CC BY-NC-SA 4.0**, not redistributed.
+See [third-party notices](THIRD_PARTY_NOTICES.md).
 
 ### Adding Custom Models
 
@@ -460,8 +528,9 @@ WaveDL/
 
 | Output type | Built-in models | Stored target | Model output |
 |-------------|-----------------|---------------|--------------|
-| Vector regression | Every model except `unet_field` | `(N,)` or `(N, T)` | `(N, T)` |
+| Vector regression | Every model except `unet_field`, `inversionnet` | `(N,)` or `(N, T)` | `(N, T)` |
 | Dense 2D field | `unet_field` | `(N, H_out, W_out)` or `(N, C, H_out, W_out)` | `(N, C, H_out, W_out)` |
+| OpenFWI dense field | `inversionnet` | `(N, 1, 70, 70)` | `(N, 1, 70, 70)` |
 
 The dimensionality column below describes the **input**. A model accepting 2D
 input does not automatically support dense output; look at the output-support
@@ -571,6 +640,8 @@ table above when selecting a model.
 | **U-Net** — U-shaped Network |||
 | `unet_regression` | 31.0M | 1D/2D/3D |
 | `unet_field` 🗺️ | ~31.0M | 2D |
+| **OpenFWI** — OmniWave Lab / LANL |||
+| `inversionnet` | 24.4M | Dense output; fixed 5×1000×70 → 1×70×70 |
 
 
 ⭐ = **Pretrained weights available** (ImageNet-1K for 2D models, Kinetics-400 for 3D ResNet3D/MC3; recommended for smaller datasets). Weights are downloaded automatically on first use.
@@ -673,7 +744,14 @@ print(f'\n✓ All {len(urls) + len(timm_models)} pretrained weight files cached!
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--data_path` | `train_data.npz` | Dataset path |
+| `--data_path` | `train_data.npz` | Dataset path, including paired-shard `.txt` OpenFWI manifests |
+| `--val_data_path` | `None` | Fixed validation source instead of a random split; selects checkpoints on this set |
+| `--input_channels` | inferred | Channels-first 2D input channel count (manifests infer it from shards) |
+| `--openfwi_dataset` | `None` | Preset bounds/transforms for a standard OpenFWI dataset, e.g. `flatvel-a` |
+| `--input_transform` | `none` (or preset) | `none` / `openfwi` signed log1p and min-max input transform |
+| `--input_range` | preset / `None` | Raw input bounds `MIN MAX` for OpenFWI normalization |
+| `--target_scaling` | `standard` (or preset) | `standard` / `minmax` target scaling |
+| `--target_range` | preset / `None` | Physical target bounds `MIN MAX` for min-max scaling |
 | `--workers` | `-1` | DataLoader workers per GPU (-1=auto-detect) |
 | `--seed` | `2025` | Random seed |
 | `--output_dir` | `.` | Output directory for checkpoints |
@@ -694,6 +772,7 @@ print(f'\n✓ All {len(urls) + len(timm_models)} pretrained weight files cached!
 |----------|---------|-------------|
 | `--compile` | `False` | Enable `torch.compile` (recommended for long runs) |
 | `--precision` | `bf16` | Mixed precision mode (`bf16`, `fp16`, `no`) |
+| `--no_tf32` | `False` | Disable matmul and cuDNN TF32; OpenFWI requires `--precision no --no_tf32` |
 | `--wandb` | `False` | Enable W&B logging |
 | `--wandb_watch` | `False` | Enable W&B gradient watching (adds overhead) |
 | `--project_name` | `DL-Training` | W&B project name |
