@@ -637,15 +637,25 @@ class _PayloadTooLargeError(ValueError):
     """Raised when an HTTP POST body exceeds ``MAX_JSON_PAYLOAD_BYTES``."""
 
 
-def _read_index_html() -> bytes:
-    """Read ``index.html`` from filesystem or ``importlib.resources`` fallback."""
-    html_file = GUI_DIR / "index.html"
-    if html_file.is_file():
-        raw_bytes = html_file.read_bytes()
-    else:
-        from importlib.resources import files
+STATIC_ASSETS = {
+    "/style.css": ("style.css", "text/css; charset=utf-8"),
+    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+}
 
-        raw_bytes = files("wavedl.gui").joinpath("index.html").read_bytes()
+
+def _read_gui_file(filename: str) -> bytes:
+    """Read a GUI file from filesystem or ``importlib.resources`` fallback."""
+    gui_file = GUI_DIR / filename
+    if gui_file.is_file():
+        return gui_file.read_bytes()
+    from importlib.resources import files
+
+    return files("wavedl.gui").joinpath(filename).read_bytes()
+
+
+def _read_index_html() -> bytes:
+    """Read ``index.html`` and inject the session token."""
+    raw_bytes = _read_gui_file("index.html")
     token_meta = (
         f'<meta name="wavedl-token" content="{SESSION_TOKEN}" />\n</head>'.encode()
     )
@@ -1160,10 +1170,15 @@ class WaveDLGUIHandler(BaseHTTPRequestHandler):
         if not self._validate_request(require_json=False, require_token=is_api):
             return
 
-        if route in ("/", "/index.html"):
-            content = _read_index_html()
+        if route in ("/", "/index.html") or route in STATIC_ASSETS:
+            if route in STATIC_ASSETS:
+                filename, content_type = STATIC_ASSETS[route]
+                content = _read_gui_file(filename)
+            else:
+                content_type = "text/html; charset=utf-8"
+                content = _read_index_html()
             self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(content)))
             self.send_header("Cache-Control", "no-store")
             self._send_security_headers(is_html=True)
