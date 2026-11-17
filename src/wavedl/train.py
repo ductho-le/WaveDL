@@ -759,12 +759,28 @@ def parse_args() -> tuple[argparse.Namespace, argparse.ArgumentParser]:
         default="none",
         help="WGAN-GP replaces --loss with lambda_g1v*L1 + lambda_g2v*MSE (validation: pixels only); uses AdamW, no gradient clipping",
     )
-    parser.add_argument("--lambda_g1v", type=float, default=100.0)
-    parser.add_argument("--lambda_g2v", type=float, default=100.0)
-    parser.add_argument("--lambda_adv", type=float, default=1.0)
-    parser.add_argument("--lambda_gp", type=float, default=10.0)
-    parser.add_argument("--n_critic", type=int, default=5)
-    parser.add_argument("--d_lr", type=float, default=1e-4)
+    # GAN defaults mirror OpenFWI gan_train.py.
+    parser.add_argument(
+        "--lambda_g1v", type=float, default=100.0, help="WGAN-GP L1 pixel weight"
+    )
+    parser.add_argument(
+        "--lambda_g2v", type=float, default=100.0, help="WGAN-GP MSE pixel weight"
+    )
+    parser.add_argument(
+        "--lambda_adv", type=float, default=1.0, help="WGAN-GP adversarial weight"
+    )
+    parser.add_argument(
+        "--lambda_gp", type=float, default=10.0, help="WGAN-GP gradient penalty weight"
+    )
+    parser.add_argument(
+        "--n_critic",
+        type=int,
+        default=5,
+        help="Critic updates per generator update (generator also steps on the last batch)",
+    )
+    parser.add_argument(
+        "--d_lr", type=float, default=1e-4, help="WGAN-GP critic learning rate"
+    )
     parser.add_argument(
         "--gan_betas",
         type=float,
