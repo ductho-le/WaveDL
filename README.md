@@ -357,10 +357,12 @@ storage with adequate quota for large FWI or elastography datasets.
 > [!IMPORTANT]
 > This feature implements **supervised dense inversion**: it learns property fields from paired wave measurements and reference maps. It can provide a direct learned estimate or an initialization/prior for an FWI workflow, but it is not full waveform inversion by itself. True FWI requires a differentiable (or adjoint-gradient) wave solver and an iterative observed-versus-simulated data-consistency/misfit loop; that solver loop is not part of the current WaveDL CLI.
 
-### OpenFWI InversionNet
+### OpenFWI InversionNet and VelocityGAN
 
-`inversionnet` predicts dense velocity maps with fixed **5×1000×70 inputs →
-1×70×70 outputs** and **24.4M parameters**. Adapted from
+`inversionnet` and `velocitygan` predict dense velocity maps with fixed
+**5×1000×70 inputs → 1×70×70 outputs** and **24.4M generator parameters**.
+`velocitygan` is the same generator plus a separate 1.18M-parameter critic used
+only by WGAN-GP training (see [VelocityGAN](#velocitygan) below). Adapted from
 [LANL/OpenFWI](https://github.com/lanl/OpenFWI/tree/48754806b7b4c5877259c6b958a87f4513fcdc0b)
 at pinned commit `48754806b7b4c5877259c6b958a87f4513fcdc0b`, with credit to
 **OmniWave Lab (Youzuo Lin's group, UNC–Chapel Hill) and LANL**.
@@ -416,8 +418,61 @@ FlatVel-A normalized MAE / RMSE / SSIM (single run): WaveDL-trained best checkpo
 OpenFWI's protocol selects checkpoints on the **test split**, as reproduced by
 `--val_data_path` above; this is not independent validation.
 
+#### VelocityGAN
+
+`--adversarial wgan-gp` follows upstream `gan_train.py`. The critic updates
+every batch; the generator updates every `--n_critic` batches and on the last
+batch of each epoch, with loss `lambda_g1v·L1 + lambda_g2v·MSE − lambda_adv·critic`.
+Both optimizers are AdamW with `--gan_betas` (default `0 0.9`) and no gradient
+clipping. This replaces `--loss`, `--optimizer`, `--betas`, and `--grad_clip`;
+validation and checkpoint selection use the pixel loss only. Without
+`--adversarial`, `velocitygan` trains like `inversionnet`.
+
+WGAN-GP requires a single process, `--precision no`, `--grad_accum_steps 1`,
+and no `--compile`; the second-order gradient penalty does not work with
+PyTorch DDP (upstream uses Apex). Cross-validation, physical constraints, and
+the per-batch `onecycle` scheduler are not supported.
+The critic's weights, optimizer, and scheduler are saved in `critic.pt` next to
+each checkpoint and are required to resume; inference loads only the generator.
+
+The FlatVel-A recipe below uses the settings stored in the official
+`flatvel_a_l1_480.pth` checkpoint (L1 only, `n_critic` 3, batch 64, 480 epochs):
+
+```bash
+wavedl-train --num_gpus 1 --model velocitygan --adversarial wgan-gp \
+  --data_path manifests/flatvel-a_train.txt \
+  --val_data_path manifests/flatvel-a_test.txt \
+  --openfwi_dataset flatvel-a --precision no --no_tf32 \
+  --batch_size 64 --lr 1e-4 --d_lr 1e-4 --weight_decay 1e-4 \
+  --epochs 480 --patience 481 \
+  --lambda_g1v 100 --lambda_g2v 0 --lambda_adv 1 --lambda_gp 10 --n_critic 3 \
+  --scheduler linear_warmup --warmup_epochs 0 --workers 4 \
+  --output_dir runs/openfwi/velocitygan-fva-l1
+```
+
+FlatVel-A normalized MAE / RMSE / SSIM (single run): WaveDL-trained best checkpoint
+(epoch 419) **0.0091 / 0.0158 / 0.9936**, versus official checkpoint
+**0.0118 / 0.0178 / 0.9916**. GAN validation scores swing between epochs: the
+final epoch-480 weights of the same run scored only 0.0431 / 0.0653 / 0.9855.
+Best-checkpoint selection again uses the test split.
+
+#### Official weights
+
+Official OpenFWI `.pth` weights load strictly into either generator, including
+upstream's legacy layer names (the critic is not loaded):
+
+```python
+from wavedl.models import InversionNet
+from wavedl.models.openfwi import load_openfwi_checkpoint
+
+model = InversionNet((1000, 70), 1).eval()  # or VelocityGAN for GAN weights
+metadata = load_openfwi_checkpoint(model, "flatvel_a_l1.pth")  # {"epoch", "args"}
+```
+
 Cite Wu & Lin (2020), *InversionNet*, IEEE TCI 6:419–433
-([DOI: 10.1109/TCI.2019.2956866](https://doi.org/10.1109/TCI.2019.2956866)),
+([DOI: 10.1109/TCI.2019.2956866](https://doi.org/10.1109/TCI.2019.2956866));
+Zhang & Lin (2020), *VelocityGAN*, IEEE TGRS 58(10):6900–6913
+([DOI: 10.1109/TGRS.2020.2977635](https://doi.org/10.1109/TGRS.2020.2977635));
 and Deng et al. (2022), *OpenFWI*, NeurIPS Datasets & Benchmarks.
 Upstream code is BSD-3-Clause, SSIM originates from MIT-licensed pytorch-ssim,
 and data are separately **CC BY-NC-SA 4.0**, not redistributed.
