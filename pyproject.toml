@@ -15,7 +15,7 @@ include = ["wavedl*"]
 
 [tool.setuptools.package-data]
 "wavedl" = ["dataset_config.json"]
-"wavedl.gui" = ["*.html"]
+"wavedl.gui" = ["*.html", "*.css", "*.js"]
 
 [tool.setuptools.dynamic]
 version = {attr = "wavedl.__version__"}
