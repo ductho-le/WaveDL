@@ -1173,12 +1173,14 @@ def print_results(
         print(f"Relative L2:      {metrics['relative_l2']:.6f}")
     print("=" * 80)
 
-    # Per-parameter MAE
+    # OpenFWI benchmark metrics (only with min-max scaled dense targets)
     if "normalized_ssim" in metrics:
         print("\nOPENFWI NORMALIZED METRICS ([-1,1]; SSIM on [0,1]):")
         print(f"  MAE:  {metrics['normalized_mae']:.6f}")
         print(f"  RMSE: {metrics['normalized_rmse']:.6f}")
         print(f"  SSIM: {metrics['normalized_ssim']:.6f}")
+
+    # Per-parameter MAE
     print("\nPER-CHANNEL MAE:" if is_field else "\nPER-PARAMETER MAE:")
     print("-" * 80)
     for i, name in enumerate(param_names):
