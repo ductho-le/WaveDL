@@ -14,7 +14,7 @@ where = ["src"]
 include = ["wavedl*"]
 
 [tool.setuptools.package-data]
-"wavedl.gui" = ["*.html"]
+"wavedl.gui" = ["*.html", "*.css", "*.js"]
 
 [tool.setuptools.dynamic]
 version = {attr = "wavedl.__version__"}
