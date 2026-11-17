@@ -835,6 +835,22 @@ print(f'\n✓ All {len(urls) + len(timm_models)} pretrained weight files cached!
 | `--project_name` | `DL-Training` | W&B project name |
 | `--run_name` | `None` | W&B run name (auto-generated if not set) |
 
+</details>
+
+<details>
+<summary><b>Adversarial Training (VelocityGAN)</b></summary>
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--adversarial` | `none` | `wgan-gp` enables OpenFWI WGAN-GP training (requires `velocitygan`) |
+| `--lambda_g1v` | `100.0` | L1 pixel-loss weight |
+| `--lambda_g2v` | `100.0` | MSE pixel-loss weight |
+| `--lambda_adv` | `1.0` | Adversarial loss weight |
+| `--lambda_gp` | `10.0` | Gradient penalty weight |
+| `--n_critic` | `5` | Critic updates per generator update |
+| `--d_lr` | `1e-4` | Critic learning rate |
+| `--gan_betas` | `0.0 0.9` | AdamW betas for generator and critic |
+
 **Automatic GPU Optimizations:**
 
 WaveDL automatically enables performance optimizations for modern GPUs:
