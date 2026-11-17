@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **OpenFWI InversionNet**: Add the fixed-geometry dense model with official-checkpoint loading, upstream credits, and packaged third-party notices
+- **OpenFWI VelocityGAN**: Add the InversionNet generator with a separate upstream critic and `--adversarial wgan-gp` training (OpenFWI update order and losses, single process, critic saved in `critic.pt` for resume)
+- **InversionNet data support**: Add lazy paired-shard manifests, multichannel input contracts, fixed validation data, saved OpenFWI preprocessing/min-max target scaling, normalized MAE/RMSE/SSIM, and explicit TF32 control
 - **WaveDL Studio**: Bundle a browser interface available through `wavedl-gui` or `python -m wavedl.gui`, with current-directory workspaces, YAML editing, and training, testing, and ONNX export jobs sharing a live console; no additional dependencies
 - **Dataset caching**: Add `--cache_dir` to `wavedl-train` and reuse a preprocessed dataset cache across sequential HPO trials
 - **MATLAB data**: Support legacy MAT v5/v7 files alongside HDF5-based v7.3 files

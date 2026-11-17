@@ -1161,9 +1161,13 @@ def load_test_data(
     input_channels: int | None = None,
     *,
     allow_pickle: bool = False,
-) -> tuple[torch.Tensor, torch.Tensor | None]:
+) -> tuple[torch.Tensor | Dataset, torch.Tensor | None]:
     """
     Load test/inference data and return PyTorch tensors ready for model input.
+
+    OpenFWI .txt manifests return a lazy input Dataset with ``shape`` and
+    slicing support; only the smaller target maps are materialized. Axis 1 in
+    each shard is unconditionally channels. Other formats return tensors.
 
     This is the unified data loading function for inference. It:
     - Auto-detects file format from extension
@@ -1205,6 +1209,17 @@ def load_test_data(
         raise ValueError(
             f"input_channels must be a positive integer >= 1, got {input_channels!r}."
         )
+    if str(path).lower().endswith(".txt") or format == "openfwi":
+        from .openfwi import ManifestInputs, OpenFWIManifestDataset
+
+        source = OpenFWIManifestDataset(path)
+        if input_channels is not None and input_channels != source.in_channels:
+            raise ValueError(
+                f"Requested input_channels={input_channels}, but manifest has {source.in_channels} channels."
+            )
+        labels = torch.from_numpy(np.concatenate(list(source.target_batches())))
+        return ManifestInputs(source), labels
+
     if format == "auto":
         format = DataSource.detect_format(path)
 
@@ -1527,7 +1542,8 @@ def _validate_scaler_compatibility(current: Any, expected: Any) -> None:
     current_shape = tuple(getattr(current, "target_shape_", (len(current.mean_),)))
     expected_shape = tuple(getattr(expected, "target_shape_", (len(expected.mean_),)))
     if (
-        len(expected_shape) == 3
+        isinstance(expected, SpatialTargetScaler)
+        and len(expected_shape) == 3
         and getattr(expected, "normalization_version_", 0)
         != SpatialTargetScaler.NORMALIZATION_VERSION
     ):
@@ -1630,6 +1646,25 @@ def prepare_data(
         - scaler.pkl: Fitted target scaler
         - data_metadata.pkl: Shape and dimension metadata
     """
+    from .openfwi import (
+        prepare_preprocessed_data,
+        preprocessing_from_args,
+        uses_preprocessed_pipeline,
+    )
+
+    preprocessing = preprocessing_from_args(args)
+    args.preprocessing = preprocessing
+    if uses_preprocessed_pipeline(args, preprocessing):
+        return prepare_preprocessed_data(
+            args,
+            preprocessing,
+            logger,
+            accelerator,
+            cache_dir,
+            val_split,
+            expected_scaler,
+        )
+
     CACHE_FILE = os.path.join(cache_dir, "train_data_cache.dat")
     TARGET_CACHE_FILE = os.path.join(cache_dir, "target_data_cache.dat")
     SCALER_FILE = os.path.join(cache_dir, "scaler.pkl")
@@ -2307,5 +2342,7 @@ def prepare_data(
 
     # Return spatial shape (H, W) for model initialization
     in_shape = full_shape[2:]
+    args.in_channels = full_shape[1]
+    tr_ds.in_channels = val_ds.in_channels = full_shape[1]
 
     return train_dl, val_dl, scaler, in_shape, out_dim

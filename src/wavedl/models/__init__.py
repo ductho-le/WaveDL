@@ -72,6 +72,7 @@ from .efficientnet import EfficientNetB0, EfficientNetB2, EfficientNetB4, Effici
 from .efficientnetv2 import EfficientNetV2L, EfficientNetV2M, EfficientNetV2S
 from .mamba import Mamba1D, VimBase, VimSmall, VimTiny
 from .mobilenetv3 import MobileNetV3Large, MobileNetV3Small
+from .openfwi import Discriminator, InversionNet, VelocityGAN
 from .registry import (
     MODEL_REGISTRY,
     build_model,
@@ -138,6 +139,7 @@ __all__ = [
     "DenseNet121",
     "DenseNet121Pretrained",
     "DenseNet169",
+    "Discriminator",
     "EfficientNetB0",
     "EfficientNetB2",
     "EfficientNetB4",
@@ -145,6 +147,7 @@ __all__ = [
     "EfficientNetV2L",
     "EfficientNetV2M",
     "EfficientNetV2S",
+    "InversionNet",
     "Mamba1D",
     "MobileNetV3Large",
     "MobileNetV3Small",
@@ -171,6 +174,7 @@ __all__ = [
     "UniRepLKNetBaseLarge",
     "UniRepLKNetSmall",
     "UniRepLKNetTiny",
+    "VelocityGAN",
     "ViTBase_",
     "ViTSmall",
     "ViTTiny",
@@ -212,6 +216,7 @@ if _HAS_TIMM_MODELS:
         "DenseNet121",
         "DenseNet121Pretrained",
         "DenseNet169",
+        "Discriminator",
         "EfficientNetB0",
         "EfficientNetB2",
         "EfficientNetB4",
@@ -227,6 +232,7 @@ if _HAS_TIMM_MODELS:
         "FastViTSA12",
         "FastViTT8",
         "FastViTT12",
+        "InversionNet",
         "Mamba1D",
         "MaxViTBaseLarge",
         "MaxViTSmall",
@@ -257,6 +263,7 @@ if _HAS_TIMM_MODELS:
         "UniRepLKNetBaseLarge",
         "UniRepLKNetSmall",
         "UniRepLKNetTiny",
+        "VelocityGAN",
         "ViTBase_",
         "ViTSmall",
         "ViTTiny",

@@ -14,7 +14,8 @@ where = ["src"]
 include = ["wavedl*"]
 
 [tool.setuptools.package-data]
-"wavedl.gui" = ["*.html"]
+"wavedl" = ["dataset_config.json"]
+"wavedl.gui" = ["*.html", "*.css", "*.js"]
 
 [tool.setuptools.dynamic]
 version = {attr = "wavedl.__version__"}
@@ -25,7 +26,7 @@ dynamic = ["version"]
 description = "A Scalable Deep Learning Framework for Wave-Based Inverse Problems"
 readme = "README.md"
 license = "MIT"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 requires-python = ">=3.11"
 authors = [
     {name = "Ductho Le"}
