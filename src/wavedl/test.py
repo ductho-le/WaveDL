@@ -41,6 +41,7 @@ setup_hpc_cache_dirs()
 
 import argparse  # noqa: E402
 import inspect  # noqa: E402
+import json  # noqa: E402
 import logging  # noqa: E402
 import pickle  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -927,9 +928,7 @@ def _export_staged_onnx(
             "model_name": model_name,
             "output_units": "physical" if include_denorm else "normalized",
             "input_shape": str(tuple(sample_input.shape[1:])),
-            "preprocessing": __import__("json").dumps(
-                preprocessing or {}, sort_keys=True
-            ),
+            "preprocessing": json.dumps(preprocessing or {}, sort_keys=True),
             "input_units": "raw",
             "input_transform_embedded": "true",
         },
