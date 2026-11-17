@@ -374,7 +374,8 @@ Official splits follow upstream **split_files**:
 | Fault A | `seis{2,3,4}_1_{0..31}` / `vel{2,3,4}_1_{0..31}` | suffix 32–35 |
 | Fault B | `seis{6,7,8}_1_{0..31}` / `vel{6,7,8}_1_{0..31}` | suffix 32–35 |
 
-Create tab-separated manifests (`<abs input.npy>\t<abs target.npy>` per line).
+Create tab-separated manifests (`<input.npy>\t<target.npy>` per line; relative
+paths resolve against the manifest's folder, blank lines are ignored).
 For FlatVel-A, whose shards live under `FlatVel_A/data/` and `FlatVel_A/model/`:
 
 ```python
