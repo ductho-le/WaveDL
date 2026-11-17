@@ -1581,9 +1581,8 @@ def main():
 def _run_training(args, accelerator):
     """Run training with cleanup guaranteed by the public entry point."""
     set_seed(args.seed)
-    configure_tf32(args)
+    # main() has already validated GAN options and applied --no_tf32.
     gan_mode = getattr(args, "adversarial", "none") == "wgan-gp"
-    validate_adversarial_options(args, get_model(args.model))
     if gan_mode and accelerator.num_processes != 1:
         raise ValueError(
             "WGAN-GP currently requires a single process: second-order gradient penalty is not supported with PyTorch DDP (upstream uses Apex)."
