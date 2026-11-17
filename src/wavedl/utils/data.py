@@ -1656,7 +1656,13 @@ def prepare_data(
     args.preprocessing = preprocessing
     if uses_preprocessed_pipeline(args, preprocessing):
         return prepare_preprocessed_data(
-            args, logger, accelerator, cache_dir, val_split, expected_scaler
+            args,
+            preprocessing,
+            logger,
+            accelerator,
+            cache_dir,
+            val_split,
+            expected_scaler,
         )
 
     CACHE_FILE = os.path.join(cache_dir, "train_data_cache.dat")

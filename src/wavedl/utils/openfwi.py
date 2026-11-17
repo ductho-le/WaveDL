@@ -372,18 +372,17 @@ class _ArrayDataset(Dataset):
 
 
 def prepare_preprocessed_data(
-    args, logger, accelerator, cache_dir, val_split, expected_scaler=None
+    args, config, logger, accelerator, cache_dir, val_split, expected_scaler=None
 ):
     """Prepare opt-in sources without recaching shards; Accelerate shards loaders.
 
-    The legacy cached path stays unchanged for default single-channel workflows.
+    ``config`` is the resolved :func:`preprocessing_from_args` contract. The
+    legacy cached path stays unchanged for default single-channel workflows.
     Fixed validation also accepts NPZ/HDF5/MAT (eager loading for these opt-in
     formats); statistics are always fitted on training targets only.
     """
     from .data import _validate_scaler_compatibility, load_training_data
 
-    config = preprocessing_from_args(args)
-    args.preprocessing = config
     val_path = getattr(args, "val_data_path", None)
     manifest = str(args.data_path).lower().endswith(".txt")
     if manifest:
