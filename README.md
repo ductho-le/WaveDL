@@ -584,9 +584,9 @@ WaveDL/
 
 | Output type | Built-in models | Stored target | Model output |
 |-------------|-----------------|---------------|--------------|
-| Vector regression | Every model except `unet_field`, `inversionnet` | `(N,)` or `(N, T)` | `(N, T)` |
+| Vector regression | Every model except `unet_field`, `inversionnet`, `velocitygan` | `(N,)` or `(N, T)` | `(N, T)` |
 | Dense 2D field | `unet_field` | `(N, H_out, W_out)` or `(N, C, H_out, W_out)` | `(N, C, H_out, W_out)` |
-| OpenFWI dense field | `inversionnet` | `(N, 1, 70, 70)` | `(N, 1, 70, 70)` |
+| OpenFWI dense field | `inversionnet`, `velocitygan` | `(N, 1, 70, 70)` | `(N, 1, 70, 70)` |
 
 The dimensionality column below describes the **input**. A model accepting 2D
 input does not automatically support dense output; look at the output-support
@@ -698,6 +698,7 @@ table above when selecting a model.
 | `unet_field` 🗺️ | ~31.0M | 2D |
 | **OpenFWI** — OmniWave Lab / LANL |||
 | `inversionnet` | 24.4M | Dense output; fixed 5×1000×70 → 1×70×70 |
+| `velocitygan` | 24.4M (+1.2M critic) | Dense output; fixed 5×1000×70 → 1×70×70 |
 
 
 ⭐ = **Pretrained weights available** (ImageNet-1K for 2D models, Kinetics-400 for 3D ResNet3D/MC3; recommended for smaller datasets). Weights are downloaded automatically on first use.
