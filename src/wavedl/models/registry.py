@@ -95,7 +95,9 @@ def build_model(
                   - 3D: (D, H, W) for volume dimensions
         out_size: Number of vector targets or dense output channels. Dense
                   models receive their canonical ``out_shape`` through kwargs.
-        **kwargs: Additional model-specific parameters
+        **kwargs: Additional model-specific parameters, including optional
+                  ``in_channels`` (default 1). Trainer/inference validate it
+                  against ``supported_input_channels`` before construction.
 
     Returns:
         Instantiated model

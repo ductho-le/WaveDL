@@ -41,6 +41,7 @@ setup_hpc_cache_dirs()
 
 import argparse  # noqa: E402
 import inspect  # noqa: E402
+import json  # noqa: E402
 import logging  # noqa: E402
 import pickle  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -69,6 +70,7 @@ from wavedl.utils import (  # noqa: E402
     calc_pearson,
     canonicalize_targets,
     load_test_data,
+    memmap_worker_init_fn,
     plot_bland_altman,
     plot_correlation_heatmap,
     plot_error_boxplot,
@@ -80,6 +82,11 @@ from wavedl.utils import (  # noqa: E402
     plot_residuals,
     plot_scientific_scatter,
     scaler_target_shape,
+)
+from wavedl.utils.preprocessing import (  # noqa: E402
+    configure_tf32,
+    transform_inputs,
+    validate_input_channels,
 )
 
 
@@ -112,7 +119,7 @@ def parse_args() -> argparse.Namespace:
         "--data_path",
         type=str,
         required=True,
-        help="Path to test data (NPZ, HDF5, or MAT v7.3 format)",
+        help="Path to test data (NPZ, HDF5, MAT, or paired-shard .txt manifest)",
     )
 
     # Model specification
@@ -128,7 +135,7 @@ def parse_args() -> argparse.Namespace:
         "--format",
         type=str,
         default="auto",
-        choices=["auto", "npz", "mat", "hdf5"],
+        choices=["auto", "npz", "mat", "hdf5", "manifest"],
         help="Data format (auto-detect by extension)",
     )
     parser.add_argument(
@@ -238,6 +245,11 @@ def parse_args() -> argparse.Namespace:
             "(inferred from scaler.pkl if targets are missing)"
         ),
     )
+    parser.add_argument(
+        "--no_tf32",
+        action="store_true",
+        help="Disable matmul and cuDNN TF32 for strict FP32 evaluation",
+    )
 
     args = parser.parse_args()
     if args.batch_size < 1:
@@ -262,22 +274,22 @@ def load_data_for_inference(
     input_channels: int | None = None,
     *,
     allow_pickle: bool = False,
-) -> tuple[torch.Tensor, torch.Tensor | None]:
+) -> tuple[torch.Tensor | torch.utils.data.Dataset, torch.Tensor | None]:
     """
     Load test data for inference using the unified data loading pipeline.
 
     This is a thin wrapper around utils.data.load_test_data that adds logging.
 
     Args:
-        file_path: Path to data file (NPZ, HDF5, or MAT v7.3)
-        format: Format hint ('auto', 'npz', 'mat', 'hdf5')
+        file_path: Data file (NPZ, HDF5, MAT, or paired-shard .txt manifest)
+        format: Format hint ('auto', 'npz', 'mat', 'hdf5', 'manifest')
         input_key: Custom key for input data (overrides auto-detection)
         output_key: Custom key for output data (overrides auto-detection)
         input_channels: Explicit input channel count for ambiguous 4D inputs
 
     Returns:
         Tuple of:
-            - X: Input tensor with channel dimension (N, 1, *spatial_dims)
+            - X: Input tensor (N, C, *spatial_dims), or lazy Dataset for .txt manifests
             - y: Target tensor ``(N,T)`` or ``(N,C,H,W)``, or None if absent
     """
     from pathlib import Path
@@ -294,6 +306,7 @@ def load_data_for_inference(
             ".mat": "mat",
             ".h5": "hdf5",
             ".hdf5": "hdf5",
+            ".txt": "manifest",
         }.get(suffix, "npz")
     else:
         format_name = format
@@ -336,6 +349,7 @@ def load_checkpoint(
     out_size: int,
     model_name: str | None = None,
     out_shape: tuple[int, ...] | None = None,
+    in_channels: int | None = None,
 ) -> tuple[nn.Module, Any]:
     """
     Load model and scaler from Accelerate checkpoint directory.
@@ -455,7 +469,15 @@ def load_checkpoint(
 
     # Use pretrained=False: checkpoint weights will overwrite any pretrained weights,
     # so downloading ImageNet weights is wasteful and breaks offline/HPC inference.
-    model_kwargs: dict[str, Any] = {"pretrained": False}
+    checkpoint_channels = (meta or {}).get("in_channels", 1)
+    if in_channels is None:
+        in_channels = checkpoint_channels
+    elif in_channels != checkpoint_channels and meta is not None:
+        raise ValueError(
+            f"Requested in_channels={in_channels} differs from checkpoint in_channels={checkpoint_channels}."
+        )
+    validate_input_channels(model_class, in_channels, model_name)
+    model_kwargs: dict[str, Any] = {"pretrained": False, "in_channels": in_channels}
     if out_shape is not None and len(out_shape) > 1:
         model_kwargs["out_shape"] = out_shape
     model = build_model(
@@ -536,6 +558,8 @@ def load_checkpoint(
 
     model.load_state_dict(state_dict)
     model._wavedl_model_name = model_name
+    model._wavedl_preprocessing = (meta or {}).get("preprocessing", {})
+    model._wavedl_in_channels = in_channels
     model.eval()
 
     logging.info(f"   ✔ Loaded weights from: {weight_path.name}")
@@ -592,7 +616,7 @@ def load_checkpoint(
 @torch.inference_mode()
 def run_inference(
     model: nn.Module,
-    X: torch.Tensor,
+    X: torch.Tensor | torch.utils.data.Dataset,
     batch_size: int = 128,
     device: torch.device | None = None,
     num_workers: int = 0,
@@ -602,7 +626,8 @@ def run_inference(
 
     Args:
         model: Trained model in eval mode
-        X: Input tensor (N, C, *spatial_dims)
+        X: Input tensor (N, C, *spatial_dims), or a lazy manifest input view.
+            Inputs are raw; saved checkpoint preprocessing is applied per batch.
         batch_size: Batch size for inference
         device: Target device (auto-detect if None)
         num_workers: DataLoader workers (0 for single-threaded)
@@ -635,18 +660,23 @@ def run_inference(
             except Exception:
                 num_workers = 0
 
-    dataset = TensorDataset(X)
+    dataset = TensorDataset(X) if isinstance(X, torch.Tensor) else X
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
         pin_memory=device.type == "cuda",
+        worker_init_fn=memmap_worker_init_fn if num_workers > 0 else None,
     )
 
     predictions = []
 
-    for (batch_x,) in tqdm(loader, desc="Inference", leave=False):
+    for batch in tqdm(loader, desc="Inference", leave=False):
+        batch_x = batch[0] if isinstance(batch, (list, tuple)) else batch
+        batch_x = transform_inputs(
+            batch_x, getattr(model, "_wavedl_preprocessing", None)
+        )
         batch_x = batch_x.to(device, non_blocking=True)
         output = model(batch_x)
         if (
@@ -670,6 +700,18 @@ def run_inference(
 # ==============================================================================
 # ONNX EXPORT
 # ==============================================================================
+class ModelWithInputTransform(nn.Module):
+    """Export wrapper accepting physical/raw inputs, matching run_inference."""
+
+    def __init__(self, model: nn.Module, preprocessing: dict[str, Any]):
+        super().__init__()
+        self.model = model
+        self.preprocessing = preprocessing
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(transform_inputs(x, self.preprocessing))
+
+
 class ModelWithDenormalization(nn.Module):
     """
     Wrapper that combines a trained model with scaler inverse transform.
@@ -763,6 +805,10 @@ def export_to_onnx(
     """
     import warnings
 
+    preprocessing = getattr(model, "_wavedl_preprocessing", {})
+    if preprocessing.get("input_transform", "none") != "none":
+        model = ModelWithInputTransform(model, preprocessing)
+
     # Wrap model with de-normalization if requested
     if include_denorm:
         if scaler is None:
@@ -818,6 +864,7 @@ def export_to_onnx(
                 validate,
                 model_name,
                 include_denorm,
+                preprocessing,
             )
     except Exception as e:
         logging.error(f"   ✘ ONNX export failed: {e}")
@@ -834,6 +881,7 @@ def _export_staged_onnx(
     validate,
     model_name,
     include_denorm,
+    preprocessing=None,
 ):
     import warnings
 
@@ -873,6 +921,9 @@ def _export_staged_onnx(
             "model_name": model_name,
             "output_units": "physical" if include_denorm else "normalized",
             "input_shape": str(tuple(sample_input.shape[1:])),
+            "preprocessing": json.dumps(preprocessing or {}, sort_keys=True),
+            "input_units": "raw",
+            "input_transform_embedded": "true",
         },
     )
     onnx.checker.check_model(onnx_model)
@@ -1414,6 +1465,7 @@ def plot_results(
 # ==============================================================================
 def main():
     args = parse_args()
+    configure_tf32(args)
     from wavedl.models import import_model_modules
 
     import_model_modules(args.import_modules)
@@ -1441,12 +1493,14 @@ def main():
     meta_in_shape = None
     meta_target_shape = None
     meta_model_name = None
+    meta_in_channels = None
     meta_path = Path(args.checkpoint) / "training_meta.pkl"
     if meta_path.is_file():
         try:
             with open(meta_path, "rb") as f:
                 _meta = pickle.load(f)
             meta_in_shape = _meta.get("in_shape")
+            meta_in_channels = _meta.get("in_channels")
             meta_model_name = _meta.get("model_name")
             if _meta.get("target_shape") is not None:
                 meta_target_shape = tuple(_meta["target_shape"])
@@ -1460,7 +1514,15 @@ def main():
             and meta_in_shape is not None
             and len(meta_in_shape) == 3
         )
-        else args.input_channels
+        else (
+            args.input_channels
+            if args.input_channels is not None
+            else (
+                meta_in_channels
+                if meta_in_channels is not None and meta_in_channels > 1
+                else None
+            )
+        )
     )
 
     # Load test data
@@ -1481,13 +1543,14 @@ def main():
         # If checkpoint says 3D (e.g., in_shape=(8,64,64)) but load_test_data
         # treated it as multi-channel 2D, add the missing channel dimension.
         expected_ndim = len(in_shape) + 2  # batch + channel + spatial
-        if X_test.ndim == expected_ndim - 1:
+        if isinstance(X_test, torch.Tensor) and X_test.ndim == expected_ndim - 1:
             X_test = X_test.unsqueeze(1)
             logger.info(
                 f"   Added channel dim to match checkpoint: {tuple(X_test.shape)}"
             )
         elif (
-            X_test.ndim == expected_ndim + 1
+            isinstance(X_test, torch.Tensor)
+            and X_test.ndim == expected_ndim + 1
             and X_test.shape[1] == 1
             and X_test.shape[2] == 1
             and tuple(X_test.shape[3:]) == in_shape
@@ -1565,6 +1628,7 @@ def main():
         out_size,
         args.model,
         out_shape=target_shape,
+        in_channels=int(X_test.shape[1]),
     )
 
     # Ensure output directory exists before any file operations (including ONNX export)

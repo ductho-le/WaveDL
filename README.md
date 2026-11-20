@@ -293,6 +293,8 @@ channels to keep result directories manageable.
 > [!NOTE]
 > `wavedl-test` auto-detects the model architecture from checkpoint metadata. If unavailable, it falls back to folder name parsing. Use `--model` to override if needed.
 
+`wavedl-test --data_path` also accepts tab-separated `.txt` paired-shard manifests (`<input.npy><TAB><target.npy>` per line). Saved input/target preprocessing is restored automatically during inference and embedded during ONNX export; `--no_tf32` disables TF32 for strict FP32 evaluation.
+
 ### Dense 2D Field Regression
 
 Use `--model unet_field` for supervised, pixel-wise prediction of an elasticity, stiffness, velocity, density, or similar 2D property map. This model is field-only; continue using `unet_regression` or another vector architecture for `(N, T)` targets. The built-in field model follows WaveDL's existing **single-channel input** convention: store each input as `(H_in, W_in)`, and the data loader adds the channel axis internally.
@@ -673,7 +675,13 @@ print(f'\n✓ All {len(urls) + len(timm_models)} pretrained weight files cached!
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--data_path` | `train_data.npz` | Dataset path |
+| `--data_path` | `train_data.npz` | Dataset path (`.npz`, `.h5`/`.hdf5`, `.mat`, or paired-shard `.txt` manifest) |
+| `--val_data_path` | `None` | Fixed validation dataset instead of a random split |
+| `--input_channels` | inferred | Channels-first 2D input channel count (manifests infer it from shards) |
+| `--input_transform` | `none` | Input transform (`none` or `signed_log_minmax` with `--input_range`) |
+| `--input_range` | `None` | Physical input bounds `MIN MAX` for `signed_log_minmax` preprocessing |
+| `--target_scaling` | `standard` | Target scaling (`standard` or `minmax` to `[-1, 1]` with `--target_range`) |
+| `--target_range` | `None` | Physical target bounds `MIN MAX` for min-max target scaling |
 | `--workers` | `-1` | DataLoader workers per GPU (-1=auto-detect) |
 | `--seed` | `2025` | Random seed |
 | `--output_dir` | `.` | Output directory for checkpoints |
@@ -694,6 +702,7 @@ print(f'\n✓ All {len(urls) + len(timm_models)} pretrained weight files cached!
 |----------|---------|-------------|
 | `--compile` | `False` | Enable `torch.compile` (recommended for long runs) |
 | `--precision` | `bf16` | Mixed precision mode (`bf16`, `fp16`, `no`) |
+| `--no_tf32` | `False` | Disable matmul and cuDNN TF32 for strict FP32 execution |
 | `--wandb` | `False` | Enable W&B logging |
 | `--wandb_watch` | `False` | Enable W&B gradient watching (adds overhead) |
 | `--project_name` | `DL-Training` | W&B project name |

@@ -95,6 +95,8 @@ class BaseModel(nn.Module, ABC):
     Attributes:
         in_shape: Input spatial dimensions (varies by dimensionality)
         out_size: Number of vector targets or dense output channels
+        supported_input_channels: Accepted input channel counts, or None for
+            arbitrary counts. Defaults to (1,) for single-channel architectures.
 
     Example:
         from wavedl.models.base import BaseModel
@@ -114,6 +116,8 @@ class BaseModel(nn.Module, ABC):
     # Vector regression is the default contract. Dense-output architectures
     # opt in so the training/inference pipeline can reject incompatible model
     # and target combinations before a loss broadcasts silently.
+    # None means arbitrary channel counts; built-in models default to one.
+    supported_input_channels: tuple[int, ...] | None = (1,)
     supports_spatial_output = False
     requires_spatial_output = False
     in_shape: tuple[int, ...]
