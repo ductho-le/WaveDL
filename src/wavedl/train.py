@@ -145,6 +145,13 @@ from wavedl.utils import (
     scaler_target_shape,
     wait_for_everyone,
 )
+from wavedl.utils.preprocessing import (
+    add_preprocessing_arguments,
+    configure_tf32,
+    preprocessing_from_args,
+    uses_preprocessed_pipeline,
+    validate_input_channels,
+)
 
 
 try:
@@ -224,6 +231,9 @@ def _build_model_for_targets(
     target_shape = scaler_target_shape(scaler, out_dim)
     model_kwargs = dict(kwargs)
     model_class = get_model(model_name)
+    in_channels = model_kwargs.get("in_channels", 1)
+    validate_input_channels(model_class, in_channels, model_name)
+    model_kwargs["in_channels"] = in_channels
     if len(target_shape) > 1 and not getattr(
         model_class, "supports_spatial_output", False
     ):
@@ -253,6 +263,8 @@ def _validate_resume_metadata(
     in_shape: tuple[int, ...],
     out_dim: int,
     target_shape: tuple[int, ...],
+    in_channels: int | None = None,
+    preprocessing: dict[str, Any] | None = None,
 ) -> None:
     """Reject checkpoints that describe a different model or target contract."""
 
@@ -276,6 +288,19 @@ def _validate_resume_metadata(
             f"target_shape={tuple(metadata['target_shape'])} "
             f"(current {tuple(target_shape)})"
         )
+    if in_channels is not None and metadata.get("in_channels", 1) != in_channels:
+        mismatches.append(
+            f"in_channels={metadata.get('in_channels', 1)} (current {in_channels})"
+        )
+    if preprocessing is not None:
+        saved_preprocessing = metadata.get("preprocessing")
+        if saved_preprocessing is not None and saved_preprocessing != preprocessing:
+            mismatches.append("preprocessing changed")
+        elif saved_preprocessing is None and (
+            preprocessing.get("input_transform", "none") != "none"
+            or preprocessing.get("target_scaling", "standard") != "standard"
+        ):
+            mismatches.append("preprocessing differs from legacy defaults")
 
     if mismatches:
         raise ValueError(
@@ -571,7 +596,7 @@ def parse_args() -> tuple[argparse.Namespace, argparse.ArgumentParser]:
         "--data_path",
         type=str,
         default="train_data.npz",
-        help="Path to NPZ, HDF5, or MAT v7.3 dataset",
+        help="Path to NPZ, HDF5, MAT dataset, or paired-shard .txt manifest",
     )
     parser.add_argument(
         "--workers",
@@ -706,6 +731,26 @@ def parse_args() -> tuple[argparse.Namespace, argparse.ArgumentParser]:
     )
     parser.add_argument("--run_name", type=str, default=None, help="WandB run name")
 
+    # Data preprocessing, fixed validation, and precision controls
+    parser.add_argument(
+        "--val_data_path",
+        type=str,
+        default=None,
+        help="Fixed validation dataset instead of a random split",
+    )
+    parser.add_argument(
+        "--input_channels",
+        type=int,
+        default=None,
+        help="Channels-first 2D input channel count; use --single_channel for shallow 3D volumes",
+    )
+    parser.add_argument(
+        "--no_tf32",
+        action="store_true",
+        help="Disable matmul and cuDNN TF32 for strict FP32 execution",
+    )
+    add_preprocessing_arguments(parser)
+
     args = parser.parse_args()
     return args, parser  # Returns (Namespace, ArgumentParser)
 
@@ -831,6 +876,8 @@ def _save_best_checkpoint(
                 "patience_ctr": 0,
                 "model_name": args.model,
                 "in_shape": in_shape,
+                "in_channels": vars(args).get("in_channels", 1),
+                "preprocessing": vars(args).get("preprocessing", {}),
                 "out_dim": out_dim,
                 "target_shape": resolved_target_shape,
             },
@@ -1027,7 +1074,12 @@ def train_single_trial(
 
             # Build model
             model, _target_shape = _build_model_for_targets(
-                model_name, in_shape, out_dim, target_scaler, pretrained=False
+                model_name,
+                in_shape,
+                out_dim,
+                target_scaler,
+                pretrained=False,
+                in_channels=getattr(args, "in_channels", 1),
             )
             model = model.to(device)
 
@@ -1279,6 +1331,17 @@ def main():
         parser.error("; ".join(invalid_options))
     if args.fresh and args.resume:
         parser.error("--fresh and --resume are mutually exclusive.")
+
+    configure_tf32(args)
+    try:
+        args.preprocessing = preprocessing_from_args(args)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.cv > 0 and uses_preprocessed_pipeline(args, args.preprocessing):
+        parser.error(
+            "Cross-validation does not yet support shard manifests, custom "
+            "preprocessing, or fixed validation sets. Use standard training."
+        )
 
     # Handle --cv flag (cross-validation mode)
     if args.cv > 0:
@@ -1713,6 +1776,7 @@ def _run_training(args, accelerator):
         out_dim,
         scaler,
         pretrained=args.pretrained,
+        in_channels=getattr(args, "in_channels", 1),
     )
 
     if accelerator.is_main_process:
@@ -1934,6 +1998,8 @@ def _run_training(args, accelerator):
                     in_shape,
                     out_dim,
                     target_shape,
+                    in_channels=getattr(args, "in_channels", 1),
+                    preprocessing=getattr(args, "preprocessing", None),
                 )
 
             # Detect checkpoint format: standalone (from KeyboardInterrupt)
@@ -2467,6 +2533,8 @@ def _run_training(args, accelerator):
                             # Model info for auto-detection during inference
                             "model_name": args.model,
                             "in_shape": in_shape,
+                            "in_channels": vars(args).get("in_channels", 1),
+                            "preprocessing": vars(args).get("preprocessing", {}),
                             "out_dim": out_dim,
                             "target_shape": target_shape,
                         },
@@ -2534,6 +2602,8 @@ def _run_training(args, accelerator):
                         "patience_ctr": patience_ctr,
                         "model_name": args.model,
                         "in_shape": in_shape,
+                        "in_channels": vars(args).get("in_channels", 1),
+                        "preprocessing": vars(args).get("preprocessing", {}),
                         "out_dim": out_dim,
                         "target_shape": target_shape,
                     },
