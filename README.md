@@ -297,7 +297,7 @@ channels to keep result directories manageable.
 
 ### Dense 2D Field Regression
 
-Use `--model unet_field` for supervised, pixel-wise prediction of an elasticity, stiffness, velocity, density, or similar 2D property map. This model is field-only; continue using `unet_regression` or another vector architecture for `(N, T)` targets. The built-in field model follows WaveDL's existing **single-channel input** convention: store each input as `(H_in, W_in)`, and the data loader adds the channel axis internally.
+Use `--model unet_field`, `--model inversionnet`, or `--model inversionnet_resize` for supervised, pixel-wise prediction of an elasticity, stiffness, velocity, density, or similar 2D property map. These models are field-only; continue using `unet_regression` or another vector architecture for `(N, T)` targets. `unet_field` uses skip-connected single-channel inputs (`(H_in, W_in)`), while `inversionnet` (transposed-convolution decoder) and `inversionnet_resize` (resize-convolution decoder) are skip-free 2D encoder-decoders supporting both single-channel and multi-channel (`--input_channels`) inputs as well as arbitrary input/output aspect ratios.
 
 Accepted target layouts are:
 
@@ -462,8 +462,8 @@ WaveDL/
 
 | Output type | Built-in models | Stored target | Model output |
 |-------------|-----------------|---------------|--------------|
-| Vector regression | Every model except `unet_field` | `(N,)` or `(N, T)` | `(N, T)` |
-| Dense 2D field | `unet_field` | `(N, H_out, W_out)` or `(N, C, H_out, W_out)` | `(N, C, H_out, W_out)` |
+| Vector regression | Every model except dense field models | `(N,)` or `(N, T)` | `(N, T)` |
+| Dense 2D field | `unet_field`, `inversionnet`, `inversionnet_resize` | `(N, H_out, W_out)` or `(N, C, H_out, W_out)` | `(N, C, H_out, W_out)` |
 
 The dimensionality column below describes the **input**. A model accepting 2D
 input does not automatically support dense output; look at the output-support
@@ -573,6 +573,9 @@ table above when selecting a model.
 | **U-Net** — U-shaped Network |||
 | `unet_regression` | 31.0M | 1D/2D/3D |
 | `unet_field` 🗺️ | ~31.0M | 2D |
+| **InversionNet** — Skip-Free 2D Encoder-Decoder |||
+| `inversionnet` 🗺️ | ~17.3M | 2D |
+| `inversionnet_resize` 🗺️ | ~16.1M | 2D |
 
 
 ⭐ = **Pretrained weights available** (ImageNet-1K for 2D models, Kinetics-400 for 3D ResNet3D/MC3; recommended for smaller datasets). Weights are downloaded automatically on first use.

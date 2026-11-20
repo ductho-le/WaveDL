@@ -58,6 +58,7 @@ MODEL_DIMS = {
     "resnet": [1, 2, 3],
     "unet_field": [2],
     "unet": [1, 2, 3],
+    "inversionnet": [2],
     "cnn": [1, 2, 3],
     "convnext": [1, 2, 3],
     "densenet": [1, 2, 3],
@@ -220,10 +221,10 @@ class TestAllModels:
             with torch.no_grad():
                 out = model(x)
 
-            model_lower = model_name.lower()
-            if model_lower.startswith("unet"):
-                assert out.shape[0] == 1
-                assert out.shape[1] == out_size
+            if model.requires_spatial_output:
+                assert out.shape == (1, *model.out_shape), (
+                    f"{model_name}: Expected {(1, *model.out_shape)}, got {out.shape}"
+                )
             else:
                 assert out.shape == (1, out_size), (
                     f"{model_name}: Expected {(1, out_size)}, got {out.shape}"
@@ -438,6 +439,10 @@ class TestModelRegistry:
         assert "s4d" in models
         assert "s4d_small" in models
         assert "s4d_large" in models
+        # Dense 2D field architectures
+        assert "unet_field" in models
+        assert "inversionnet" in models
+        assert "inversionnet_resize" in models
         # Removed models should not be present
         assert "efficientnet_b1" not in models
         assert "efficientvit_m0" not in models
