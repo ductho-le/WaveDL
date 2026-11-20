@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Dense 2D encoder-decoder models**: Add general-purpose 2D field regression architectures `inversionnet` (transposed-convolution decoder) and `inversionnet_resize` (resize-convolution decoder) supporting arbitrary input channels, aspect ratios, and output field grids
 - **Data preprocessing & shard manifests**: Add lazy paired-shard `.txt` manifests (`<input.npy><TAB><target.npy>`), fixed validation datasets (`--val_data_path`), multi-channel input contracts (`--input_channels` / `BaseModel.supported_input_channels`), persisted input transforms (`--input_transform signed_log_minmax`) and min-max target scaling (`--target_scaling minmax`) with automatic inference restoration and ONNX embedding, and explicit TF32 control (`--no_tf32`)
 - **WaveDL Studio**: Bundle a browser interface available through `wavedl-gui` or `python -m wavedl.gui`, with current-directory workspaces, YAML editing, and training, testing, and ONNX export jobs sharing a live console; no additional dependencies
 - **Dataset caching**: Add `--cache_dir` to `wavedl-train` and reuse a preprocessed dataset cache across sequential HPO trials

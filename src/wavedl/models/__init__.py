@@ -7,14 +7,14 @@ enabling dynamic model selection via command-line arguments.
 
 **Dimensionality Coverage**:
     - 1D (waveforms): TCN, CNN, ResNet, ConvNeXt, ConvNeXt V2, DenseNet, UNet, UniRepLKNet, ViT, Mamba, WaveNet, S4D
-    - 2D (images): CNN, ResNet, ConvNeXt, ConvNeXt V2, DenseNet, ViT, UNet, UniRepLKNet,
+    - 2D (images): CNN, ResNet, ConvNeXt, ConvNeXt V2, DenseNet, ViT, UNet, InversionNet, UniRepLKNet,
                    EfficientNet, EfficientNetV2, MobileNetV3, RegNet, Swin, MaxViT, FastViT,
                    CAFormer, PoolFormer, Vision Mamba, EfficientViT
     - 3D (volumes): ResNet3D, CNN, ResNet, ConvNeXt, ConvNeXt V2, DenseNet, UNet, UniRepLKNet
 
 **Output Coverage**:
-    - Vector regression: every registered architecture except ``unet_field``
-    - Dense spatial field regression: ``unet_field``
+    - Vector regression: every registered architecture except dense field models
+    - Dense spatial field regression: ``unet_field``, ``inversionnet``, ``inversionnet_resize``
 
 Usage:
     from wavedl.models import get_model, list_models, MODEL_REGISTRY
@@ -70,6 +70,7 @@ from .convnext_v2 import (
 from .densenet import DenseNet121, DenseNet121Pretrained, DenseNet169
 from .efficientnet import EfficientNetB0, EfficientNetB2, EfficientNetB4, EfficientNetB7
 from .efficientnetv2 import EfficientNetV2L, EfficientNetV2M, EfficientNetV2S
+from .inversionnet import InversionNet, InversionNetResize
 from .mamba import Mamba1D, VimBase, VimSmall, VimTiny
 from .mobilenetv3 import MobileNetV3Large, MobileNetV3Small
 from .registry import (
@@ -145,6 +146,8 @@ __all__ = [
     "EfficientNetV2L",
     "EfficientNetV2M",
     "EfficientNetV2S",
+    "InversionNet",
+    "InversionNetResize",
     "Mamba1D",
     "MobileNetV3Large",
     "MobileNetV3Small",
@@ -227,6 +230,8 @@ if _HAS_TIMM_MODELS:
         "FastViTSA12",
         "FastViTT8",
         "FastViTT12",
+        "InversionNet",
+        "InversionNetResize",
         "Mamba1D",
         "MaxViTBaseLarge",
         "MaxViTSmall",
