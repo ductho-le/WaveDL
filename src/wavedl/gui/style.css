@@ -166,10 +166,10 @@
   .icon { width: 16px; height: 16px; flex-shrink: 0; vertical-align: middle; }
   .kbd { margin-left: 4px; font: 10px var(--mono); opacity: .7; }
   header { height: 56px; flex-shrink: 0; display: flex; align-items: center; gap: 12px; padding: 0 16px; border-bottom: 1px solid var(--border); background: var(--surface); }
-  .brand-area { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
-  .brand-logo { height: 24px; width: auto; display: block; }
+  .brand-area { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+  .brand-logo { height: 26px; width: auto; display: block; }
   .brand-divider { width: 1px; height: 20px; background: var(--border); }
-  .brand-title-main { color: var(--muted); font-size: 13px; font-weight: 500; }
+  .brand-title-main { color: var(--brand); font-size: 18px; font-weight: 600; line-height: 1; letter-spacing: -.02em; }
   .stepper-wrap { min-width: 0; flex: 1; display: flex; justify-content: center; }
   .stepper { display: flex; align-items: center; gap: 2px; padding: 4px; border-radius: 12px; background: var(--surface-subtle); }
   button.step-btn { border: 0; box-shadow: none; background: transparent; color: var(--muted); height: 32px; padding: 0 12px; gap: 8px; border-radius: 8px; }

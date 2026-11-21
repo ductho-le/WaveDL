@@ -1472,7 +1472,7 @@ The development of WaveDL v2 is supported by the [National Foundation for Scienc
 
 <div align="center">
 
-**[Ductho Le](mailto:ductho.le@outlook.com)** · University of Alberta
+**[Ductho Le](mailto:ductho.le@outlook.com)** · University of Alberta | International University - VNU HCMC
 
 [![ORCID](https://img.shields.io/badge/ORCID-0000--0002--3073--1416-a6ce39?style=plastic&logo=orcid&logoColor=white)](https://orcid.org/0000-0002-3073-1416)
 [![Google Scholar](https://img.shields.io/badge/Google_Scholar-4285F4?style=plastic&logo=google-scholar&logoColor=white)](https://scholar.google.ca/citations?user=OlwMr9AAAAAJ)
