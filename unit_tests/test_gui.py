@@ -6,6 +6,7 @@ Can also run with stdlib only: python -m unittest discover -s unit_tests -p test
 import importlib.util
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -64,6 +65,15 @@ class TestGUIWorkspace(unittest.TestCase):
             return response.read()
 
     def test_static_assets(self):
+        html = self.request("/").decode()
+        self.assertIn('<link rel="stylesheet" href="/style.css">', html)
+        self.assertIn('<script src="/app.js"></script>', html)
+        self.assertNotRegex(html, r"(?i)<style\b")
+        self.assertEqual(len(re.findall(r"(?i)<script\b", html)), 2)
+        inline_scripts = re.findall(r"<script>(.*?)</script>", html, re.DOTALL)
+        self.assertEqual(len(inline_scripts), 1)
+        self.assertIn('localStorage.getItem("wavedl-theme")', inline_scripts[0])
+
         for path, content_type in (
             ("/style.css", "text/css; charset=utf-8"),
             ("/app.js", "text/javascript; charset=utf-8"),
@@ -338,10 +348,16 @@ class TestGUIWorkspace(unittest.TestCase):
         with urlopen(req, timeout=5) as resp:
             self.assertEqual(resp.headers.get("X-Frame-Options"), "DENY")
             self.assertEqual(resp.headers.get("X-Content-Type-Options"), "nosniff")
-            self.assertIn(
-                "frame-ancestors 'none'",
-                resp.headers.get("Content-Security-Policy", ""),
-            )
+            csp = resp.headers.get("Content-Security-Policy", "")
+            policy = {
+                parts[0]: parts[1:]
+                for directive in csp.split(";")
+                if (parts := directive.split())
+            }
+            self.assertEqual(policy["frame-ancestors"], ["'none'"])
+            for directive in ("script-src", "style-src"):
+                self.assertIn("'self'", policy[directive])
+                self.assertIn("'unsafe-inline'", policy[directive])
 
     def test_workspace_confinement_and_input_validation(self):
         # NUL bytes return 400 JSON rather than unhandled 500
@@ -545,11 +561,12 @@ class TestGUIWorkspace(unittest.TestCase):
         dumped = app._dump_yaml_kv("flags", [True, None, "yes"])
         self.assertEqual(dumped, 'flags: [true, null, "yes"]')
 
-    def test_html_model_catalog_and_preprocessing_parity(self):
+    def test_model_catalog_and_preprocessing_parity(self):
         html = self.request("/").decode()
+        script = self.request("/app.js").decode()
+        for expected in ('"inversionnet"', '"inversionnet_resize"'):
+            self.assertIn(expected, script)
         for expected in (
-            '"inversionnet"',
-            '"inversionnet_resize"',
             "val_data_path",
             "input_transform",
             "target_scaling",
@@ -563,9 +580,8 @@ class TestGUIWorkspace(unittest.TestCase):
             from wavedl.models import list_models
         except Exception:
             return
-        import re
 
-        catalog_names = set(re.findall(r'\{\s*name:\s*"([^"]+)"\s*,\s*cat:', html))
+        catalog_names = set(re.findall(r'\{\s*name:\s*"([^"]+)"\s*,\s*cat:', script))
         self.assertEqual(catalog_names, set(list_models()))
 
     def test_yaml_bare_dot_and_none_scalar_handling(self):
@@ -636,12 +652,16 @@ class TestGUIWorkspace(unittest.TestCase):
         self.assertIn("raw_yaml", body["error"])
         err.exception.close()
 
-    def test_html_model_rendering_avoids_inline_dom_xss(self):
-        html = self.request("/").decode()
-        self.assertNotIn('onclick="chooseModel(', html)
-        self.assertNotIn('onclick="setModelCat(', html)
-        self.assertNotIn('document.getElementById("modelCatPills").innerHTML', html)
-        self.assertNotIn("grid.innerHTML =", html)
+    def test_model_rendering_avoids_inline_dom_xss(self):
+        for path in ("/", "/app.js"):
+            with self.subTest(path=path):
+                content = self.request(path).decode()
+                self.assertNotIn('onclick="chooseModel(', content)
+                self.assertNotIn('onclick="setModelCat(', content)
+                self.assertNotIn(
+                    'document.getElementById("modelCatPills").innerHTML', content
+                )
+                self.assertNotIn("grid.innerHTML =", content)
 
 
 if __name__ == "__main__":

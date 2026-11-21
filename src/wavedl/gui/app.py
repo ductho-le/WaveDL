@@ -1018,8 +1018,8 @@ class WaveDLGUIHandler(BaseHTTPRequestHandler):
         if is_html:
             self.send_header(
                 "Content-Security-Policy",
-                "default-src 'self'; script-src 'unsafe-inline'; "
-                "style-src 'unsafe-inline'; img-src 'self' data:; "
+                "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+                "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
                 "connect-src 'self'; frame-ancestors 'none'",
             )
 
@@ -1181,7 +1181,7 @@ class WaveDLGUIHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(content)))
             self.send_header("Cache-Control", "no-store")
-            self._send_security_headers(is_html=True)
+            self._send_security_headers(is_html=route not in STATIC_ASSETS)
             self.end_headers()
             self.wfile.write(content)
             return

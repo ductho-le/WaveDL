@@ -108,8 +108,8 @@ const MODEL_CATALOG = [
   { name: "mc3_18", cat: "Specialized", dims: ["3D"], pretrained: true, note: "Mixed 3D/2D spatio-temporal" },
   { name: "unet_regression", cat: "Specialized", dims: ["1D", "2D", "3D"], note: "U-Net encoder-decoder → Vector" },
   { name: "unet_field", cat: "Specialized", dims: ["2D", "field"], note: "Dense 2D field map (N,H,W)" },
-  { name: "inversionnet", cat: "Specialized", dims: ["2D", "field"], note: "OpenFWI 5×1000×70 → 70×70 velocity" },
-  { name: "velocitygan", cat: "Specialized", dims: ["2D", "field"], note: "OpenFWI GAN; needs --adversarial wgan-gp" }
+  { name: "inversionnet", cat: "Specialized", dims: ["2D", "field"], note: "Skip-free 2D encoder-decoder (Deconv)" },
+  { name: "inversionnet_resize", cat: "Specialized", dims: ["2D", "field"], note: "Skip-free 2D encoder-decoder (Resize-Conv)" }
 ];
 
 const DEFAULTS = {
@@ -142,7 +142,9 @@ const DEFAULTS = {
   cv_stratify: false,
   cv_bins: 10,
   data_path: "",
+  val_data_path: "",
   output_dir: "./experiments",
+  cache_dir: "",
   resume: "",
   save_every: 50,
   fresh: false,
@@ -151,9 +153,15 @@ const DEFAULTS = {
   deterministic: false,
   cache_validate: "sha256",
   single_channel: false,
+  input_channels: "",
+  input_transform: "none",
+  input_range: "",
+  target_scaling: "standard",
+  target_range: "",
   allow_pickle: false,
   precision: "bf16",
   compile: false,
+  no_tf32: false,
   wandb: false,
   wandb_watch: false,
   project_name: "DL-Training",
@@ -168,14 +176,20 @@ let state = JSON.parse(JSON.stringify(DEFAULTS));
 let extraConfigKeys = {};
 let activeModelCat = "All";
 let activeDimFilter = "all";
-let dataFileCheck = { exists: false, is_file: false, size_mb: null };
+let dataFileCheck = { checked: false, exists: false, is_file: false, size_mb: null };
 let pollTimer = null;
+let statusPollInFlight = false;
+let pollGeneration = 0;
 let logOffset = 0;
 let activeJobId = null;
 let wasJobRunning = false;
+let yamlManuallyEdited = false;
+let tCheckpointManual = false;
+let tImportManual = false;
+let tPickleManual = false;
 
-function postHeaders() {
-  const headers = { "Content-Type": "application/json" };
+function authHeaders(extra = {}) {
+  const headers = Object.assign({}, extra);
   const meta = document.querySelector('meta[name="wavedl-token"]');
   if (meta && meta.content) {
     headers["X-WaveDL-Token"] = meta.content;
@@ -210,6 +224,60 @@ function cycleTheme() {
   updateThemeButton();
 }
 
+function postHeaders() {
+  return authHeaders({ "Content-Type": "application/json" });
+}
+
+function updateModelCountLabels() {
+  const count = MODEL_CATALOG.length;
+  const desc = document.getElementById("modelCountDesc");
+  if (desc) desc.textContent = String(count);
+  const pill = document.getElementById("allModelsCountPill");
+  if (pill) pill.textContent = `All Models (${count})`;
+}
+
+async function syncModelsFromServer() {
+  try {
+    const res = await fetch("/api/models", { headers: authHeaders() });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!Array.isArray(data.models) || data.models.length === 0) return;
+    const existing = new Set(MODEL_CATALOG.map(m => m.name));
+    let added = false;
+    for (const item of data.models) {
+      if (item && item.name && !existing.has(item.name)) {
+        MODEL_CATALOG.push({
+          name: item.name,
+          cat: "Registered",
+          dims: Array.isArray(item.dims) && item.dims.length ? item.dims : ["2D"],
+          note: item.supports_spatial_output ? "Registered dense 2D model" : "Registered model"
+        });
+        existing.add(item.name);
+        added = true;
+      }
+    }
+    if (added) {
+      renderModelCategoryPills();
+      updateModelCountLabels();
+      renderModelGrid();
+    }
+  } catch (_) {}
+}
+
+function renderModelCategoryPills() {
+  const cats = ["All", ...new Set(MODEL_CATALOG.map(m => m.cat))];
+  const container = document.getElementById("modelCatPills");
+  container.textContent = "";
+  cats.forEach(c => {
+    const pill = document.createElement("button");
+    pill.type = "button";
+    pill.className = `pill${c === activeModelCat ? " active" : ""}`;
+    pill.textContent = c === "All" ? "All families" : c;
+    pill.addEventListener("click", () => setModelCat(c));
+    container.appendChild(pill);
+  });
+}
+
 function init() {
   updateThemeButton();
   document.getElementById("stepperNav").addEventListener("keydown", e => {
@@ -222,19 +290,55 @@ function init() {
     goToStep(next + 1);
     buttons[next].focus();
   });
-  const cats = ["All", ...new Set(MODEL_CATALOG.map(m => m.cat))];
-  document.getElementById("modelCatPills").innerHTML = cats.map(c =>
-    `<button type="button" class="pill ${c === activeModelCat ? "active" : ""}" onclick="setModelCat('${c}')">${c === "All" ? "All families" : c}</button>`
-  ).join("");
+  renderModelCategoryPills();
+  updateModelCountLabels();
 
-  if (window.innerWidth <= 760) toggleConfigPane();
+  if (window.innerWidth <= 760) toggleConfigPane(false);
   goToStep(1);
   applyStateToDOM();
   loadConfigFromFile(true);
+  syncModelsFromServer();
   checkTrainingStatus();
 }
 
+function syncStep5DerivedDefaults() {
+  const ckpt = document.getElementById("t_checkpoint");
+  if (!tCheckpointManual) {
+    ckpt.value = `${(state.output_dir || ".").replace(/[\\/]+$/, "")}/best_checkpoint`;
+  }
+  const tImp = document.getElementById("t_import_modules");
+  if (!tImportManual) {
+    tImp.value = Array.isArray(state.import_modules) ? state.import_modules.join(", ") : "";
+  }
+  const tPickle = document.getElementById("t_allow_pickle");
+  if (!tPickleManual) {
+    tPickle.checked = Boolean(state.allow_pickle);
+  }
+  updateTestSummary();
+}
+
+function updateTestSummary() {
+  const parts = [];
+  const ic = (document.getElementById("t_input_channels").value || "").trim();
+  const bs = (document.getElementById("t_batch_size").value || "").trim();
+  const opset = (document.getElementById("t_export_opset").value || "").trim();
+  const fmt = (document.getElementById("t_plot_format").value || "").trim();
+  if (ic) parts.push(`ch=${ic}`);
+  if (bs) parts.push(`bs=${bs}`);
+  if (opset) parts.push(`opset=${opset}`);
+  if (fmt) parts.push(fmt);
+  if (document.getElementById("t_no_tf32").checked) parts.push("no_tf32");
+  if (document.getElementById("t_no_denorm").checked) parts.push("no_denorm");
+  if (document.getElementById("t_allow_pickle").checked) parts.push("allow_pickle");
+  if ((document.getElementById("t_import_modules").value || "").trim()) parts.push("custom_import");
+  const el = document.getElementById("advTestSummary");
+  if (el) el.textContent = parts.length ? parts.join(" · ") : "Auto from checkpoint";
+}
+
 function goToStep(stepNum) {
+  if (stepNum === 5) {
+    syncStep5DerivedDefaults();
+  }
   for (let i = 1; i <= 5; i++) {
     document.getElementById(`panel-step-${i}`).classList.toggle("active", i === stepNum);
   }
@@ -244,6 +348,7 @@ function goToStep(stepNum) {
     else b.removeAttribute("aria-current");
   });
   document.querySelector(".wizard-pane").scrollTop = 0;
+  if (window.matchMedia("(max-width: 1100px)").matches) window.scrollTo(0, 0);
 }
 
 function setConsoleDrawer(open) {
@@ -255,13 +360,23 @@ function toggleConsoleDrawer() {
   setConsoleDrawer(!document.getElementById("consoleDrawer").classList.contains("open"));
 }
 
-function toggleConfigPane() {
-  const hidden = document.querySelector(".right-pane").classList.toggle("hidden");
-  document.getElementById("showConfigBtn").hidden = !hidden;
+function toggleConfigPane(moveFocus = true) {
+  const pane = document.querySelector(".right-pane");
+  const hidden = pane.classList.toggle("hidden");
+  const showBtn = document.getElementById("showConfigBtn");
+  showBtn.hidden = !hidden;
+  if (!moveFocus) return;
+  if (hidden) {
+    showBtn.focus();
+  } else {
+    document.getElementById("configFilePath").focus({ preventScroll: true });
+    if (window.matchMedia("(max-width: 1100px)").matches) pane.scrollIntoView();
+  }
 }
 
 function useSuggestedCheckpoint() {
-  document.getElementById("t_checkpoint").value = document.getElementById("checkpointSuggestion").textContent;
+  tCheckpointManual = false;
+  syncStep5DerivedDefaults();
 }
 
 function applyPreset(name) {
@@ -318,15 +433,47 @@ function renderModelGrid() {
     const matchQ = !q || m.name.toLowerCase().includes(q) || m.cat.toLowerCase().includes(q) || m.note.toLowerCase().includes(q);
     return matchCat && matchDim && matchQ;
   });
-  grid.innerHTML = filtered.map(m => {
+  grid.textContent = "";
+  if (filtered.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "model-empty";
+    empty.textContent = `No models match this filter. Click "All Models (${MODEL_CATALOG.length})" above.`;
+    grid.appendChild(empty);
+    return;
+  }
+
+  const makeSpan = (className, text) => {
+    const span = document.createElement("span");
+    span.className = className;
+    if (text !== undefined) span.textContent = text;
+    return span;
+  };
+  filtered.forEach(m => {
     const selected = state.model === m.name;
-    return `<button type="button" class="model-card ${selected ? "active" : ""}" onclick="chooseModel('${m.name}')" title="${m.name}" aria-pressed="${selected}">
-      <span class="model-card-top"><span class="model-id">${m.name}</span>${m.pretrained ? icon("star", "model-star") : ""}</span>
-      ${selected ? `<span class="model-check">${icon("check")}</span>` : ""}
-      <span class="model-meta">${m.note}</span>
-      <span class="model-card-bottom">${m.dims.map(d => `<span class="dim-badge">${d}</span>`).join("")}<span class="model-family">${m.cat}</span></span>
-    </button>`;
-  }).join("") || '<div class="model-empty">No models match. Try another search or choose All.</div>';
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = `model-card${selected ? " active" : ""}`;
+    card.title = m.name;
+    card.setAttribute("aria-pressed", String(selected));
+    card.addEventListener("click", () => chooseModel(m.name));
+
+    const top = makeSpan("model-card-top");
+    top.appendChild(makeSpan("model-id", m.name));
+    if (m.pretrained) top.insertAdjacentHTML("beforeend", icon("star", "model-star"));
+    card.appendChild(top);
+    if (selected) {
+      const check = makeSpan("model-check");
+      check.innerHTML = icon("check");
+      card.appendChild(check);
+    }
+    card.appendChild(makeSpan("model-meta", m.note));
+
+    const bottom = makeSpan("model-card-bottom");
+    m.dims.forEach(d => bottom.appendChild(makeSpan("dim-badge", d)));
+    bottom.appendChild(makeSpan("model-family", m.cat));
+    card.appendChild(bottom);
+    grid.appendChild(card);
+  });
 }
 
 function chooseModel(name) {
@@ -347,30 +494,39 @@ function onModelInput() {
 }
 
 let pathCheckTimer = null;
+let pathCheckGeneration = 0;
 function onDataPathChange() {
   clearTimeout(pathCheckTimer);
-  dataFileCheck = { exists: false, is_file: null, size_mb: null };
+  const generation = ++pathCheckGeneration;
+  dataFileCheck = { checked: false, exists: false, is_file: false, size_mb: null };
   syncFromForm();
-  const p = (document.getElementById("f_data_path").value || "").trim();
-  if (!p) {
-    dataFileCheck = { exists: false, is_file: false, size_mb: null };
-    updateSummaryAndBadges();
-    return;
+  if (state.data_path) {
+    const path = state.data_path;
+    pathCheckTimer = setTimeout(() => verifyDataPath(path, generation), 220);
   }
-  pathCheckTimer = setTimeout(() => verifyDataPath(p), 220);
 }
 
-async function verifyDataPath(pathStr) {
-  try {
-    const res = await fetch(`/api/check_path?path=${encodeURIComponent(pathStr)}`);
-    if (state.data_path !== pathStr) return;
-    if (!res.ok) {
-      dataFileCheck = { exists: false, is_file: false, size_mb: null };
-    } else {
-      dataFileCheck = await res.json();
+function onOutputDirChange() {
+  syncFromForm();
+  if (!tCheckpointManual) {
+    const ckpt = document.getElementById("t_checkpoint");
+    if (ckpt) {
+      ckpt.value = `${(state.output_dir || ".").replace(/[\\/]+$/, "")}/best_checkpoint`;
     }
-    updateSummaryAndBadges();
+  }
+}
+
+async function verifyDataPath(pathStr, generation) {
+  let result = { checked: true, exists: false, is_file: false, size_mb: null };
+  try {
+    const res = await fetch(`/api/check_path?path=${encodeURIComponent(pathStr)}`, {
+      headers: authHeaders()
+    });
+    if (res.ok) result = { ...result, ...await res.json() };
   } catch (_) {}
+  if (generation !== pathCheckGeneration || state.data_path !== pathStr) return;
+  dataFileCheck = result;
+  updateSummaryAndBadges();
 }
 
 function selectPill(field, val) {
@@ -455,25 +611,38 @@ function updateConditionalFields() {
   document.getElementById("constraintsDetailsBox").style.display = cToggle.checked ? "" : "none";
 
   document.getElementById("wandbDetailsBox").style.display = state.wandb ? "" : "none";
+  document.getElementById("wrap_input_range").style.display = state.input_transform === "signed_log_minmax" ? "" : "none";
+  document.getElementById("wrap_target_range").style.display = state.target_scaling === "minmax" ? "" : "none";
 }
 
 function updateSummaryAndBadges() {
   const dataStatus = document.getElementById("dataFileStatus");
-  const missing = !state.data_path || dataFileCheck.is_file === false;
+  const missing = !state.data_path || (dataFileCheck.checked && !dataFileCheck.is_file);
   document.querySelector("#stepperNav .step-btn").classList.toggle("warn", missing);
-  dataStatus.classList.toggle("warn", missing);
+  dataStatus.className = "data-file-status";
   if (!state.data_path) {
-    dataStatus.textContent = "";
+    dataStatus.textContent = "Required for training";
+    dataStatus.classList.add("badge-warn");
   } else if (dataFileCheck.is_file) {
-    const size = dataFileCheck.size_mb != null ? `${dataFileCheck.size_mb} MB` : "File found";
+    const size = dataFileCheck.size_mb != null ? ` (${dataFileCheck.size_mb} MB)` : "";
     dataStatus.innerHTML = icon("check");
-    dataStatus.append(document.createTextNode(size));
+    dataStatus.append(document.createTextNode(`File found${size}`));
+    dataStatus.classList.add("badge-ok");
+  } else if (dataFileCheck.checked) {
+    dataStatus.textContent = dataFileCheck.is_dir ? "Path is a folder" : "File not found";
+    dataStatus.classList.add("badge-err");
   } else {
-    dataStatus.textContent = dataFileCheck.is_file === null ? "Checking…" : "File missing";
+    dataStatus.textContent = "Checking…";
+    dataStatus.classList.add("badge-warn");
   }
   const wLabel = state.workers === -1 ? "auto" : state.workers;
-  document.getElementById("advDataSummary").textContent =
-    `seed ${state.seed} · workers ${wLabel} · save every ${state.save_every}`;
+  const prepLabel = [];
+  if (state.val_data_path) prepLabel.push("fixed val");
+  if (state.input_transform !== "none") prepLabel.push(state.input_transform);
+  if (state.target_scaling !== "standard") prepLabel.push(`target:${state.target_scaling}`);
+  document.getElementById("advDataSummary").textContent = prepLabel.length
+    ? `${prepLabel.join(" · ")} · workers: ${wLabel}`
+    : `workers: ${wLabel} · seed: ${state.seed} · save_every: ${state.save_every}`;
   document.getElementById("advTrainingSummary").textContent =
     `decay ${state.weight_decay} · clip ${state.grad_clip} · accum ${state.grad_accum_steps}`;
   document.getElementById("checkpointSuggestion").textContent =
@@ -484,14 +653,27 @@ function updateSummaryAndBadges() {
   });
 }
 
+function parseBoundsPair(raw) {
+  if (Array.isArray(raw)) {
+    const nums = raw.map(Number).filter(Number.isFinite);
+    return nums.length === 2 ? nums : null;
+  }
+  const s = String(raw || "").trim();
+  if (!s) return null;
+  const parts = s.split(/[\s,]+/).filter(Boolean).map(Number);
+  if (parts.length !== 2 || !parts.every(Number.isFinite)) return null;
+  return parts;
+}
+
 function applyStateToDOM() {
   const numOrText = [
     "model", "batch_size", "lr", "epochs", "patience", "weight_decay",
     "grad_clip", "grad_accum_steps", "huber_delta", "loss_weights",
     "momentum", "betas", "scheduler_factor", "scheduler_patience",
     "min_lr", "warmup_epochs", "step_size", "milestones", "cv", "cv_bins",
-    "data_path", "output_dir", "resume", "save_every", "workers", "seed",
-    "project_name", "run_name", "constraint_file"
+    "data_path", "val_data_path", "output_dir", "cache_dir", "resume",
+    "save_every", "workers", "seed", "input_channels", "input_range",
+    "target_range", "project_name", "run_name", "constraint_file"
   ];
   numOrText.forEach(k => {
     const el = document.getElementById(`f_${k}`);
@@ -512,14 +694,17 @@ function applyStateToDOM() {
 
   const bools = [
     "pretrained", "nesterov", "cv_stratify", "fresh", "deterministic",
-    "single_channel", "allow_pickle", "compile", "wandb", "wandb_watch"
+    "single_channel", "allow_pickle", "compile", "no_tf32", "wandb", "wandb_watch"
   ];
   bools.forEach(k => {
     const el = document.getElementById(`f_${k}`);
     if (el) el.checked = Boolean(state[k]);
   });
 
-  ["loss", "selection_metric", "optimizer", "scheduler", "cache_validate", "precision", "constraint_reduction"].forEach(k => {
+  [
+    "loss", "selection_metric", "optimizer", "scheduler", "cache_validate",
+    "precision", "constraint_reduction", "input_transform", "target_scaling"
+  ].forEach(k => {
     const container = document.getElementById(`pills_${k}`);
     if (container) {
       container.querySelectorAll(".pill").forEach(p => {
@@ -528,13 +713,14 @@ function applyStateToDOM() {
     }
   });
 
-  dataFileCheck = { exists: false, is_file: state.data_path ? null : false, size_mb: null };
+  clearTimeout(pathCheckTimer);
+  const generation = ++pathCheckGeneration;
+  dataFileCheck = { checked: false, exists: false, is_file: false, size_mb: null };
   updateConditionalFields();
   updateSummaryAndBadges();
   renderModelGrid();
   renderYamlPreview();
-  if (state.data_path) verifyDataPath(state.data_path);
-  else updateSummaryAndBadges();
+  if (state.data_path) verifyDataPath(state.data_path, generation);
 }
 
 function readDOMToState() {
@@ -570,21 +756,27 @@ function readDOMToState() {
   state.nesterov = getBool("f_nesterov");
   state.betas = getStr("f_betas") || "0.9,0.999";
 
-  state.scheduler_factor = getNum("f_scheduler_factor", 0.5);
+  state.scheduler_factor = getNum("f_scheduler_factor", state.scheduler === "exponential" ? 0.95 : 0.5);
   state.scheduler_patience = getInt("f_scheduler_patience", 10);
   state.min_lr = getNum("f_min_lr", 1e-6);
   state.warmup_epochs = getInt("f_warmup_epochs", 5);
   state.step_size = getInt("f_step_size", 30);
   state.milestones = getStr("f_milestones");
 
-  state.cv = document.getElementById("toggle_cv_enabled").checked
-    ? Math.max(2, getInt("f_cv", 5))
-    : 0;
+  if (document.getElementById("toggle_cv_enabled").checked) {
+    const rawCv = getInt("f_cv", 5);
+    state.cv = Math.max(2, rawCv);
+    if (rawCv < 2) document.getElementById("f_cv").value = state.cv;
+  } else {
+    state.cv = 0;
+  }
   state.cv_stratify = getBool("f_cv_stratify");
   state.cv_bins = getInt("f_cv_bins", 10);
 
   state.data_path = getStr("f_data_path");
+  state.val_data_path = getStr("f_val_data_path");
   state.output_dir = getStr("f_output_dir");
+  state.cache_dir = getStr("f_cache_dir");
   state.resume = getStr("f_resume");
   state.save_every = getInt("f_save_every", 50);
   state.fresh = getBool("f_fresh");
@@ -592,9 +784,16 @@ function readDOMToState() {
   state.seed = getInt("f_seed", 2025);
   state.deterministic = getBool("f_deterministic");
   state.single_channel = getBool("f_single_channel");
+  const rawIc = getStr("f_input_channels");
+  state.input_channels = rawIc && Number.isFinite(parseInt(rawIc, 10)) && parseInt(rawIc, 10) >= 1
+    ? parseInt(rawIc, 10)
+    : "";
+  state.input_range = getStr("f_input_range");
+  state.target_range = getStr("f_target_range");
   state.allow_pickle = getBool("f_allow_pickle");
 
   state.compile = getBool("f_compile");
+  state.no_tf32 = getBool("f_no_tf32");
   state.wandb = getBool("f_wandb");
   state.wandb_watch = getBool("f_wandb_watch");
   state.project_name = getStr("f_project_name");
@@ -634,6 +833,7 @@ function buildEffectiveConfig() {
     precision: state.precision,
     compile: state.compile
   };
+  if (state.no_tf32) cfg.no_tf32 = true;
 
   if (state.import_modules && state.import_modules.length > 0) cfg.import_modules = state.import_modules;
   if (state.selection_metric && state.selection_metric !== "loss") cfg.selection_metric = state.selection_metric;
@@ -658,11 +858,26 @@ function buildEffectiveConfig() {
   if (state.scheduler === "multistep" && state.milestones) cfg.milestones = state.milestones;
 
   if (state.data_path) cfg.data_path = state.data_path;
+  if (state.val_data_path) cfg.val_data_path = state.val_data_path;
   if (state.output_dir) cfg.output_dir = state.output_dir;
+  if (state.cache_dir) cfg.cache_dir = state.cache_dir;
   if (state.resume) cfg.resume = state.resume;
   if (state.save_every !== 50) cfg.save_every = state.save_every;
   if (state.fresh) cfg.fresh = true;
   if (state.single_channel) cfg.single_channel = true;
+  if (state.input_channels !== "" && Number.isFinite(Number(state.input_channels)) && Number(state.input_channels) >= 1) {
+    cfg.input_channels = parseInt(state.input_channels, 10);
+  }
+  if (state.input_transform && state.input_transform !== "none") {
+    cfg.input_transform = state.input_transform;
+    const ir = parseBoundsPair(state.input_range);
+    if (ir) cfg.input_range = ir;
+  }
+  if (state.target_scaling && state.target_scaling !== "standard") {
+    cfg.target_scaling = state.target_scaling;
+    const tr = parseBoundsPair(state.target_range);
+    if (tr) cfg.target_range = tr;
+  }
   if (state.allow_pickle) cfg.allow_pickle = true;
 
   if (state.wandb) {
@@ -692,11 +907,33 @@ function buildEffectiveConfig() {
   return cfg;
 }
 
+function shellQuote(arg) {
+  if (/^[a-zA-Z0-9_./:@%+=,-]+$/.test(arg)) return arg;
+  return "'" + arg.replace(/'/g, "'\\''") + "'";
+}
+
 function updateCliPreview() {
   const cfgPath = (document.getElementById("configFilePath").value || "config.yaml").trim();
   const gpus = (document.getElementById("f_num_gpus").value || "").trim();
   const gpuFlag = gpus && parseInt(gpus, 10) > 0 ? ` --num_gpus ${parseInt(gpus, 10)}` : "";
-  document.getElementById("cliPreview").textContent = `wavedl-train${gpuFlag} --config ${cfgPath}`;
+  document.getElementById("cliPreview").textContent = `wavedl-train${gpuFlag} --config ${shellQuote(cfgPath)}`;
+}
+
+function setYamlEditNotice(manual) {
+  yamlManuallyEdited = manual;
+  const notice = document.getElementById("yamlEditNotice");
+  if (!notice) return;
+  if (manual) {
+    notice.textContent = "Manual YAML edits active — click 'Apply to form' before editing form controls";
+    notice.classList.add("warn");
+  } else {
+    notice.textContent = "Updates automatically as you change options";
+    notice.classList.remove("warn");
+  }
+}
+
+function onYamlEditorInput() {
+  setYamlEditNotice(true);
 }
 
 function renderYamlPreview() {
@@ -719,8 +956,8 @@ function renderYamlPreview() {
     ["OPTIMIZER", ["optimizer", "momentum", "nesterov", "betas"]],
     ["LEARNING RATE SCHEDULER", ["scheduler", "scheduler_factor", "scheduler_patience", "min_lr", "warmup_epochs", "step_size", "milestones"]],
     ["CROSS-VALIDATION", ["cv", "cv_stratify", "cv_bins"]],
-    ["DATA & OUTPUT", ["data_path", "output_dir", "cache_dir", "resume", "save_every", "fresh", "workers", "seed", "deterministic", "cache_validate", "single_channel", "allow_pickle"]],
-    ["PERFORMANCE OPTIMIZATION", ["precision", "compile"]],
+    ["DATA & OUTPUT", ["data_path", "val_data_path", "output_dir", "cache_dir", "resume", "save_every", "fresh", "workers", "seed", "deterministic", "cache_validate", "single_channel", "input_channels", "input_transform", "input_range", "target_scaling", "target_range", "allow_pickle"]],
+    ["PERFORMANCE OPTIMIZATION", ["precision", "compile", "no_tf32"]],
     ["LOGGING & MONITORING", ["wandb", "wandb_watch", "project_name", "run_name"]],
     ["PHYSICAL CONSTRAINTS", ["constraint", "constraint_file", "constraint_weight", "constraint_reduction"]]
   ];
@@ -753,6 +990,7 @@ function renderYamlPreview() {
   }
 
   document.getElementById("yamlEditor").value = lines.join("\n").trimEnd() + "\n";
+  setYamlEditNotice(false);
   updateCliPreview();
 }
 
@@ -771,6 +1009,18 @@ function normalizeLoadedConfig(rawCfg) {
   if (incoming.import !== undefined && incoming.import_modules === undefined) {
     incoming.import_modules = incoming.import;
     delete incoming.import;
+  }
+  if (incoming.mixed_precision !== undefined && incoming.precision === undefined) {
+    incoming.precision = incoming.mixed_precision;
+    delete incoming.mixed_precision;
+  }
+  if (incoming.precision === false) {
+    incoming.precision = "no";
+  }
+  if (typeof incoming.loss === "string") {
+    const lossMap = { l1: "mae", logcosh: "log_cosh" };
+    const lowLoss = incoming.loss.toLowerCase();
+    if (lossMap[lowLoss]) incoming.loss = lossMap[lowLoss];
   }
   if (typeof incoming.import_modules === "string") {
     incoming.import_modules = incoming.import_modules.split(",").map(s => s.trim()).filter(Boolean);
@@ -791,37 +1041,49 @@ function normalizeLoadedConfig(rawCfg) {
       incoming[k] = incoming[k].join(",");
     }
   });
+  ["input_range", "target_range"].forEach(k => {
+    if (Array.isArray(incoming[k])) {
+      incoming[k] = incoming[k].join(", ");
+    }
+  });
 
   const merged = JSON.parse(JSON.stringify(DEFAULTS));
-  extraConfigKeys = {};
+  const extra = {};
   for (const [k, v] of Object.entries(incoming)) {
     if (v === null || v === undefined) continue;
     if (Object.prototype.hasOwnProperty.call(DEFAULTS, k)) {
       merged[k] = v;
     } else if (!k.startsWith("_")) {
-      extraConfigKeys[k] = v;
+      extra[k] = v;
     }
   }
-  if (merged.scheduler === "exponential" && incoming.scheduler_factor === undefined) {
+  if (merged.scheduler === "exponential" && incoming.scheduler_factor == null) {
     merged.scheduler_factor = 0.95;
   }
 
-  const hasConstraints = (Array.isArray(merged.constraint) && merged.constraint.length > 0) || Boolean(merged.constraint_file);
+  return { config: merged, extra };
+}
+
+function applyNormalizedConfig(normalized) {
+  state = normalized.config;
+  extraConfigKeys = normalized.extra;
+  const hasConstraints = (Array.isArray(state.constraint) && state.constraint.length > 0) || Boolean(state.constraint_file);
   document.getElementById("toggle_constraints_enabled").checked = hasConstraints;
-  return merged;
+  applyStateToDOM();
 }
 
 async function loadConfigFromFile(silent = false) {
   const path = document.getElementById("configFilePath").value.trim() || "config.yaml";
   try {
-    const res = await fetch(`/api/config?path=${encodeURIComponent(path)}`);
+    const res = await fetch(`/api/config?path=${encodeURIComponent(path)}`, {
+      headers: authHeaders()
+    });
     const data = await res.json();
     if (!res.ok) {
       if (!silent) showToast(data.error || "Could not load config", true);
       return;
     }
-    state = normalizeLoadedConfig(data.config || {});
-    applyStateToDOM();
+    applyNormalizedConfig(normalizeLoadedConfig(data.config || {}));
     if (!silent) showToast(`Loaded ${path}`);
   } catch (e) {
     if (!silent) showToast(`Error loading config: ${e}`, true);
@@ -868,8 +1130,7 @@ async function applyYamlToForm() {
       showToast(data.error || "Invalid YAML", true);
       return;
     }
-    state = normalizeLoadedConfig(data.config || {});
-    applyStateToDOM();
+    applyNormalizedConfig(normalizeLoadedConfig(data.config || {}));
     showToast("Synced YAML edits into form");
   } catch (e) {
     showToast(`Failed to parse YAML: ${e}`, true);
@@ -879,6 +1140,8 @@ async function applyYamlToForm() {
 function resetDefaults() {
   state = JSON.parse(JSON.stringify(DEFAULTS));
   extraConfigKeys = {};
+  dataFileCheck = { checked: false, exists: false, is_file: false, size_mb: null };
+  document.getElementById("f_num_gpus").value = "";
   document.getElementById("toggle_constraints_enabled").checked = false;
   applyStateToDOM();
   showToast("Reset to WaveDL default configuration");
@@ -917,28 +1180,100 @@ function copyCli() {
   copyTextWithFallback(document.getElementById("cliPreview").textContent, "Copied CLI command to clipboard");
 }
 
+function setJobButtonsDisabled(running) {
+  ["runBtn", "step4RunBtn", "step5TestBtn", "step5ExportBtn"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = running;
+  });
+}
+
+function validateTrainingConfig(cfg) {
+  if (cfg.fresh && cfg.resume) {
+    return "Cannot enable both 'Start Fresh' and 'Resume From Checkpoint'.";
+  }
+  const ic = cfg.input_channels !== "" && cfg.input_channels !== null && cfg.input_channels !== undefined
+    ? Number(cfg.input_channels)
+    : null;
+  if (cfg.single_channel && ic !== null && ic > 1) {
+    return "--single_channel conflicts with --input_channels > 1.";
+  }
+  if (cfg.input_transform === "signed_log_minmax") {
+    const ir = parseBoundsPair(cfg.input_range);
+    if (!ir || ir[0] >= ir[1]) {
+      return "signed_log_minmax requires valid input_range bounds (MIN < MAX).";
+    }
+  }
+  if (cfg.target_scaling === "minmax") {
+    const tr = parseBoundsPair(cfg.target_range);
+    if (!tr || tr[0] >= tr[1]) {
+      return "minmax target_scaling requires valid target_range bounds (MIN < MAX).";
+    }
+  }
+  if (Number(cfg.cv) >= 2) {
+    if (cfg.resume) {
+      return "K-fold cross-validation (--cv) cannot be combined with --resume.";
+    }
+    if ((Array.isArray(cfg.constraint) && cfg.constraint.length > 0) || cfg.constraint_file) {
+      return "K-fold cross-validation (--cv) does not support physical constraints.";
+    }
+    if (Number(cfg.grad_accum_steps) > 1) {
+      return "K-fold cross-validation (--cv) does not support grad_accum_steps > 1.";
+    }
+    if (cfg.selection_metric && cfg.selection_metric !== "loss") {
+      return "K-fold cross-validation (--cv) only supports selection_metric='loss'.";
+    }
+    const usesPreproc = Boolean(
+      String(cfg.data_path || "").toLowerCase().endsWith(".txt") ||
+      cfg.val_data_path ||
+      (cfg.input_transform && cfg.input_transform !== "none") ||
+      (cfg.target_scaling && cfg.target_scaling !== "standard") ||
+      (ic !== null && ic > 1)
+    );
+    if (usesPreproc) {
+      return "Cross-validation does not support shard manifests, fixed validation sets, custom preprocessing, or multi-channel overrides.";
+    }
+    const modelMeta = MODEL_CATALOG.find(m => m.name === cfg.model);
+    if (cfg.cv_stratify && modelMeta && modelMeta.dims.includes("field")) {
+      return "Stratified cross-validation (--cv_stratify) is only supported for vector targets, not dense 2D field models.";
+    }
+  }
+  return null;
+}
+
 async function startTraining() {
-  if (state.fresh && state.resume) {
-    showToast("Cannot enable both 'Start Fresh' and 'Resume From Checkpoint'.", true);
+  if (wasJobRunning) {
+    showToast("A WaveDL job is already running. Stop it before starting a new job.", true);
     return;
   }
-  if (state.cv >= 2) {
-    if (state.resume) {
-      showToast("K-fold cross-validation (--cv) cannot be combined with --resume.", true);
-      return;
-    }
-    if ((Array.isArray(state.constraint) && state.constraint.length > 0) || state.constraint_file) {
-      showToast("K-fold cross-validation (--cv) does not support physical constraints.", true);
-      return;
-    }
-    if (state.grad_accum_steps > 1) {
-      showToast("K-fold cross-validation (--cv) does not support grad_accum_steps > 1.", true);
+
+  const rawYaml = document.getElementById("yamlEditor").value;
+  let effectiveForValidation = state;
+  if (yamlManuallyEdited) {
+    try {
+      const parseRes = await fetch("/api/config/parse", {
+        method: "POST",
+        headers: postHeaders(),
+        body: JSON.stringify({ raw_yaml: rawYaml })
+      });
+      const parseData = await parseRes.json();
+      if (!parseRes.ok) {
+        showToast(parseData.error || "Invalid YAML in editor", true);
+        return;
+      }
+      effectiveForValidation = normalizeLoadedConfig(parseData.config || {}).config;
+    } catch (e) {
+      showToast(`Failed to validate YAML: ${e}`, true);
       return;
     }
   }
 
+  const errMsg = validateTrainingConfig(effectiveForValidation);
+  if (errMsg) {
+    showToast(errMsg, true);
+    return;
+  }
+
   const path = document.getElementById("configFilePath").value.trim() || "config.yaml";
-  const rawYaml = document.getElementById("yamlEditor").value;
   const gpus = parseInt(document.getElementById("f_num_gpus").value, 10);
 
   setConsoleDrawer(true);
@@ -957,9 +1292,11 @@ async function startTraining() {
       showToast(data.error || "Failed to start training", true);
       return;
     }
+    pollGeneration += 1;
     logOffset = 0;
     activeJobId = data.job_id !== undefined ? data.job_id : null;
     document.getElementById("consoleOutput").textContent = "";
+    document.getElementById("consoleProgress").style.display = "none";
     showToast("Saved config & started wavedl-train!");
     checkTrainingStatus();
   } catch (e) {
@@ -968,22 +1305,43 @@ async function startTraining() {
 }
 
 async function startTest(mode) {
-  const val = id => document.getElementById(id).value.trim();
+  if (wasJobRunning) {
+    showToast("A WaveDL job is already running. Stop it before starting a new job.", true);
+    return;
+  }
+  const val = id => (document.getElementById(id).value || "").trim();
   const payload = {
     mode,
     checkpoint: val("t_checkpoint"),
     data_path: val("t_data_path"),
     output_dir: val("t_output_dir")
   };
-  if (Array.isArray(state.import_modules) && state.import_modules.length > 0) {
-    payload.import_modules = state.import_modules;
+  const rawMods = val("t_import_modules");
+  if (rawMods) {
+    payload.import_modules = rawMods.split(",").map(s => s.trim()).filter(Boolean);
   }
-  if (state.allow_pickle) {
+  if (document.getElementById("t_allow_pickle").checked) {
     payload.allow_pickle = true;
   }
-  if (state.single_channel) {
-    payload.input_channels = 1;
+  if (document.getElementById("t_no_tf32").checked) {
+    payload.no_tf32 = true;
   }
+  if (document.getElementById("t_no_denorm").checked) {
+    payload.no_denorm = true;
+  }
+  const rawIc = val("t_input_channels");
+  if (rawIc) payload.input_channels = parseInt(rawIc, 10);
+  const rawBs = val("t_batch_size");
+  if (rawBs) payload.batch_size = parseInt(rawBs, 10);
+  const rawOpset = val("t_export_opset");
+  if (rawOpset) payload.export_opset = parseInt(rawOpset, 10);
+  const fmt = val("t_plot_format");
+  if (fmt) payload.plot_format = fmt;
+  const inKey = val("t_input_key");
+  if (inKey) payload.input_key = inKey;
+  const outKey = val("t_output_key");
+  if (outKey) payload.output_key = outKey;
+
   setConsoleDrawer(true);
   try {
     const res = await fetch("/api/test/start", {
@@ -996,9 +1354,11 @@ async function startTest(mode) {
       showToast(data.error || `Failed to start ${mode}`, true);
       return;
     }
+    pollGeneration += 1;
     logOffset = 0;
     activeJobId = data.job_id !== undefined ? data.job_id : null;
     document.getElementById("consoleOutput").textContent = "";
+    document.getElementById("consoleProgress").style.display = "none";
     showToast(mode === "export" ? "Exporting model to ONNX..." : "Started wavedl-test!");
     checkTrainingStatus();
   } catch (e) {
@@ -1007,25 +1367,52 @@ async function startTest(mode) {
 }
 
 async function stopTraining() {
+  const stopBtn = document.getElementById("stopBtn");
+  const stopLabel = document.getElementById("stopBtnLabel");
+  stopBtn.disabled = true;
+  stopLabel.textContent = "Stopping…";
+  showToast("Sending interrupt signal (allowing graceful checkpoint save)...");
   try {
     await fetch("/api/train/stop", {
       method: "POST",
       headers: postHeaders(),
       body: "{}"
     });
-    showToast("Stopping training process...");
     checkTrainingStatus();
   } catch (e) {
     showToast(`Failed to stop: ${e}`, true);
+  } finally {
+    stopBtn.disabled = false;
+    stopLabel.textContent = "Stop";
   }
 }
 
 async function checkTrainingStatus() {
-  if (pollTimer) clearTimeout(pollTimer);
+  if (statusPollInFlight) return;
+  if (pollTimer) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+  statusPollInFlight = true;
+  const myGen = pollGeneration;
+  const reqOffset = logOffset;
   try {
-    const res = await fetch(`/api/train/status?offset=${logOffset}`);
+    const res = await fetch(`/api/train/status?offset=${reqOffset}`, {
+      headers: authHeaders()
+    });
+    if (!res.ok) {
+      if (wasJobRunning) pollTimer = setTimeout(checkTrainingStatus, 1500);
+      return;
+    }
     const data = await res.json();
+    if (myGen !== pollGeneration) {
+      // A newer job was launched while this request was in flight; ignore stale response
+      pollTimer = setTimeout(checkTrainingStatus, 50);
+      return;
+    }
+
     const consoleEl = document.getElementById("consoleOutput");
+    const progressEl = document.getElementById("consoleProgress");
 
     if (data.job_id !== undefined && activeJobId !== null && data.job_id !== activeJobId) {
       activeJobId = data.job_id;
@@ -1038,8 +1425,8 @@ async function checkTrainingStatus() {
       activeJobId = data.job_id;
     }
 
-    if (data.logs && data.logs.length > 0) {
-      if (logOffset === 0) consoleEl.textContent = "";
+    if (data.logs && data.logs.length > 0 && data.next_offset > logOffset) {
+      if (reqOffset === 0) consoleEl.textContent = "";
       let combined = consoleEl.textContent + data.logs.join("\n") + "\n";
       if (combined.length > 250000) {
         const cut = combined.indexOf("\n", combined.length - 200000);
@@ -1049,6 +1436,16 @@ async function checkTrainingStatus() {
       consoleEl.scrollTop = consoleEl.scrollHeight;
       document.getElementById("consoleLatest").textContent = combined.trimEnd().split("\n").pop() || "Not started";
       logOffset = data.next_offset;
+    }
+
+    if (progressEl) {
+      if (data.running && data.progress) {
+        progressEl.textContent = data.progress;
+        progressEl.style.display = "block";
+      } else {
+        progressEl.textContent = "";
+        progressEl.style.display = "none";
+      }
     }
 
     const badge = document.getElementById("trainStatusBadge");
@@ -1061,6 +1458,7 @@ async function checkTrainingStatus() {
     if (data.running) {
       if (!wasJobRunning) setConsoleDrawer(true);
       wasJobRunning = true;
+      setJobButtonsDisabled(true);
       badge.className = "status-pill status-running";
       badge.textContent = `Running (PID ${data.pid})`;
       runBtn.style.display = "none";
@@ -1068,6 +1466,7 @@ async function checkTrainingStatus() {
       pollTimer = setTimeout(checkTrainingStatus, 600);
     } else {
       wasJobRunning = false;
+      setJobButtonsDisabled(false);
       runBtn.style.display = "inline-flex";
       stopBtn.style.display = "none";
       if (data.exit_code === 0) {
@@ -1085,12 +1484,19 @@ async function checkTrainingStatus() {
     if (wasJobRunning) {
       pollTimer = setTimeout(checkTrainingStatus, 1500);
     }
+  } finally {
+    statusPollInFlight = false;
   }
 }
 
 function clearConsole() {
   document.getElementById("consoleOutput").textContent = "";
   document.getElementById("consoleLatest").textContent = "Console cleared";
+  const progressEl = document.getElementById("consoleProgress");
+  if (progressEl) {
+    progressEl.textContent = "";
+    progressEl.style.display = "none";
+  }
 }
 
 // File / Directory Browser Modal
@@ -1109,69 +1515,84 @@ async function openBrowser(inputId, mode) {
     mode === "dir" ? "inline-flex" : "none";
   document.getElementById("browserModal").classList.add("open");
   const curVal = document.getElementById(inputId).value.trim();
-  await fetchBrowse(curVal || "");
+  const ok = await fetchBrowse(curVal || "", Boolean(curVal));
+  if (!ok && curVal) {
+    await fetchBrowse("");
+  }
 }
 
 function closeBrowser() {
   document.getElementById("browserModal").classList.remove("open");
 }
 
-async function fetchBrowse(dir) {
-  const res = await fetch(`/api/browse?dir=${encodeURIComponent(dir)}`);
-  const data = await res.json();
-  currentBrowseDir = data.current_dir;
-  parentBrowseDir = data.parent_dir;
-  workspaceRootDir = data.workspace_root;
-  document.getElementById("browserCurrentDir").textContent = currentBrowseDir;
-
-  const list = document.getElementById("browserList");
-  list.textContent = "";
-  if (!data.entries || data.entries.length === 0) {
-    const empty = document.createElement("div");
-    empty.style.padding = "14px";
-    empty.style.color = "var(--muted)";
-    empty.textContent = "No files or folders found.";
-    list.appendChild(empty);
-    return;
-  }
-  data.entries.forEach(item => {
-    const row = document.createElement("div");
-    row.className = "file-row";
-    const left = document.createElement("span");
-    const right = document.createElement("span");
-    right.style.fontSize = "12px";
-
-    if (item.is_dir) {
-      left.innerHTML = icon("folder");
-      const strong = document.createElement("strong");
-      strong.textContent = `${item.name}/`;
-      left.appendChild(strong);
-      right.style.color = "var(--muted)";
-      right.textContent = "Open →";
-      row.addEventListener("click", () => fetchBrowse(item.abs_path));
-    } else if (browserMode === "dir") {
-      left.innerHTML = icon("file");
-      left.append(document.createTextNode(item.name));
-      row.style.cursor = "default";
-      row.style.opacity = "0.6";
-    } else {
-      left.innerHTML = icon("file");
-      left.append(document.createTextNode(item.name));
-      right.style.color = "var(--brand-dark)";
-      right.style.fontWeight = "600";
-      right.textContent = "Select";
-      if (browserTargetInput === "configFilePath" && !/\.ya?ml$/i.test(item.name)) {
-        row.style.opacity = "0.45";
-        row.style.cursor = "default";
-        right.textContent = "";
-      } else {
-        row.addEventListener("click", () => pickFile(item.path));
-      }
+async function fetchBrowse(dir, silentOnError = false) {
+  try {
+    const res = await fetch(`/api/browse?dir=${encodeURIComponent(dir)}`, {
+      headers: authHeaders()
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      if (!silentOnError) showToast(data.error || "Failed to browse directory", true);
+      return false;
     }
-    row.appendChild(left);
-    row.appendChild(right);
-    list.appendChild(row);
-  });
+    currentBrowseDir = data.current_dir;
+    parentBrowseDir = data.parent_dir;
+    workspaceRootDir = data.workspace_root;
+    document.getElementById("browserCurrentDir").textContent = currentBrowseDir;
+
+    const list = document.getElementById("browserList");
+    list.textContent = "";
+    if (!data.entries || data.entries.length === 0) {
+      const empty = document.createElement("div");
+      empty.style.padding = "14px";
+      empty.style.color = "var(--muted)";
+      empty.textContent = "No files or folders found.";
+      list.appendChild(empty);
+      return true;
+    }
+    data.entries.forEach(item => {
+      const row = document.createElement("div");
+      row.className = "file-row";
+      const left = document.createElement("span");
+      const right = document.createElement("span");
+      right.style.fontSize = "12px";
+
+      if (item.is_dir) {
+        left.innerHTML = icon("folder");
+        const strong = document.createElement("strong");
+        strong.textContent = `${item.name}/`;
+        left.appendChild(strong);
+        right.style.color = "var(--muted)";
+        right.textContent = "Open →";
+        row.addEventListener("click", () => fetchBrowse(item.abs_path));
+      } else if (browserMode === "dir") {
+        left.innerHTML = icon("file");
+        left.append(document.createTextNode(item.name));
+        row.style.cursor = "default";
+        row.style.opacity = "0.6";
+      } else {
+        left.innerHTML = icon("file");
+        left.append(document.createTextNode(item.name));
+        right.style.color = "var(--brand-dark)";
+        right.style.fontWeight = "600";
+        right.textContent = "Select";
+        if (browserTargetInput === "configFilePath" && !/\.ya?ml$/i.test(item.name)) {
+          row.style.opacity = "0.45";
+          row.style.cursor = "default";
+          right.textContent = "";
+        } else {
+          row.addEventListener("click", () => pickFile(item.path));
+        }
+      }
+      row.appendChild(left);
+      row.appendChild(right);
+      list.appendChild(row);
+    });
+    return true;
+  } catch (e) {
+    if (!silentOnError) showToast(`Failed to browse directory: ${e}`, true);
+    return false;
+  }
 }
 
 function browseUp() {
@@ -1179,7 +1600,7 @@ function browseUp() {
 }
 
 function browseRoot() {
-  if (workspaceRootDir) fetchBrowse(workspaceRootDir);
+  fetchBrowse(workspaceRootDir || "");
 }
 
 function pickFile(path) {
@@ -1200,7 +1621,9 @@ function chooseCurrentDir() {
       ? currentBrowseDir.slice(prefix.length)
       : (currentBrowseDir === workspaceRootDir ? "." : currentBrowseDir);
     document.getElementById(browserTargetInput).value = rel;
-    if (!browserTargetInput.startsWith("t_")) syncFromForm();
+    if (browserTargetInput === "t_checkpoint") tCheckpointManual = true;
+    else if (browserTargetInput === "f_output_dir") onOutputDirChange();
+    else if (!browserTargetInput.startsWith("t_")) syncFromForm();
   }
   closeBrowser();
 }
@@ -1223,7 +1646,7 @@ window.addEventListener("keydown", (e) => {
     loadConfigFromFile();
   } else if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
     e.preventDefault();
-    startTraining();
+    if (!wasJobRunning) startTraining();
   } else if (e.key === "Escape") {
     closeBrowser();
   }
