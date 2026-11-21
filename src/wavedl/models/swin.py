@@ -32,6 +32,7 @@ References:
 Author: Ductho Le (ductho.le@outlook.com)
 """
 
+from numbers import Integral
 from typing import Any
 
 import torch
@@ -58,7 +59,7 @@ except ImportError:
     Swin_B_Weights = None
     SWIN_AVAILABLE = False
 
-from wavedl.models.base import BaseModel
+from wavedl.models.base import BaseModel, validate_dropout_rate
 from wavedl.models.registry import register_model
 
 
@@ -113,15 +114,25 @@ class SwinTransformerBase(BaseModel):
                 "Install with: pip install torchvision>=0.12"
             )
 
-        if len(in_shape) != 2:
+        if len(self.in_shape) != 2:
             raise ValueError(
-                f"Swin Transformer requires 2D input (H, W), got {len(in_shape)}D. "
+                f"Swin Transformer requires 2D input (H, W), got {len(self.in_shape)}D. "
                 "For 1D data, use TCN. For 3D data, use ResNet3D."
             )
-        if any(s < 4 for s in in_shape):
+        if any(s < 4 for s in self.in_shape):
             raise ValueError(
-                f"Swin Transformer requires spatial dimensions >= 4 for 4x4 patch embedding, got {in_shape}."
+                f"Swin Transformer requires spatial dimensions >= 4 for 4x4 patch embedding, got {self.in_shape}."
             )
+        if (
+            isinstance(regression_hidden, bool)
+            or not isinstance(regression_hidden, Integral)
+            or regression_hidden <= 0
+        ):
+            raise ValueError(
+                f"regression_hidden must be a positive integer, got {regression_hidden!r}."
+            )
+        regression_hidden = int(regression_hidden)
+        dropout_rate = validate_dropout_rate(dropout_rate)
 
         self.pretrained = pretrained
         self.dropout_rate = dropout_rate
@@ -129,7 +140,7 @@ class SwinTransformerBase(BaseModel):
         self.regression_hidden = regression_hidden
 
         # Load pretrained backbone
-        weights = weights_class.IMAGENET1K_V1 if pretrained else None
+        weights = weights_class.DEFAULT if pretrained else None
         self.backbone = model_fn(weights=weights)
 
         # Swin Transformer head structure:
@@ -228,16 +239,30 @@ class SwinTransformerBase(BaseModel):
         head_no_decay = []
         backbone_no_decay = []
 
+        explicit_no_decay: set[str] = set()
+        for mod_prefix, module in self.named_modules():
+            no_wd_fn = getattr(module, "no_weight_decay", None)
+            if callable(no_wd_fn):
+                for entry in no_wd_fn():
+                    entry_lower = str(entry).lower()
+                    explicit_no_decay.add(entry_lower)
+                    if mod_prefix:
+                        explicit_no_decay.add(f"{mod_prefix.lower()}.{entry_lower}")
+
         for name, param in self.named_parameters():
             if not param.requires_grad:
                 continue
 
             name_lower = name.lower()
+            leaf_name = name_lower.rsplit(".", 1)[-1]
             is_head = name == "backbone.head" or name.startswith("backbone.head.")
             # Classify 1-D params (biases and norm scales) as no-decay by shape,
             # not just by name: the head LayerNorm weight is named 'head.0.weight'.
             is_no_decay = (
-                "bias" in name_lower
+                getattr(param, "_no_weight_decay", False)
+                or name_lower in explicit_no_decay
+                or leaf_name in explicit_no_decay
+                or "bias" in name_lower
                 or "norm" in name_lower
                 or "pos_embed" in name_lower
                 or "relative_position_bias_table" in name_lower

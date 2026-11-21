@@ -129,9 +129,10 @@ class MaxViTBase(BaseModel):
 
     @classmethod
     def _get_native_size(cls, model_name: str) -> int:
-        """Get the native input size from the model name suffix."""
+        """Get the native input size from the model name suffix (ignoring weight tags)."""
+        base_name = model_name.split(".", 1)[0]
         for suffix, size in cls._NATIVE_SIZES.items():
-            if model_name.endswith(suffix):
+            if base_name.endswith(suffix):
                 return size
         return 224
 

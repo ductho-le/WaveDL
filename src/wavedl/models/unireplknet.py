@@ -43,7 +43,12 @@ from wavedl.models._pretrained_utils import (
     get_grn_layer,
     get_pool_layer,
 )
-from wavedl.models.base import BaseModel, SpatialShape
+from wavedl.models.base import (
+    BaseModel,
+    SpatialShape,
+    validate_drop_path_rate,
+    validate_dropout_rate,
+)
 from wavedl.models.registry import register_model
 
 
@@ -264,9 +269,12 @@ class UniRepLKNetBase(BaseModel):
     ):
         super().__init__(in_shape, out_size)
 
+        drop_path_rate = validate_drop_path_rate(drop_path_rate)
+        dropout_rate = validate_dropout_rate(dropout_rate)
+
         self.dim = len(self.in_shape)
-        self.depths = depths
-        self.dims = dims
+        self.depths = list(depths)
+        self.dims = list(dims)
 
         if (
             not depths

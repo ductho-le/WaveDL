@@ -134,23 +134,50 @@ class TestBroadcastValue:
     def test_multi_process_propagates_rank0_value_to_worker(
         self, mock_accelerator_multi_gpu, monkeypatch
     ):
-        """Non-main rank receives rank-0 value when dist.broadcast overwrites tensor."""
+        """Non-main rank receives rank-0 value even when placeholder types differ."""
         from wavedl.utils import distributed
 
         mock_accelerator_multi_gpu.device = torch.device("cpu")
-        mock_accelerator_multi_gpu.is_main_process = False
+        captured: list[torch.Tensor] = []
 
         def fake_broadcast(tensor, src=0):
             assert src == 0
-            tensor.fill_(777)
+            if mock_accelerator_multi_gpu.is_main_process:
+                captured.append(tensor.clone())
+            else:
+                tensor.copy_(captured[-1])
 
         monkeypatch.setattr(distributed.dist, "is_initialized", lambda: True)
         monkeypatch.setattr(distributed.dist, "get_backend", lambda: "gloo")
         monkeypatch.setattr(distributed.dist, "broadcast", fake_broadcast)
 
-        result = broadcast_value(12, mock_accelerator_multi_gpu)
+        # Rank 0 sends int 777; worker passes placeholder float 0.0
+        mock_accelerator_multi_gpu.is_main_process = True
+        assert broadcast_value(777, mock_accelerator_multi_gpu) == 777
+        mock_accelerator_multi_gpu.is_main_process = False
+        result = broadcast_value(0.0, mock_accelerator_multi_gpu)
         assert result == 777
         assert isinstance(result, int)
+
+        # Rank 0 sends high-precision float; worker passes placeholder int 0
+        expected_float = 1.2345678901234567
+        mock_accelerator_multi_gpu.is_main_process = True
+        assert (
+            broadcast_value(expected_float, mock_accelerator_multi_gpu)
+            == expected_float
+        )
+        mock_accelerator_multi_gpu.is_main_process = False
+        result_f = broadcast_value(0, mock_accelerator_multi_gpu)
+        assert result_f == expected_float
+        assert isinstance(result_f, float)
+
+        # Rank 0 sends bool True; worker passes placeholder int 0
+        mock_accelerator_multi_gpu.is_main_process = True
+        assert broadcast_value(True, mock_accelerator_multi_gpu) is True
+        mock_accelerator_multi_gpu.is_main_process = False
+        result_b = broadcast_value(0, mock_accelerator_multi_gpu)
+        assert result_b is True
+        assert isinstance(result_b, bool)
 
 
 # ==============================================================================

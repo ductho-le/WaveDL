@@ -121,7 +121,7 @@ class WeightedMSELoss(nn.Module):
                 raise ValueError("Loss weights must be finite and non-negative.")
             if not (weights > 0).any():
                 raise ValueError("At least one loss weight must be strictly positive.")
-            self.register_buffer("weights", weights)
+            self.register_buffer("weights", weights.detach())
         else:
             self.weights = None
 

@@ -124,9 +124,6 @@ def get_scheduler(
     """
     name_lower = name.lower().replace("-", "_")
 
-    # Get initial LR from optimizer
-    base_lr = optimizer.param_groups[0]["lr"]
-
     if name_lower == "plateau":
         return ReduceLROnPlateau(
             optimizer,
@@ -167,9 +164,14 @@ def get_scheduler(
             )
         if epochs < 1:
             raise ValueError(f"OneCycleLR requires epochs >= 1, got {epochs}.")
+        effective_max_lr: float | list[float] = (
+            max_lr
+            if max_lr is not None
+            else [pg["lr"] for pg in optimizer.param_groups]
+        )
         return OneCycleLR(
             optimizer,
-            max_lr=max_lr if max_lr is not None else base_lr,
+            max_lr=effective_max_lr,
             epochs=epochs,
             steps_per_epoch=steps_per_epoch,
             pct_start=pct_start,
@@ -274,34 +276,83 @@ def get_scheduler_with_warmup(
         raise ValueError(
             "epochs must exceed warmup_epochs to leave a main-scheduler phase."
         )
-
-    # Create warmup scheduler
-    warmup_scheduler = LinearLR(
-        optimizer,
-        start_factor=start_factor,
-        end_factor=1.0,
-        total_iters=warmup_epochs,
-    )
-
-    # Create main scheduler with adjusted epoch budget
-    main_kwargs = dict(kwargs)
-    if "epochs" in main_kwargs:
-        main_kwargs["epochs"] = max(1, main_kwargs["epochs"] - warmup_epochs)
-    if name_lower == "cosine" and main_kwargs.get("T_max") is not None:
-        main_kwargs["T_max"] = max(1, main_kwargs["T_max"] - warmup_epochs)
-    if name_lower == "multistep" and main_kwargs.get("milestones") is not None:
-        shifted = sorted(
-            {m - warmup_epochs for m in main_kwargs["milestones"] if m > warmup_epochs}
+    if (
+        name_lower in {"cosine", "multistep"}
+        and "epochs" not in kwargs
+        and kwargs.get("T_max") is None
+        and kwargs.get("milestones") is None
+        and warmup_epochs >= 100
+    ):
+        raise ValueError(
+            "epochs (default 100) must exceed warmup_epochs to leave a main-scheduler phase."
         )
-        main_kwargs["milestones"] = shifted or [1]
-    main_scheduler = get_scheduler(name, optimizer, **main_kwargs)
+    if (
+        name_lower == "cosine"
+        and kwargs.get("T_max") is not None
+        and kwargs["T_max"] <= warmup_epochs
+    ):
+        raise ValueError(
+            f"T_max ({kwargs['T_max']}) must exceed warmup_epochs ({warmup_epochs})."
+        )
+    if name_lower == "multistep" and kwargs.get("milestones") is not None:
+        shifted_milestones = sorted(
+            {m - warmup_epochs for m in kwargs["milestones"] if m > warmup_epochs}
+        )
+        if not shifted_milestones:
+            raise ValueError(
+                f"All multistep milestones ({kwargs['milestones']}) are <= "
+                f"warmup_epochs ({warmup_epochs}); provide at least one milestone after warmup."
+            )
 
-    # Combine with SequentialLR
-    return SequentialLR(
-        optimizer,
-        schedulers=[warmup_scheduler, main_scheduler],
-        milestones=[warmup_epochs],
-    )
+    # Snapshot optimizer param-group LRs so a failure during main_scheduler
+    # creation never leaves the optimizer mutated by LinearLR.
+    saved_groups = [
+        (pg["lr"], "initial_lr" in pg, pg.get("initial_lr"))
+        for pg in optimizer.param_groups
+    ]
+    try:
+        # Create warmup scheduler
+        warmup_scheduler = LinearLR(
+            optimizer,
+            start_factor=start_factor,
+            end_factor=1.0,
+            total_iters=warmup_epochs,
+        )
+
+        # Create main scheduler with adjusted epoch budget
+        main_kwargs = dict(kwargs)
+        if "epochs" in main_kwargs:
+            main_kwargs["epochs"] = main_kwargs["epochs"] - warmup_epochs
+        elif name_lower in {"cosine", "multistep"}:
+            main_kwargs["epochs"] = max(1, 100 - warmup_epochs)
+        if name_lower == "cosine" and main_kwargs.get("T_max") is not None:
+            main_kwargs["T_max"] = main_kwargs["T_max"] - warmup_epochs
+        if name_lower == "multistep" and main_kwargs.get("milestones") is not None:
+            main_kwargs["milestones"] = sorted(
+                {
+                    m - warmup_epochs
+                    for m in main_kwargs["milestones"]
+                    if m > warmup_epochs
+                }
+            )
+        main_scheduler = get_scheduler(name, optimizer, **main_kwargs)
+
+        # Combine with SequentialLR
+        return SequentialLR(
+            optimizer,
+            schedulers=[warmup_scheduler, main_scheduler],
+            milestones=[warmup_epochs],
+        )
+    except Exception:
+        for pg, (orig_lr, had_init, orig_init) in zip(
+            optimizer.param_groups, saved_groups, strict=True
+        ):
+            pg["lr"] = orig_lr
+            if had_init:
+                pg["initial_lr"] = orig_init
+            else:
+                pg.pop("initial_lr", None)
+        raise
 
 
 def is_epoch_based(name: str) -> bool:

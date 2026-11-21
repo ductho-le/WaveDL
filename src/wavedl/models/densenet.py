@@ -186,7 +186,7 @@ class DenseNetBase(BaseModel):
                     f"but axis {i} has size {s}."
                 )
 
-        self.dim = len(in_shape)
+        self.dim = len(self.in_shape)
         self.growth_rate = growth_rate
         self.dropout_rate = dropout_rate
 
@@ -216,13 +216,12 @@ class DenseNetBase(BaseModel):
 
             # Transition (except after last block)
             if i < len(block_config) - 1:
-                out_features = int(num_features * compression)
+                out_features = max(1, int(num_features * compression))
                 trans = Transition(num_features, out_features, self.dim)
                 self.transitions.append(trans)
                 num_features = out_features
 
         # Final batch norm
-        _, BN, _, _ = _get_layers(self.dim)
         self.final_bn = BN(num_features)
         self.final_relu = nn.ReLU(inplace=True)
 
@@ -392,14 +391,14 @@ class DenseNet121Pretrained(BaseModel):
                 "Install with: pip install torchvision"
             )
 
-        if len(in_shape) != 2:
+        if len(self.in_shape) != 2:
             raise ValueError(
-                f"Pretrained DenseNet requires 2D input (H, W), got {len(in_shape)}D. "
+                f"Pretrained DenseNet requires 2D input (H, W), got {len(self.in_shape)}D. "
                 "For 1D/3D data, use densenet121 instead."
             )
 
         min_size = 29
-        for i, s in enumerate(in_shape):
+        for i, s in enumerate(self.in_shape):
             if s < min_size:
                 raise ValueError(
                     f"Pretrained DenseNet requires each spatial axis >= {min_size}, "
@@ -411,7 +410,7 @@ class DenseNet121Pretrained(BaseModel):
         self.freeze_backbone = freeze_backbone
 
         # Load pretrained model
-        weights = DenseNet121_Weights.IMAGENET1K_V1 if pretrained else None
+        weights = DenseNet121_Weights.DEFAULT if pretrained else None
         self.backbone = tv_densenet121(weights=weights)
 
         # Get classifier input features

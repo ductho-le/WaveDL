@@ -39,7 +39,7 @@ from typing import Any, ClassVar
 import torch
 import torch.nn as nn
 
-from wavedl.models.base import BaseModel
+from wavedl.models.base import BaseModel, validate_dropout_rate
 from wavedl.models.registry import register_model
 
 
@@ -66,9 +66,12 @@ class GatedResidualBlock(nn.Module):
         kernel_size: int,
         dilation: int,
         dropout: float = 0.1,
+        *,
+        compute_residual: bool = True,
     ):
         super().__init__()
         self.channels = channels
+        self.compute_residual = compute_residual
         total_padding = dilation * (kernel_size - 1)
         padding = total_padding // 2
         self._right_padding = total_padding % 2
@@ -83,19 +86,20 @@ class GatedResidualBlock(nn.Module):
         )
         self.dropout = nn.Dropout(dropout)
 
-        # 1x1 conv for residual
+        # 1x1 conv for residual (retained in state_dict even on the final block
+        # for checkpoint compatibility, skipped in forward when compute_residual=False)
         self.residual_conv = nn.Conv1d(channels, channels, kernel_size=1)
 
         # 1x1 conv for skip
         self.skip_conv = nn.Conv1d(channels, skip_channels, kernel_size=1)
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor | None, torch.Tensor]:
         """
         Args:
             x: (B, channels, L)
 
         Returns:
-            residual: (B, channels, L) — fed into the next block
+            residual: (B, channels, L) — fed into the next block (or None if skipped)
             skip: (B, skip_channels, L) — accumulated across all blocks
         """
         residual_in = x
@@ -109,8 +113,10 @@ class GatedResidualBlock(nn.Module):
 
         h = self.dropout(h)
 
-        # Residual path
-        residual = self.residual_conv(h) + residual_in
+        # Residual path (skipped on the final block where it feeds no downstream layer)
+        residual = (
+            self.residual_conv(h) + residual_in if self.compute_residual else None
+        )
 
         # Skip path
         skip = self.skip_conv(h)
@@ -179,6 +185,12 @@ class WaveNetBase(BaseModel):
             if not isinstance(val, Integral) or isinstance(val, bool) or val <= 0:
                 raise ValueError(f"{name} must be a positive integer, got {val!r}.")
 
+        dropout_rate = validate_dropout_rate(dropout_rate)
+        channels = int(channels)
+        skip_channels = int(skip_channels)
+        n_layers = int(n_layers)
+        kernel_size = int(kernel_size)
+
         self.channels = channels
         self.skip_channels = skip_channels
         self.n_layers = n_layers
@@ -197,6 +209,7 @@ class WaveNetBase(BaseModel):
                     kernel_size=kernel_size,
                     dilation=2**i,
                     dropout=dropout_rate,
+                    compute_residual=(i < n_layers - 1),
                 )
                 for i in range(n_layers)
             ]

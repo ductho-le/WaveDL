@@ -21,6 +21,7 @@ import ast
 import importlib.util
 import math
 import sys
+import uuid
 from typing import TYPE_CHECKING
 
 import torch
@@ -35,29 +36,65 @@ if TYPE_CHECKING:
 # ==============================================================================
 # SAFE EXPRESSION PARSING
 # ==============================================================================
-def _safe_positive_floor(t: torch.Tensor) -> torch.Tensor:
-    eps = (
-        max(1e-12, float(torch.finfo(t.dtype).tiny)) if t.is_floating_point() else 1e-12
-    )
+MAX_AST_NODES = 256
+MAX_AST_DEPTH = 32
+
+
+def _dtype_eps(dtype: torch.dtype, *, for_denom: bool = False) -> float:
+    """Return a dtype-safe floor so reciprocal/power penalties stay finite."""
+    if dtype == torch.float64:
+        return 1e-12
+    if dtype == torch.float16:
+        return 1e-3 if for_denom else 1e-4
+    # float32 / bfloat16: (1 / 1e-6)**2 = 1e12 stays safely below float32 max
+    return 1e-6 if for_denom else 1e-12
+
+
+def _safe_positive_floor(t: torch.Tensor, *, for_denom: bool = False) -> torch.Tensor:
+    eps = _dtype_eps(t.dtype, for_denom=for_denom) if t.is_floating_point() else 1e-12
     return torch.clamp(t, min=eps)
 
 
 def _safe_nonzero_denom(t: torch.Tensor) -> torch.Tensor:
-    eps = (
-        max(1e-12, float(torch.finfo(t.dtype).tiny)) if t.is_floating_point() else 1e-12
-    )
+    eps = _dtype_eps(t.dtype, for_denom=True) if t.is_floating_point() else 1e-6
     sign = torch.where(t >= 0, torch.ones_like(t), -torch.ones_like(t))
     return torch.where(t.abs() < eps, sign * eps, t)
 
 
+def _safe_exp(t: torch.Tensor) -> torch.Tensor:
+    """Overflow-safe exponential keeping MSE squared penalties finite."""
+    if t.dtype == torch.float64:
+        max_val = 350.0
+    elif t.dtype == torch.float16:
+        max_val = 5.0
+    else:
+        max_val = 40.0
+    return torch.exp(torch.clamp(t, max=max_val))
+
+
 def _safe_pow(base: torch.Tensor, exp: torch.Tensor) -> torch.Tensor:
-    """Domain-safe power: clamp negative bases when exponent is non-integer."""
-    is_int_exp = torch.all(exp == torch.floor(exp))
-    if bool(is_int_exp):
-        if bool(torch.any(exp < 0)):
-            return torch.pow(_safe_nonzero_denom(base), exp)
-        return torch.pow(base, exp)
-    return torch.pow(_safe_positive_floor(base), exp)
+    """Domain-safe, branchless power with finite forward and backward values."""
+    base_t, exp_t = torch.broadcast_tensors(torch.as_tensor(base), torch.as_tensor(exp))
+    if not base_t.is_floating_point():
+        base_t = base_t.float()
+    if not exp_t.is_floating_point():
+        exp_t = exp_t.to(base_t.dtype)
+
+    is_int_exp = exp_t == torch.floor(exp_t)
+    # When exp requires grad, d(base**exp)/d(exp) involves log(base), so base
+    # must stay strictly positive even if exp happens to hold an integer value.
+    needs_positive = (
+        torch.ones_like(is_int_exp, dtype=torch.bool)
+        if exp_t.requires_grad
+        else ~is_int_exp
+    )
+    needs_nonzero = (~needs_positive) & (exp_t < 0)
+    safe_base = torch.where(
+        needs_positive,
+        _safe_positive_floor(base_t, for_denom=True),
+        torch.where(needs_nonzero, _safe_nonzero_denom(base_t), base_t),
+    )
+    return torch.pow(safe_base, exp_t)
 
 
 def _reduce_sample_axes(x: torch.Tensor) -> tuple[int, ...]:
@@ -72,7 +109,7 @@ SAFE_FUNCTIONS: dict[str, Callable] = {
     "sin": torch.sin,
     "cos": torch.cos,
     "tan": torch.tan,
-    "exp": torch.exp,
+    "exp": _safe_exp,
     # log/sqrt are domain-protected: clamp the argument to a small positive floor
     # so denormalized predictions <= 0 (common before convergence) yield a finite
     # penalty/gradient instead of NaN/-inf, which would poison training via backprop.
@@ -173,7 +210,21 @@ class ExpressionConstraint(nn.Module):
             "tanh",
         }
         binary_fns = {"min", "max", "pow"}
-        for node in ast.walk(tree):
+        node_count = 0
+
+        def _check_node(
+            node: ast.AST, depth: int, *, in_subscript_slice: bool = False
+        ) -> None:
+            nonlocal node_count
+            node_count += 1
+            if node_count > MAX_AST_NODES:
+                raise ValueError(
+                    f"Constraint expression is too complex (exceeds {MAX_AST_NODES} AST nodes)."
+                )
+            if depth > MAX_AST_DEPTH:
+                raise ValueError(
+                    f"Constraint expression exceeds maximum nesting depth ({MAX_AST_DEPTH})."
+                )
             if not isinstance(node, allowed_nodes):
                 if isinstance(node, ast.NotEq):
                     raise ValueError(
@@ -182,21 +233,39 @@ class ExpressionConstraint(nn.Module):
                 raise ValueError(
                     f"Unsupported expression syntax '{type(node).__name__}' in constraint."
                 )
+            if isinstance(node, ast.Tuple) and not in_subscript_slice:
+                raise ValueError(
+                    "Tuple literals are only supported as multi-dimensional indices in x[i, j]."
+                )
             if isinstance(node, ast.Constant):
-                if (
-                    isinstance(node.value, bool)
-                    or not isinstance(node.value, (int, float))
-                    or not math.isfinite(node.value)
+                if isinstance(node.value, bool) or not isinstance(
+                    node.value, (int, float)
                 ):
                     raise ValueError(
                         "Constraint constants must be finite real numbers."
                     )
+                try:
+                    if not math.isfinite(float(node.value)):
+                        raise ValueError(
+                            "Constraint constants must be finite real numbers."
+                        )
+                except OverflowError as exc:
+                    raise ValueError(
+                        "Constraint constants must be finite real numbers."
+                    ) from exc
             if isinstance(node, ast.Compare) and (
                 len(node.ops) != 1 or len(node.comparators) != 1
             ):
                 raise ValueError(
                     "Only single comparisons supported (e.g., 'y0 > 0', not 'y0 > 0 > y1')"
                 )
+            if isinstance(node, ast.Subscript):
+                if not isinstance(node.value, ast.Name) or node.value.id != "x":
+                    raise ValueError(
+                        "Subscript indexing only supported for 'x' (inputs). "
+                        "Use x[i], x[i,j], or x[i,j,k]."
+                    )
+                self._parse_subscript_indices(node.slice)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
                 fn_name = node.func.id
                 if fn_name not in SAFE_FUNCTIONS:
@@ -205,11 +274,17 @@ class ExpressionConstraint(nn.Module):
                         f"Allowed: {list(SAFE_FUNCTIONS.keys())}"
                     )
                 allowed_keywords = {"min", "max"} if fn_name == "clamp" else set()
+                seen_kw: set[str] = set()
                 for keyword in node.keywords:
                     if keyword.arg not in allowed_keywords:
                         raise ValueError(
                             f"Unsupported keyword '{keyword.arg}' for {fn_name}."
                         )
+                    if keyword.arg in seen_kw:
+                        raise ValueError(
+                            f"Duplicate keyword '{keyword.arg}' for {fn_name}."
+                        )
+                    seen_kw.add(keyword.arg)
                 if fn_name in unary_fns and len(node.args) != 1:
                     raise ValueError(
                         f"Function '{fn_name}' expects 1 argument, got {len(node.args)}."
@@ -218,12 +293,30 @@ class ExpressionConstraint(nn.Module):
                     raise ValueError(
                         f"Function '{fn_name}' expects 2 arguments, got {len(node.args)}."
                     )
-                if fn_name == "clamp" and not (1 <= len(node.args) <= 3):
-                    raise ValueError(
-                        f"Function 'clamp' expects 1 to 3 positional arguments, got {len(node.args)}."
-                    )
+                if fn_name == "clamp":
+                    if not (1 <= len(node.args) <= 3):
+                        raise ValueError(
+                            f"Function 'clamp' expects 1 to 3 positional arguments, got {len(node.args)}."
+                        )
+                    if (len(node.args) >= 2 and "min" in seen_kw) or (
+                        len(node.args) >= 3 and "max" in seen_kw
+                    ):
+                        raise ValueError(
+                            "Function 'clamp' received min/max both positionally and by keyword."
+                        )
             elif isinstance(node, ast.Call):
                 raise ValueError("Only direct function calls supported (e.g., sin(x))")
+
+            for child in ast.iter_child_nodes(node):
+                _check_node(
+                    child,
+                    depth + 1,
+                    in_subscript_slice=(
+                        isinstance(node, ast.Subscript) and child is node.slice
+                    ),
+                )
+
+        _check_node(tree, 0)
 
     def _eval(
         self, node: ast.AST, pred: torch.Tensor, inputs: torch.Tensor | None
@@ -456,8 +549,8 @@ class FileConstraint(nn.Module):
         self.file_path = file_path
         self.reduction = reduction
 
-        # Load module from file
-        module_name = f"constraint_module_{id(self)}"
+        # Load module from file using a unique ephemeral name to avoid sys.modules leaks
+        module_name = f"_wavedl_constraint_{uuid.uuid4().hex}"
         spec = importlib.util.spec_from_file_location(module_name, file_path)
         if spec is None or spec.loader is None:
             raise ValueError(f"Could not load constraint file: {file_path}")
@@ -470,9 +563,8 @@ class FileConstraint(nn.Module):
                 raise ValueError(
                     f"Constraint file must define 'constraint(pred, inputs)' function: {file_path}"
                 )
-        except Exception:
+        finally:
             sys.modules.pop(module_name, None)
-            raise
 
         self._constraint_fn = module.constraint
 

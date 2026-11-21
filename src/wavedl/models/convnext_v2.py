@@ -40,7 +40,12 @@ from wavedl.models._pretrained_utils import (
     get_grn_layer,
     get_pool_layer,
 )
-from wavedl.models.base import BaseModel, SpatialShape
+from wavedl.models.base import (
+    BaseModel,
+    SpatialShape,
+    validate_drop_path_rate,
+    validate_dropout_rate,
+)
 from wavedl.models.registry import register_model
 
 
@@ -226,10 +231,13 @@ class ConvNeXtV2Base(BaseModel):
                 f"depths ({depths!r}) and dims ({dims!r}) must be non-empty integer lists of equal length with positive values."
             )
 
+        drop_path_rate = validate_drop_path_rate(drop_path_rate)
+        dropout_rate = validate_dropout_rate(dropout_rate)
+
         # Validate minimum spatial size:
         # stem stride-4 × (len(depths)-1) stride-2 downsamplers
         min_size = 4 * (2 ** (len(depths) - 1))
-        for i, s in enumerate(in_shape):
+        for i, s in enumerate(self.in_shape):
             if s < min_size:
                 raise ValueError(
                     f"ConvNeXtV2 requires each spatial axis >= {min_size}, "
@@ -476,19 +484,20 @@ class ConvNeXtV2TinyPretrained(BaseModel):
     ):
         super().__init__(in_shape, out_size)
 
-        if len(in_shape) != 2:
+        if len(self.in_shape) != 2:
             raise ValueError(
                 f"ConvNeXtV2TinyPretrained requires 2D input (H, W), "
-                f"got {len(in_shape)}D"
+                f"got {len(self.in_shape)}D"
             )
 
         min_size = 32
-        for i, s in enumerate(in_shape):
+        for i, s in enumerate(self.in_shape):
             if s < min_size:
                 raise ValueError(
                     f"ConvNeXtV2TinyPretrained requires each spatial axis >= {min_size}, "
                     f"but axis {i} has size {s}."
                 )
+        dropout_rate = validate_dropout_rate(dropout_rate)
 
         self.pretrained = pretrained
         self.freeze_backbone = freeze_backbone
@@ -514,13 +523,16 @@ class ConvNeXtV2TinyPretrained(BaseModel):
                 f"Failed to load ConvNeXt V2 model 'convnextv2_tiny': {e}"
             ) from e
 
-        # Adapt input channels (3 -> 1) before probing actual output width
+        # Adapt input channels (3 -> 1)
         self._adapt_input_channels()
-        from wavedl.models._pretrained_utils import infer_backbone_features
+        if hasattr(self.backbone, "num_features"):
+            in_features = int(self.backbone.num_features)
+        else:
+            from wavedl.models._pretrained_utils import infer_backbone_features
 
-        in_features = infer_backbone_features(
-            self.backbone, self.in_shape, in_channels=1
-        )
+            in_features = infer_backbone_features(
+                self.backbone, self.in_shape, in_channels=1
+            )
 
         # Regression head
         self.head = build_regression_head(in_features, out_size, dropout_rate)

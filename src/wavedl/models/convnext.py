@@ -34,7 +34,12 @@ from wavedl.models._pretrained_utils import (
     get_conv_layer,
     get_pool_layer,
 )
-from wavedl.models.base import BaseModel, SpatialShape
+from wavedl.models.base import (
+    BaseModel,
+    SpatialShape,
+    validate_drop_path_rate,
+    validate_dropout_rate,
+)
 from wavedl.models.registry import register_model
 
 
@@ -159,9 +164,13 @@ class ConvNeXtBase(BaseModel):
     ):
         super().__init__(in_shape, out_size)
 
-        self.dim = len(in_shape)
-        self.depths = depths
-        self.dims = dims
+        dropout_rate = validate_dropout_rate(dropout_rate)
+        if drop_path_rate is not None:
+            drop_path_rate = validate_drop_path_rate(drop_path_rate)
+
+        self.dim = len(self.in_shape)
+        self.depths = list(depths)
+        self.dims = list(dims)
         self.dropout_rate = dropout_rate
         # Stochastic-depth rate, decoupled from head dropout (matches the
         # ConvNeXtV2/UniRepLKNet siblings). Falls back to the previous coupled
@@ -428,26 +437,27 @@ class ConvNeXtTinyPretrained(BaseModel):
                 "Install with: pip install torchvision"
             )
 
-        if len(in_shape) != 2:
+        if len(self.in_shape) != 2:
             raise ValueError(
-                f"Pretrained ConvNeXt requires 2D input (H, W), got {len(in_shape)}D. "
+                f"Pretrained ConvNeXt requires 2D input (H, W), got {len(self.in_shape)}D. "
                 "For 1D/3D data, use convnext_tiny instead."
             )
 
         min_size = 32
-        for i, s in enumerate(in_shape):
+        for i, s in enumerate(self.in_shape):
             if s < min_size:
                 raise ValueError(
                     f"Pretrained ConvNeXt requires each spatial axis >= {min_size}, "
                     f"but axis {i} has size {s}."
                 )
+        dropout_rate = validate_dropout_rate(dropout_rate)
 
         self.pretrained = pretrained
         self.dropout_rate = dropout_rate
         self.freeze_backbone = freeze_backbone
 
         # Load pretrained model
-        weights = ConvNeXt_Tiny_Weights.IMAGENET1K_V1 if pretrained else None
+        weights = ConvNeXt_Tiny_Weights.DEFAULT if pretrained else None
         self.backbone = tv_convnext_tiny(weights=weights)
 
         # Preserve torchvision's pretrained LayerNorm2d(768, eps=1e-6) and Flatten(1)

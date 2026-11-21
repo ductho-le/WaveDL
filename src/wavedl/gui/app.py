@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import codecs
 import contextlib
 import datetime
 import hmac
@@ -51,9 +52,9 @@ try:
         "tag:yaml.org,2002:float",
         re.compile(
             r"""^(?:
-             [-+]?(?:[0-9][0-9_]*)?\.[0-9_]*(?:[eE][-+]?[0-9]+)?
+             [-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+]?[0-9]+)?
+            |[-+]?\.[0-9][0-9_]*(?:[eE][-+]?[0-9]+)?
             |[-+]?(?:[0-9][0-9_]*)(?:[eE][-+]?[0-9]+)
-            |\.[0-9_]+(?:[eE][-+][0-9]+)?
             |[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*
             |[-+]?\.(?:inf|Inf|INF)
             |\.(?:nan|NaN|NAN))$""",
@@ -69,28 +70,217 @@ except ImportError:
 GUI_DIR = Path(__file__).resolve().parent
 WORKSPACE_ROOT = Path.cwd()
 DEFAULT_CONFIG_PATH = WORKSPACE_ROOT / "config.yaml"
+RESTRICT_WORKSPACE = False
 SESSION_TOKEN = secrets.token_urlsafe(32)
+
+# Mirror wavedl.utils.config._KNOWN_CONFIG_SECTIONS without importing ML packages.
+_KNOWN_CONFIG_SECTIONS: tuple[str, ...] = (
+    "cross_validation",
+    "hyperparameters",
+    "checkpointing",
+    "constraints",
+    "performance",
+    "optimizer",
+    "scheduler",
+    "training",
+    "logging",
+    "output",
+    "model",
+    "wandb",
+    "loss",
+    "data",
+    "cv",
+)
+
+_CANONICAL_CONFIG_KEYS: frozenset[str] = frozenset(
+    {
+        "model",
+        "pretrained",
+        "import_modules",
+        "batch_size",
+        "lr",
+        "epochs",
+        "patience",
+        "weight_decay",
+        "grad_clip",
+        "grad_accum_steps",
+        "loss",
+        "selection_metric",
+        "huber_delta",
+        "loss_weights",
+        "optimizer",
+        "momentum",
+        "nesterov",
+        "betas",
+        "scheduler",
+        "scheduler_factor",
+        "scheduler_patience",
+        "min_lr",
+        "warmup_epochs",
+        "step_size",
+        "milestones",
+        "cv",
+        "cv_stratify",
+        "cv_bins",
+        "data_path",
+        "val_data_path",
+        "output_dir",
+        "cache_dir",
+        "resume",
+        "save_every",
+        "fresh",
+        "workers",
+        "seed",
+        "deterministic",
+        "cache_validate",
+        "single_channel",
+        "input_channels",
+        "input_transform",
+        "input_range",
+        "target_scaling",
+        "target_range",
+        "allow_pickle",
+        "precision",
+        "compile",
+        "no_tf32",
+        "wandb",
+        "wandb_watch",
+        "project_name",
+        "run_name",
+        "constraint",
+        "constraint_file",
+        "constraint_weight",
+        "constraint_reduction",
+    }
+)
+
+_SECTION_ALIASES: dict[str, str] = {
+    "model_name": "model",
+    "loss_type": "loss",
+    "loss_name": "loss",
+    "optimizer_type": "optimizer",
+    "optimizer_name": "optimizer",
+    "scheduler_type": "scheduler",
+    "scheduler_name": "scheduler",
+    "mixed_precision": "precision",
+    "import": "import_modules",
+}
+
+_LOSS_ALIASES: dict[str, str] = {
+    "l1": "mae",
+    "logcosh": "log_cosh",
+}
+
+
+def _strip_known_section_prefix(key: str) -> str | None:
+    """Strip a recognized nested YAML section prefix from ``key`` if present."""
+    for section in _KNOWN_CONFIG_SECTIONS:
+        prefix = f"{section}_"
+        if key.startswith(prefix) and len(key) > len(prefix):
+            return key[len(prefix) :]
+    return None
+
+
+def _normalize_yaml_bool_choices(config: dict[str, Any]) -> dict[str, Any]:
+    """Normalize YAML 1.1 boolean ``no`` (parsed as ``False``) for precision keys."""
+    normalized = dict(config)
+    for key, value in list(normalized.items()):
+        stripped = _strip_known_section_prefix(key) or key
+        if stripped in {"precision", "mixed_precision"} and value is False:
+            normalized[key] = "no"
+    return normalized
 
 
 def _strip_yaml_comment(line: str) -> str:
-    """Strip inline YAML comments (`# ...`) outside of quotes."""
+    """Strip inline YAML comments (`# ...`) outside of quoted strings."""
     in_single = False
     in_double = False
-    for i, ch in enumerate(line):
-        if ch == "'" and not in_double:
-            in_single = not in_single
-        elif ch == '"' and not in_single:
-            in_double = not in_double
-        elif ch == "#" and not in_single and not in_double:
-            if i == 0 or line[i - 1].isspace():
+    escaped = False
+    i = 0
+    n = len(line)
+    while i < n:
+        ch = line[i]
+        if in_double:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_double = False
+        elif in_single:
+            if ch == "'":
+                if i + 1 < n and line[i + 1] == "'":
+                    i += 1  # YAML escaped single quote ('')
+                else:
+                    in_single = False
+        else:
+            if ch == "'":
+                in_single = True
+            elif ch == '"':
+                in_double = True
+            elif ch == "#" and (i == 0 or line[i - 1].isspace()):
                 return line[:i].rstrip()
+        i += 1
     return line.rstrip()
+
+
+def _split_yaml_flow_items(inner: str) -> list[str]:
+    """Split a YAML flow sequence body on top-level commas, respecting quotes/brackets."""
+    parts: list[str] = []
+    buf: list[str] = []
+    in_single = False
+    in_double = False
+    escaped = False
+    depth = 0
+    i = 0
+    n = len(inner)
+    while i < n:
+        ch = inner[i]
+        if in_double:
+            buf.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_double = False
+        elif in_single:
+            buf.append(ch)
+            if ch == "'":
+                if i + 1 < n and inner[i + 1] == "'":
+                    buf.append("'")
+                    i += 1
+                else:
+                    in_single = False
+        else:
+            if ch == '"':
+                in_double = True
+                buf.append(ch)
+            elif ch == "'":
+                in_single = True
+                buf.append(ch)
+            elif ch in "[{":
+                depth += 1
+                buf.append(ch)
+            elif ch in "]}":
+                depth = max(0, depth - 1)
+                buf.append(ch)
+            elif ch == "," and depth == 0:
+                parts.append("".join(buf).strip())
+                buf = []
+            else:
+                buf.append(ch)
+        i += 1
+    tail = "".join(buf).strip()
+    if tail or parts:
+        parts.append(tail)
+    return parts
 
 
 def _parse_yaml_scalar(raw: str) -> Any:
     """Parse a scalar or inline list value from YAML text using stdlib only."""
     val = raw.strip()
-    if val == "" or val.lower() in ("null", "~", "none"):
+    if val == "" or val.lower() in ("null", "~"):
         return None
     if val.lower() == "true":
         return True
@@ -116,7 +306,7 @@ def _parse_yaml_scalar(raw: str) -> Any:
                 return parsed
         except Exception:
             pass
-        return [_parse_yaml_scalar(part) for part in inner.split(",")]
+        return [_parse_yaml_scalar(part) for part in _split_yaml_flow_items(inner)]
     try:
         return int(val)
     except ValueError:
@@ -158,7 +348,7 @@ def parse_yaml_text(text: str) -> dict[str, Any]:
             return {}
         if not isinstance(loaded, dict):
             raise ValueError("YAML root must be a key-value mapping.")
-        return _flatten_yaml_mapping(loaded)
+        return _normalize_yaml_bool_choices(_flatten_yaml_mapping(loaded))
 
     result: dict[str, Any] = {}
     current_list_key: str | None = None
@@ -190,7 +380,7 @@ def parse_yaml_text(text: str) -> dict[str, Any]:
         else:
             current_list_key = None
             result[full_key] = _parse_yaml_scalar(val_str)
-    return result
+    return _normalize_yaml_bool_choices(result)
 
 
 # PyYAML follows YAML 1.1, where bare yes/no/on/off load as booleans.
@@ -260,20 +450,50 @@ def _sanitize_json_value(value: Any) -> Any:
     return value
 
 
+def _canonicalize_config_key(key: str) -> str:
+    """Map known nested section keys and aliases to WaveDL's flat schema."""
+    if key in _CANONICAL_CONFIG_KEYS:
+        return key
+    if key in _SECTION_ALIASES:
+        return _SECTION_ALIASES[key]
+    stripped = _strip_known_section_prefix(key)
+    if stripped is not None:
+        if stripped in _CANONICAL_CONFIG_KEYS:
+            return stripped
+        if stripped in _SECTION_ALIASES:
+            return _SECTION_ALIASES[stripped]
+    return key
+
+
 def _flatten_config(
     config: dict[str, Any], parent_key: str = "", sep: str = "_"
 ) -> dict[str, Any]:
-    """Flatten nested YAML dictionaries to match WaveDL's flat config schema."""
-    items: dict[str, Any] = {}
+    """Flatten nested YAML dictionaries and canonicalize WaveDL section aliases."""
+    raw_items: dict[str, Any] = {}
     for key, value in config.items():
         if key == "_metadata" or not isinstance(key, str):
             continue
         new_key = f"{parent_key}{sep}{key}" if parent_key else key
         if isinstance(value, dict):
-            items.update(_flatten_config(value, new_key, sep))
+            raw_items.update(_flatten_config(value, new_key, sep))
         else:
-            items[new_key] = _sanitize_json_value(value)
-    return items
+            raw_items[new_key] = _sanitize_json_value(value)
+
+    if parent_key:
+        return raw_items
+
+    normalized = _normalize_yaml_bool_choices(raw_items)
+    canonical: dict[str, Any] = {}
+    for key, value in normalized.items():
+        canon_key = _canonicalize_config_key(key)
+        if canon_key == "precision" and value is False:
+            value = "no"
+        elif canon_key == "loss" and isinstance(value, str):
+            value = _LOSS_ALIASES.get(value.lower(), value)
+        # Prefer explicit top-level canonical keys over legacy aliases if both exist
+        if canon_key not in canonical or key == canon_key:
+            canonical[canon_key] = value
+    return canonical
 
 
 def format_config_yaml(cfg: dict[str, Any]) -> str:
@@ -314,6 +534,7 @@ def format_config_yaml(cfg: dict[str, Any]) -> str:
             "DATA & OUTPUT",
             [
                 "data_path",
+                "val_data_path",
                 "output_dir",
                 "cache_dir",
                 "resume",
@@ -324,10 +545,15 @@ def format_config_yaml(cfg: dict[str, Any]) -> str:
                 "deterministic",
                 "cache_validate",
                 "single_channel",
+                "input_channels",
+                "input_transform",
+                "input_range",
+                "target_scaling",
+                "target_range",
                 "allow_pickle",
             ],
         ),
-        ("PERFORMANCE OPTIMIZATION", ["precision", "compile"]),
+        ("PERFORMANCE OPTIMIZATION", ["precision", "compile", "no_tf32"]),
         (
             "LOGGING & MONITORING",
             ["wandb", "wandb_watch", "project_name", "run_name"],
@@ -431,12 +657,14 @@ class TrainingManager:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._start_lock = threading.Lock()
-        self.process: subprocess.Popen[str] | None = None
+        self._start_lock = threading.RLock()
+        self._stop_lock = threading.Lock()
+        self.process: subprocess.Popen[bytes] | None = None
         self._stream_thread: threading.Thread | None = None
         self._job_id: int = 0
         self._logs: deque[str] = deque(maxlen=MAX_LOG_LINES)
         self._log_base_offset: int = 0
+        self._active_progress: str = ""
         self.cmd: list[str] = []
         self.exit_code: int | None = None
         self.start_time: float | None = None
@@ -479,7 +707,7 @@ class TrainingManager:
             return self.run(cmd)
 
     def run(self, cmd: list[str]) -> dict[str, Any]:
-        with self._lock:
+        with self._start_lock, self._lock:
             if self._active():
                 raise RuntimeError("Another WaveDL job is already running.")
 
@@ -492,10 +720,7 @@ class TrainingManager:
                 "env": env,
                 "stdout": subprocess.PIPE,
                 "stderr": subprocess.STDOUT,
-                "text": True,
-                "encoding": "utf-8",
-                "errors": "replace",
-                "bufsize": 1,
+                "bufsize": 0,
             }
             if os.name == "posix":
                 popen_kwargs["start_new_session"] = True
@@ -511,6 +736,7 @@ class TrainingManager:
             self._job_id += 1
             self._logs.clear()
             self._log_base_offset = 0
+            self._active_progress = ""
             self._append_log_unlocked(f"$ {' '.join(cmd)}")
             self._append_log_unlocked("")
             self.cmd = cmd
@@ -525,80 +751,117 @@ class TrainingManager:
         thread.start()
         return self.status(0)
 
-    def _stream_output(self, proc: subprocess.Popen[str]) -> None:
+    def _stream_output(self, proc: subprocess.Popen[bytes]) -> None:
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        pending = ""
         try:
             if proc.stdout is not None:
-                for line in proc.stdout:
-                    clean = line.rstrip("\r\n")
-                    with self._lock:
-                        self._append_log_unlocked(clean)
+                while True:
+                    chunk = proc.stdout.read(4096)
+                    if not chunk:
+                        break
+                    pending += decoder.decode(chunk, final=False)
+                    while "\n" in pending:
+                        raw_line, pending = pending.split("\n", 1)
+                        # Collapse carriage-return (\r) progress updates on a single line
+                        if "\r" in raw_line:
+                            parts = [p for p in raw_line.split("\r") if p]
+                            clean = parts[-1] if parts else ""
+                        else:
+                            clean = raw_line
+                        with self._lock:
+                            self._active_progress = ""
+                            self._append_log_unlocked(clean)
+                    if "\r" in pending:
+                        segments = pending.split("\r")
+                        pending = segments[-1]
+                        latest = next((s for s in reversed(segments) if s.strip()), "")
+                        with self._lock:
+                            self._active_progress = latest
+                tail = pending + decoder.decode(b"", final=True)
+                if tail:
+                    parts = [p for p in tail.split("\r") if p]
+                    clean_tail = parts[-1] if parts else ""
+                    if clean_tail:
+                        with self._lock:
+                            self._active_progress = ""
+                            self._append_log_unlocked(clean_tail)
         finally:
             if proc.stdout is not None:
                 proc.stdout.close()
             rc = proc.wait()
             with self._lock:
+                self._active_progress = ""
                 self.exit_code = rc
                 self.end_time = time.time()
                 self._append_log_unlocked("")
                 self._append_log_unlocked(f"[Process exited with code {rc}]")
 
-    def stop(self) -> dict[str, Any]:
-        with self._lock:
-            proc = self.process
-            stream_thread = self._stream_thread
-            running = proc is not None and proc.poll() is None
-            if running:
-                self._append_log_unlocked(
-                    "\n[Sending interrupt signal to running job...]"
-                )
+    def stop(
+        self,
+        *,
+        sigint_timeout: float = 30.0,
+        sigterm_timeout: float = 5.0,
+    ) -> dict[str, Any]:
+        with self._stop_lock:
+            with self._lock:
+                proc = self.process
+                stream_thread = self._stream_thread
+                running = proc is not None and proc.poll() is None
+                if running:
+                    self._append_log_unlocked(
+                        "\n[Sending interrupt signal to running job (up to 30s for graceful checkpoint save)...]"
+                    )
 
-        if not running or proc is None:
-            return self.status(0)
+            if not running or proc is None:
+                return self.status(0)
 
-        try:
-            if os.name == "posix":
-                os.killpg(os.getpgid(proc.pid), signal.SIGINT)
-            else:
-                proc.send_signal(signal.CTRL_BREAK_EVENT)
-        except Exception:
-            proc.terminate()
-
-        for _ in range(30):
-            if proc.poll() is not None:
-                break
-            time.sleep(0.1)
-        else:
             try:
                 if os.name == "posix":
-                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    os.killpg(os.getpgid(proc.pid), signal.SIGINT)
                 else:
-                    proc.terminate()
+                    proc.send_signal(signal.CTRL_BREAK_EVENT)
             except Exception:
-                pass
-            for _ in range(20):
+                proc.terminate()
+
+            deadline = time.monotonic() + max(0.1, sigint_timeout)
+            while time.monotonic() < deadline:
                 if proc.poll() is not None:
                     break
                 time.sleep(0.1)
             else:
                 try:
                     if os.name == "posix":
-                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
                     else:
-                        with contextlib.suppress(Exception):
-                            subprocess.run(
-                                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                                timeout=5,
-                                check=False,
-                            )
-                        proc.kill()
+                        proc.terminate()
                 except Exception:
                     pass
+                term_deadline = time.monotonic() + max(0.1, sigterm_timeout)
+                while time.monotonic() < term_deadline:
+                    if proc.poll() is not None:
+                        break
+                    time.sleep(0.1)
+                else:
+                    try:
+                        if os.name == "posix":
+                            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                        else:
+                            with contextlib.suppress(Exception):
+                                subprocess.run(
+                                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL,
+                                    timeout=5,
+                                    check=False,
+                                )
+                            proc.kill()
+                    except Exception:
+                        pass
 
-        if stream_thread is not None:
-            stream_thread.join(timeout=1.0)
-        return self.status(0)
+            if stream_thread is not None:
+                stream_thread.join(timeout=2.0)
+            return self.status(0)
 
     def status(self, offset: int = 0) -> dict[str, Any]:
         with self._lock:
@@ -619,6 +882,7 @@ class TrainingManager:
                 "exit_code": self.exit_code,
                 "cmd": " ".join(self.cmd),
                 "logs": new_logs,
+                "progress": self._active_progress,
                 "next_offset": total_seen,
                 "elapsed": elapsed,
             }
@@ -628,10 +892,21 @@ TRAINER = TrainingManager()
 
 
 def _resolve_user_path(raw_path: str) -> Path:
+    if "\x00" in raw_path:
+        raise ValueError("Path must not contain NUL bytes.")
     p = Path(os.path.expanduser(raw_path.strip() or "."))
     if not p.is_absolute():
         p = WORKSPACE_ROOT / p
-    return p.resolve()
+    resolved = p.resolve()
+    if RESTRICT_WORKSPACE:
+        root_resolved = WORKSPACE_ROOT.resolve()
+        try:
+            resolved.relative_to(root_resolved)
+        except ValueError as exc:
+            raise ValueError(
+                f"Path escapes workspace root ({root_resolved}): {raw_path}"
+            ) from exc
+    return resolved
 
 
 def _validate_yaml_config_path(raw_path: str) -> Path:
@@ -641,11 +916,102 @@ def _validate_yaml_config_path(raw_path: str) -> Path:
     return target
 
 
+def _parse_int_field(
+    raw: Any, name: str, *, min_value: int | None = None, max_value: int | None = None
+) -> int:
+    """Parse an integer JSON field while explicitly rejecting booleans."""
+    if isinstance(raw, bool):
+        raise ValueError(f"{name} must be an integer, not a boolean.")
+    if isinstance(raw, float) and not raw.is_integer():
+        raise ValueError(f"{name} must be an integer, got {raw!r}.")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be an integer, got {raw!r}.") from exc
+    if min_value is not None and value < min_value:
+        raise ValueError(f"{name} must be >= {min_value}.")
+    if max_value is not None and value > max_value:
+        raise ValueError(f"{name} must be <= {max_value}.")
+    return value
+
+
+def _validate_cli_token(value: str, name: str) -> str:
+    """Reject empty, option-like (leading '-'), or control-character CLI tokens."""
+    token = value.strip()
+    if not token:
+        raise ValueError(f"{name} entries must be non-empty.")
+    if token.startswith("-"):
+        raise ValueError(f"{name} entry must not start with '-': {token!r}")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in token):
+        raise ValueError(f"{name} entry contains invalid control characters.")
+    return token
+
+
+_MODEL_DISCOVERY_LOCK = threading.Lock()
+_CACHED_REGISTERED_MODELS: list[dict[str, Any]] | None = None
+_MODEL_DISCOVERY_ATTEMPTED = False
+
+
+def _discover_registered_models() -> list[dict[str, Any]] | None:
+    """Lazily query ``wavedl.models.registry`` if available in this environment."""
+    global _CACHED_REGISTERED_MODELS, _MODEL_DISCOVERY_ATTEMPTED
+    if _MODEL_DISCOVERY_ATTEMPTED:
+        return _CACHED_REGISTERED_MODELS
+    with _MODEL_DISCOVERY_LOCK:
+        if _MODEL_DISCOVERY_ATTEMPTED:
+            return _CACHED_REGISTERED_MODELS
+        try:
+            from wavedl.models import get_model, list_models
+
+            discovered: list[dict[str, Any]] = []
+            for name in sorted(list_models()):
+                cls = get_model(name)
+                supports_spatial = bool(getattr(cls, "supports_spatial_output", False))
+                requires_spatial = bool(getattr(cls, "requires_spatial_output", False))
+                supported_dims = getattr(cls, "supported_dims", None)
+                dims: list[str] = []
+                if supported_dims:
+                    dims = [f"{int(d)}D" for d in supported_dims]
+                if supports_spatial or requires_spatial:
+                    if "2D" not in dims:
+                        dims.append("2D")
+                    dims.append("field")
+                discovered.append(
+                    {
+                        "name": name,
+                        "dims": dims or ["2D"],
+                        "supports_spatial_output": supports_spatial,
+                        "requires_spatial_output": requires_spatial,
+                    }
+                )
+            _CACHED_REGISTERED_MODELS = discovered
+        except Exception:
+            _CACHED_REGISTERED_MODELS = None
+        finally:
+            _MODEL_DISCOVERY_ATTEMPTED = True
+        return _CACHED_REGISTERED_MODELS
+
+
+_VALID_PLOT_FORMATS = frozenset({"png", "pdf", "svg", "eps"})
+
+
 class WaveDLGUIHandler(BaseHTTPRequestHandler):
     """HTTP request handler for the WaveDL GUI."""
 
     def log_message(self, format: str, *args: Any) -> None:
         return
+
+    def _send_security_headers(self, *, is_html: bool = False) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        if is_html:
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; script-src 'unsafe-inline'; "
+                "style-src 'unsafe-inline'; img-src 'self' data:; "
+                "connect-src 'self'; frame-ancestors 'none'",
+            )
 
     def _send_json(self, data: Any, status: int = HTTPStatus.OK) -> None:
         body = json.dumps(data, allow_nan=False).encode("utf-8")
@@ -653,6 +1019,7 @@ class WaveDLGUIHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self._send_security_headers(is_html=False)
         self.end_headers()
         self.wfile.write(body)
 
@@ -664,14 +1031,27 @@ class WaveDLGUIHandler(BaseHTTPRequestHandler):
             allowed.add(bound)
         return wildcard, allowed
 
-    def _validate_request(self, *, require_json: bool) -> bool:
-        """Protect local HTTP server against DNS rebinding and cross-site POSTs."""
+    def _validate_request(
+        self, *, require_json: bool, require_token: bool = False
+    ) -> bool:
+        """Protect local HTTP server against DNS rebinding, CSRF, and unauthenticated API access."""
         wildcard, allowed_hosts = self._allowed_hosts()
         loopback_hosts = {"127.0.0.1", "localhost", "::1"}
+        server_port = int(self.server.server_address[1])
         host_header = self.headers.get("Host")
-        parsed_host = (
-            urllib.parse.urlsplit(f"//{host_header}").hostname if host_header else None
-        )
+        parsed_host: str | None = None
+        host_port: int | None = None
+        if host_header:
+            try:
+                host_parts = urllib.parse.urlsplit(f"//{host_header}")
+                parsed_host = host_parts.hostname
+                host_port = host_parts.port
+            except ValueError:
+                self._send_json(
+                    {"error": "Malformed Host header."},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return False
         if host_header and not wildcard:
             if parsed_host is None or parsed_host.lower() not in allowed_hosts:
                 self._send_json(
@@ -683,7 +1063,16 @@ class WaveDLGUIHandler(BaseHTTPRequestHandler):
         if require_json:
             origin = self.headers.get("Origin")
             if origin:
-                origin_host = urllib.parse.urlsplit(origin).hostname
+                try:
+                    origin_parts = urllib.parse.urlsplit(origin)
+                    origin_host = origin_parts.hostname
+                    origin_port = origin_parts.port
+                except ValueError:
+                    self._send_json(
+                        {"error": "Cross-origin POST request blocked."},
+                        status=HTTPStatus.FORBIDDEN,
+                    )
+                    return False
                 if origin_host is None:
                     self._send_json(
                         {"error": "Cross-origin POST request blocked."},
@@ -692,6 +1081,15 @@ class WaveDLGUIHandler(BaseHTTPRequestHandler):
                     return False
                 origin_lc = origin_host.lower()
                 if not wildcard and origin_lc not in allowed_hosts:
+                    self._send_json(
+                        {"error": "Cross-origin POST request blocked."},
+                        status=HTTPStatus.FORBIDDEN,
+                    )
+                    return False
+                if origin_port is None:
+                    origin_port = 443 if origin_parts.scheme == "https" else 80
+                expected_port = host_port if host_port is not None else server_port
+                if origin_port != expected_port:
                     self._send_json(
                         {"error": "Cross-origin POST request blocked."},
                         status=HTTPStatus.FORBIDDEN,
@@ -717,16 +1115,6 @@ class WaveDLGUIHandler(BaseHTTPRequestHandler):
                 )
                 return False
 
-            # Enforce per-session token for browser-originated POST requests
-            if origin or fetch_site:
-                req_token = self.headers.get("X-WaveDL-Token", "")
-                if not hmac.compare_digest(req_token, SESSION_TOKEN):
-                    self._send_json(
-                        {"error": "Invalid or missing session token."},
-                        status=HTTPStatus.FORBIDDEN,
-                    )
-                    return False
-
             ctype = (
                 self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
             )
@@ -734,6 +1122,16 @@ class WaveDLGUIHandler(BaseHTTPRequestHandler):
                 self._send_json(
                     {"error": "Content-Type must be application/json."},
                     status=HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                )
+                return False
+
+        # Unconditionally require per-session token on all POST routes and protected API GET routes
+        if require_json or require_token:
+            req_token = self.headers.get("X-WaveDL-Token", "")
+            if not hmac.compare_digest(req_token, SESSION_TOKEN):
+                self._send_json(
+                    {"error": "Invalid or missing session token."},
+                    status=HTTPStatus.FORBIDDEN,
                 )
                 return False
 
@@ -755,11 +1153,12 @@ class WaveDLGUIHandler(BaseHTTPRequestHandler):
         return loaded
 
     def do_GET(self) -> None:
-        if not self._validate_request(require_json=False):
-            return
         parsed = urllib.parse.urlparse(self.path)
         route = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
+        is_api = route.startswith("/api/")
+        if not self._validate_request(require_json=False, require_token=is_api):
+            return
 
         if route in ("/", "/index.html"):
             content = _read_index_html()
@@ -767,6 +1166,7 @@ class WaveDLGUIHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(content)))
             self.send_header("Cache-Control", "no-store")
+            self._send_security_headers(is_html=True)
             self.end_headers()
             self.wfile.write(content)
             return
@@ -776,18 +1176,28 @@ class WaveDLGUIHandler(BaseHTTPRequestHandler):
             if not raw_path:
                 self._send_json({"exists": False, "is_file": False, "is_dir": False})
                 return
-            target = _resolve_user_path(raw_path)
-            size_mb = None
-            if target.is_file():
-                try:
-                    size_mb = round(target.stat().st_size / (1024 * 1024), 2)
-                except OSError:
-                    size_mb = None
+            try:
+                target = _resolve_user_path(raw_path)
+                exists = target.exists()
+                is_file = target.is_file()
+                is_dir = target.is_dir()
+                size_mb = None
+                if is_file:
+                    try:
+                        size_mb = round(target.stat().st_size / (1024 * 1024), 2)
+                    except OSError:
+                        size_mb = None
+            except (ValueError, OSError) as exc:
+                self._send_json(
+                    {"error": f"Invalid path: {exc}"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
             self._send_json(
                 {
-                    "exists": target.exists(),
-                    "is_file": target.is_file(),
-                    "is_dir": target.is_dir(),
+                    "exists": exists,
+                    "is_file": is_file,
+                    "is_dir": is_dir,
                     "resolved_path": str(target),
                     "size_mb": size_mb,
                 }
@@ -801,15 +1211,20 @@ class WaveDLGUIHandler(BaseHTTPRequestHandler):
                     "workspace_root": str(WORKSPACE_ROOT),
                     "default_config": rel_default,
                     "has_default_config": DEFAULT_CONFIG_PATH.is_file(),
+                    "restrict_workspace": RESTRICT_WORKSPACE,
                 }
             )
+            return
+
+        if route == "/api/models":
+            self._send_json({"models": _discover_registered_models()})
             return
 
         if route == "/api/config":
             raw_path = query.get("path", ["config.yaml"])[0]
             try:
                 target = _validate_yaml_config_path(raw_path)
-            except ValueError as exc:
+            except (ValueError, OSError) as exc:
                 self._send_json(
                     {"error": str(exc)},
                     status=HTTPStatus.BAD_REQUEST,
@@ -850,40 +1265,62 @@ class WaveDLGUIHandler(BaseHTTPRequestHandler):
 
         if route == "/api/browse":
             raw_dir = query.get("dir", [str(WORKSPACE_ROOT)])[0]
-            target_dir = _resolve_user_path(raw_dir)
-            if target_dir.is_file():
-                target_dir = target_dir.parent
-            if not target_dir.is_dir():
-                target_dir = WORKSPACE_ROOT
+            try:
+                target_dir = _resolve_user_path(raw_dir)
+                if target_dir.is_file():
+                    target_dir = target_dir.parent
+                if not target_dir.is_dir():
+                    target_dir = WORKSPACE_ROOT.resolve()
+            except (ValueError, OSError) as exc:
+                self._send_json(
+                    {"error": f"Invalid directory path: {exc}"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
 
             entries: list[dict[str, Any]] = []
             try:
-                for item in sorted(
-                    target_dir.iterdir(),
-                    key=lambda p: (not p.is_dir(), p.name.lower()),
-                ):
-                    if item.name.startswith("."):
-                        continue
-                    try:
-                        rel = os.path.relpath(item, WORKSPACE_ROOT)
-                        if rel.startswith(".."):
-                            display_path = str(item)
-                        else:
-                            display_path = rel
-                    except ValueError:
-                        display_path = str(item)
-                    entries.append(
-                        {
-                            "name": item.name,
-                            "is_dir": item.is_dir(),
-                            "path": display_path,
-                            "abs_path": str(item),
-                        }
-                    )
-            except PermissionError:
-                pass
+                raw_items = list(target_dir.iterdir())
+            except OSError:
+                raw_items = []
 
-            parent = str(target_dir.parent) if target_dir.parent != target_dir else None
+            classified: list[tuple[bool, str, Path]] = []
+            for item in raw_items:
+                if item.name.startswith("."):
+                    continue
+                try:
+                    is_dir = item.is_dir()
+                except OSError:
+                    continue
+                classified.append((is_dir, item.name.lower(), item))
+
+            classified.sort(key=lambda entry: (not entry[0], entry[1]))
+            for is_dir, _, item in classified:
+                try:
+                    rel = os.path.relpath(item, WORKSPACE_ROOT)
+                    display_path = str(item) if rel.startswith("..") else rel
+                except ValueError:
+                    display_path = str(item)
+                entries.append(
+                    {
+                        "name": item.name,
+                        "is_dir": is_dir,
+                        "path": display_path,
+                        "abs_path": str(item),
+                    }
+                )
+
+            parent: str | None = None
+            if target_dir.parent != target_dir:
+                if not RESTRICT_WORKSPACE:
+                    parent = str(target_dir.parent)
+                else:
+                    try:
+                        target_dir.parent.relative_to(WORKSPACE_ROOT.resolve())
+                        parent = str(target_dir.parent)
+                    except ValueError:
+                        parent = None
+
             self._send_json(
                 {
                     "current_dir": str(target_dir),
@@ -986,11 +1423,13 @@ class WaveDLGUIHandler(BaseHTTPRequestHandler):
 
                 parsed_gpus: int | None = None
                 if num_gpus is not None and str(num_gpus).strip() != "":
-                    gpu_val = int(num_gpus)
+                    gpu_val = _parse_int_field(num_gpus, "num_gpus", min_value=0)
                     if gpu_val > 0:
                         parsed_gpus = gpu_val
 
-                if isinstance(raw_yaml, str) and raw_yaml.strip():
+                if "raw_yaml" in payload and raw_yaml is not None:
+                    if not isinstance(raw_yaml, str) or not raw_yaml.strip():
+                        raise ValueError("raw_yaml must be a non-empty YAML document.")
                     parse_yaml_text(raw_yaml)
                     yaml_text = raw_yaml
                 elif isinstance(cfg, dict):
@@ -1040,18 +1479,55 @@ class WaveDLGUIHandler(BaseHTTPRequestHandler):
                 import_modules = payload.get("import_modules")
                 if isinstance(import_modules, list):
                     clean_mods = [
-                        str(m).strip() for m in import_modules if str(m).strip()
+                        _validate_cli_token(str(m), "import_modules")
+                        for m in import_modules
+                        if str(m).strip()
                     ]
                     if clean_mods:
                         cmd += ["--import", *clean_mods]
                 if payload.get("allow_pickle") is True:
                     cmd.append("--allow_pickle")
+                if payload.get("no_tf32") is True:
+                    cmd.append("--no_tf32")
+                if payload.get("no_denorm") is True:
+                    cmd.append("--no_denorm")
                 raw_ic = payload.get("input_channels")
                 if raw_ic is not None and str(raw_ic).strip() != "":
-                    ic = int(raw_ic)
-                    if ic < 1:
-                        raise ValueError("input_channels must be >= 1.")
+                    ic = _parse_int_field(raw_ic, "input_channels", min_value=1)
                     cmd += ["--input_channels", str(ic)]
+                raw_bs = payload.get("batch_size")
+                if raw_bs is not None and str(raw_bs).strip() != "":
+                    bs = _parse_int_field(raw_bs, "batch_size", min_value=1)
+                    cmd += ["--batch_size", str(bs)]
+                raw_opset = payload.get("export_opset")
+                if raw_opset is not None and str(raw_opset).strip() != "":
+                    opset = _parse_int_field(
+                        raw_opset, "export_opset", min_value=11, max_value=20
+                    )
+                    cmd += ["--export_opset", str(opset)]
+                plot_format = str(payload.get("plot_format") or "").strip().lower()
+                if plot_format:
+                    if plot_format not in _VALID_PLOT_FORMATS:
+                        raise ValueError(
+                            f"plot_format must be one of {sorted(_VALID_PLOT_FORMATS)}."
+                        )
+                    cmd += ["--plot_format", plot_format]
+                for opt_key in ("input_key", "output_key"):
+                    opt_val = str(payload.get(opt_key) or "").strip()
+                    if opt_val:
+                        cmd += [
+                            f"--{opt_key}",
+                            _validate_cli_token(opt_val, opt_key),
+                        ]
+                param_names = payload.get("param_names")
+                if isinstance(param_names, list):
+                    clean_params = [
+                        _validate_cli_token(str(p), "param_names")
+                        for p in param_names
+                        if str(p).strip()
+                    ]
+                    if clean_params:
+                        cmd += ["--param_names", *clean_params]
                 self._send_json(TRAINER.run(cmd + TEST_MODE_ARGS[mode]))
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
@@ -1093,7 +1569,7 @@ def _find_free_port(host: str, preferred_port: int) -> int:
 
 
 def main() -> int:
-    global WORKSPACE_ROOT, DEFAULT_CONFIG_PATH
+    global WORKSPACE_ROOT, DEFAULT_CONFIG_PATH, RESTRICT_WORKSPACE
 
     parser = argparse.ArgumentParser(
         description="WaveDL Lightweight Web GUI (Config Builder, Training, Test & Export)"
@@ -1114,10 +1590,16 @@ def main() -> int:
         action="store_true",
         help="Do not automatically open the web browser on launch",
     )
+    parser.add_argument(
+        "--restrict-workspace",
+        action="store_true",
+        help="Restrict file browsing and YAML reads/writes to the launch workspace directory",
+    )
     args = parser.parse_args()
 
     WORKSPACE_ROOT = Path.cwd()
     DEFAULT_CONFIG_PATH = WORKSPACE_ROOT / "config.yaml"
+    RESTRICT_WORKSPACE = bool(args.restrict_workspace)
     bind_host = args.host.strip("[]")
     family = _socket_family_for_host(bind_host)
     port = _find_free_port(bind_host, args.port)
@@ -1138,6 +1620,14 @@ def main() -> int:
     print("=" * 60)
     print(f"  WaveDL GUI running at: {url}")
     print(f"  Workspace root:        {WORKSPACE_ROOT}")
+    if RESTRICT_WORKSPACE:
+        print("  Workspace confinement: ENABLED (--restrict-workspace)")
+    if bind_host.lower() not in ("127.0.0.1", "localhost", "::1"):
+        print(
+            "  WARNING: Bound to a non-loopback interface. Anyone who can reach\n"
+            "           this port can read/write YAML configs and launch jobs.\n"
+            "           Prefer SSH port forwarding with default --host 127.0.0.1."
+        )
     print("  Press Ctrl+C to stop the server.")
     print("=" * 60)
 

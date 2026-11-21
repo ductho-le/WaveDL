@@ -437,7 +437,11 @@ class TestHPOConstants:
     def test_default_lists_not_empty(self):
         """Test that all default lists are populated."""
         assert len(self.DEFAULT_MODELS) > 0
-        assert self.DENSE_MODELS == ["unet_field"]
+        assert self.DENSE_MODELS == [
+            "unet_field",
+            "inversionnet",
+            "inversionnet_resize",
+        ]
         assert len(self.DEFAULT_OPTIMIZERS) > 0
         assert len(self.DEFAULT_SCHEDULERS) > 0
         assert len(self.DEFAULT_LOSSES) > 0
@@ -544,7 +548,11 @@ class TestHPOObjective:
         """Dense HPO defaults must not launch trials with vector-only models."""
         from wavedl.hpo import _resolve_models_for_target
 
-        assert _resolve_models_for_target((2, 32, 48)) == ["unet_field"]
+        assert _resolve_models_for_target((2, 32, 48)) == [
+            "unet_field",
+            "inversionnet",
+            "inversionnet_resize",
+        ]
 
     def test_dense_targets_use_smaller_default_batches(self):
         """Field sweeps should avoid the vector-oriented batch-size defaults."""
@@ -622,7 +630,11 @@ class TestHPOObjective:
         ):
             assert create_objective(args)(trial) == 0.5
 
-        assert choices_seen["model"] == ["unet_field"]
+        assert choices_seen["model"] == [
+            "unet_field",
+            "inversionnet",
+            "inversionnet_resize",
+        ]
         assert choices_seen["batch_size"] == [1, 2, 4, 8]
 
     def test_inprocess_forces_single_job(self):

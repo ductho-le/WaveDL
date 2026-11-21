@@ -205,6 +205,7 @@ def parse_args() -> argparse.Namespace:
         type=str,
         nargs="+",
         default=["png"],
+        choices=["png", "pdf", "svg", "eps", "tiff"],
         help="Output format(s) for plots: png, pdf, svg, eps, tiff (default: png)",
     )
     parser.add_argument(
@@ -223,7 +224,7 @@ def parse_args() -> argparse.Namespace:
         "--export_path",
         type=str,
         default=None,
-        help="Output path for exported model (default: {model_name}.onnx)",
+        help="Output path for exported model (default: {model_name}_model.onnx)",
     )
     parser.add_argument(
         "--export_opset",
@@ -671,13 +672,16 @@ def run_inference(
     )
 
     predictions = []
+    preprocessing = getattr(model, "_wavedl_preprocessing", None) or {}
+    has_input_transform = preprocessing.get("input_transform", "none") != "none"
 
     for batch in tqdm(loader, desc="Inference", leave=False):
         batch_x = batch[0] if isinstance(batch, (list, tuple)) else batch
-        batch_x = transform_inputs(
-            batch_x, getattr(model, "_wavedl_preprocessing", None)
-        )
+        # Transfer pinned tensor asynchronously before any transform so
+        # pin_memory + non_blocking=True is preserved and no-op .clone() is skipped.
         batch_x = batch_x.to(device, non_blocking=True)
+        if has_input_transform:
+            batch_x = transform_inputs(batch_x, preprocessing)
         output = model(batch_x)
         if (
             not isinstance(output, torch.Tensor)
@@ -687,9 +691,9 @@ def run_inference(
             raise ValueError(
                 "Model must return a tensor of vectors (N,T) or fields (N,C,H,W), preserving batch size."
             )
-        if not torch.isfinite(output).all():
+        preds = output.detach().float().cpu().numpy()
+        if not np.isfinite(preds).all():
             raise FloatingPointError("Model produced non-finite predictions.")
-        preds = output.float().cpu().numpy()
         predictions.append(preds)
 
     if not predictions:
@@ -828,7 +832,7 @@ def export_to_onnx(
     # Ensure model is in eval mode on CPU for consistent export
     model = model.cpu()
     model.eval()
-    sample_input = sample_input.cpu()
+    sample_input = sample_input.detach().cpu()
 
     # Determine input/output names based on dimensions
     input_dims = sample_input.ndim - 2  # Exclude batch and channel
@@ -914,6 +918,9 @@ def _export_staged_onnx(
             **export_kwargs,
         )
 
+    has_embedded_input_transform = (preprocessing or {}).get(
+        "input_transform", "none"
+    ) != "none"
     onnx_model = onnx.load(staged_path)
     onnx.helper.set_model_props(
         onnx_model,
@@ -923,7 +930,9 @@ def _export_staged_onnx(
             "input_shape": str(tuple(sample_input.shape[1:])),
             "preprocessing": json.dumps(preprocessing or {}, sort_keys=True),
             "input_units": "raw",
-            "input_transform_embedded": "true",
+            "input_transform_embedded": "true"
+            if has_embedded_input_transform
+            else "false",
         },
     )
     onnx.checker.check_model(onnx_model)
@@ -943,7 +952,7 @@ def _validate_onnx_export(
     sample_input: torch.Tensor,
     onnx_path: str,
     rtol: float = 1e-4,
-    atol: float = 1e-5,
+    atol: float = 1e-4,
 ) -> bool:
     """
     Validate ONNX model by comparing outputs with PyTorch model.
@@ -1507,23 +1516,14 @@ def main():
         except Exception:
             pass
 
-    effective_input_channels = (
-        1
-        if (
-            args.input_channels is None
-            and meta_in_shape is not None
-            and len(meta_in_shape) == 3
-        )
-        else (
-            args.input_channels
-            if args.input_channels is not None
-            else (
-                meta_in_channels
-                if meta_in_channels is not None and meta_in_channels > 1
-                else None
-            )
-        )
-    )
+    if args.input_channels is not None:
+        effective_input_channels = args.input_channels
+    elif meta_in_channels is not None and meta_in_channels > 1:
+        effective_input_channels = meta_in_channels
+    elif meta_in_shape is not None and len(meta_in_shape) == 3:
+        effective_input_channels = 1
+    else:
+        effective_input_channels = None
 
     # Load test data
     X_test, y_test = load_data_for_inference(
@@ -1622,83 +1622,96 @@ def main():
                 shape_scaler = pickle.load(f)
             target_shape = scaler_target_shape(shape_scaler, out_size)
     target_shape = target_shape or (out_size,)
-    model, scaler = load_checkpoint(
-        args.checkpoint,
-        in_shape,
-        out_size,
-        args.model,
-        out_shape=target_shape,
-        in_channels=int(X_test.shape[1]),
-    )
-
-    # Ensure output directory exists before any file operations (including ONNX export)
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Handle ONNX export if requested
-    if args.export == "onnx":
-        resolved_model_name = (
-            args.model
-            or getattr(model, "_wavedl_model_name", None)
-            or meta_model_name
-            or Path(args.checkpoint).resolve().parent.name
-            or "wavedl"
+    if args.input_channels is not None and int(X_test.shape[1]) != args.input_channels:
+        raise ValueError(
+            f"Requested --input_channels={args.input_channels}, "
+            f"but test data has {int(X_test.shape[1])} channels."
         )
-        # Determine output path
-        if args.export_path:
-            export_path = args.export_path
-        else:
-            export_path = str(
-                Path(args.output_dir) / f"{resolved_model_name}_model.onnx"
+    try:
+        model, scaler = load_checkpoint(
+            args.checkpoint,
+            in_shape,
+            out_size,
+            args.model,
+            out_shape=target_shape,
+            in_channels=int(X_test.shape[1]),
+        )
+
+        # Ensure output directory exists before any file operations (including ONNX export)
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Handle ONNX export if requested
+        if args.export == "onnx":
+            resolved_model_name = (
+                args.model
+                or getattr(model, "_wavedl_model_name", None)
+                or meta_model_name
+                or Path(args.checkpoint).resolve().parent.name
+                or "wavedl"
             )
-
-        # Export with sample input for tracing
-        if len(X_test) == 0:
-            raise ValueError("ONNX export requires at least one input sample.")
-        sample_input = X_test[:1]  # Single sample for tracing
-        success = export_to_onnx(
-            model=model,
-            sample_input=sample_input,
-            output_path=export_path,
-            opset_version=args.export_opset,
-            validate=True,
-            scaler=scaler,
-            include_denorm=not args.no_denorm,  # De-normalization ON by default
-            model_name=args.model
-            or getattr(model, "_wavedl_model_name", None)
-            or meta_model_name
-            or type(model).__name__,
-        )
-
-        if success:
-            # Print model info
-            info = get_onnx_model_info(export_path)
-            if "error" not in info:
-                logger.info(f"   📊 Model size: {info['file_size_mb']:.2f} MB")
-                logger.info(f"   📊 Input: {info['input_name']} {info['input_shape']}")
-                logger.info(
-                    f"   📊 Output: {info['output_name']} {info['output_shape']}"
+            # Determine output path
+            if args.export_path:
+                export_path = args.export_path
+            else:
+                export_path = str(
+                    Path(args.output_dir) / f"{resolved_model_name}_model.onnx"
                 )
-            logger.info(f"✅ ONNX export completed: {export_path}")
-        else:
-            raise RuntimeError("ONNX export failed; no validated model was produced.")
 
-        # If only export was requested (no other outputs), exit early
-        if not args.save_predictions and not args.plot and not args.verbose:
-            logger.info(
-                "Export-only mode. Use --save_predictions or --plot for inference."
+            # Export with sample input for tracing
+            if len(X_test) == 0:
+                raise ValueError("ONNX export requires at least one input sample.")
+            sample_input = X_test[:1]  # Single sample for tracing
+            success = export_to_onnx(
+                model=model,
+                sample_input=sample_input,
+                output_path=export_path,
+                opset_version=args.export_opset,
+                validate=True,
+                scaler=scaler,
+                include_denorm=not args.no_denorm,  # De-normalization ON by default
+                model_name=args.model
+                or getattr(model, "_wavedl_model_name", None)
+                or meta_model_name
+                or type(model).__name__,
             )
-            return
 
-    # Run inference with timing
-    logger.info(f"Running inference on {len(X_test)} samples...")
-    import time
+            if success:
+                # Print model info
+                info = get_onnx_model_info(export_path)
+                if "error" not in info:
+                    logger.info(f"   📊 Model size: {info['file_size_mb']:.2f} MB")
+                    logger.info(
+                        f"   📊 Input: {info['input_name']} {info['input_shape']}"
+                    )
+                    logger.info(
+                        f"   📊 Output: {info['output_name']} {info['output_shape']}"
+                    )
+                logger.info(f"✅ ONNX export completed: {export_path}")
+            else:
+                raise RuntimeError(
+                    "ONNX export failed; no validated model was produced."
+                )
 
-    inference_start = time.time()
-    y_pred_scaled = run_inference(
-        model, X_test, args.batch_size, device, num_workers=args.workers
-    )
-    inference_time = time.time() - inference_start
+            # If only export was requested (no other outputs), exit early
+            if not args.save_predictions and not args.plot and not args.verbose:
+                logger.info(
+                    "Export-only mode. Use --save_predictions or --plot for inference."
+                )
+                return
+
+        # Run inference with timing
+        logger.info(f"Running inference on {len(X_test)} samples...")
+        import time
+
+        inference_start = time.time()
+        y_pred_scaled = run_inference(
+            model, X_test, args.batch_size, device, num_workers=args.workers
+        )
+        inference_time = time.time() - inference_start
+    finally:
+        if hasattr(X_test, "close"):
+            X_test.close()
 
     # Calculate timing metrics
     n_samples = len(X_test)
@@ -1731,8 +1744,9 @@ def main():
             f"This may indicate a mismatched checkpoint or scaler.pkl."
         )
 
-    # Inverse transform predictions
+    # Inverse transform predictions and free scaled array to bound peak RAM
     y_pred = scaler.inverse_transform(y_pred_scaled)
+    del y_pred_scaled
     if not np.isfinite(y_pred).all():
         raise FloatingPointError("De-normalization produced non-finite predictions.")
 

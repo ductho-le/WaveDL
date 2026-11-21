@@ -8,6 +8,8 @@ This module has no dependencies on other model modules to prevent circular impor
 Author: Ductho Le (ductho.le@outlook.com)
 """
 
+from numbers import Integral
+
 import torch.nn as nn
 
 
@@ -37,8 +39,10 @@ def register_model(name: str):
         raise ValueError("Model name must be a non-empty string.")
 
     def decorator(cls: type[nn.Module]) -> type[nn.Module]:
-        if not isinstance(cls, type):
-            raise TypeError(f"Registered model '{name}' must be a class, got {cls!r}.")
+        if not isinstance(cls, type) or not issubclass(cls, nn.Module):
+            raise TypeError(
+                f"Registered model '{name}' must be a torch.nn.Module subclass, got {cls!r}."
+            )
         name_lower = name.strip().lower()
         if name_lower in MODEL_REGISTRY and MODEL_REGISTRY[name_lower] is not cls:
             raise ValueError(
@@ -64,7 +68,9 @@ def get_model(name: str) -> type[nn.Module]:
     Raises:
         ValueError: If model name is not found in registry
     """
-    name_lower = name.lower()
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("Model name must be a non-empty string.")
+    name_lower = name.strip().lower()
     if name_lower not in MODEL_REGISTRY:
         available = ", ".join(sorted(MODEL_REGISTRY.keys())) or "none"
         raise ValueError(f"Model '{name}' not found. Available models: [{available}]")
@@ -96,8 +102,8 @@ def build_model(
         out_size: Number of vector targets or dense output channels. Dense
                   models receive their canonical ``out_shape`` through kwargs.
         **kwargs: Additional model-specific parameters, including optional
-                  ``in_channels`` (default 1). Trainer/inference validate it
-                  against ``supported_input_channels`` before construction.
+                  ``in_channels`` (default 1), validated against
+                  ``supported_input_channels`` before construction.
 
     Returns:
         Instantiated model
@@ -108,6 +114,24 @@ def build_model(
         model = build_model("cnn", in_shape=(64, 128, 128), out_size=5) # 3D
     """
     ModelClass = get_model(name)
+    if "in_channels" in kwargs:
+        in_channels = kwargs["in_channels"]
+        if (
+            not isinstance(in_channels, Integral)
+            or isinstance(in_channels, bool)
+            or in_channels <= 0
+        ):
+            raise ValueError(
+                f"in_channels must be a positive integer, got {in_channels!r}."
+            )
+        in_channels = int(in_channels)
+        kwargs["in_channels"] = in_channels
+        supported = getattr(ModelClass, "supported_input_channels", (1,))
+        if supported is not None and in_channels not in supported:
+            raise ValueError(
+                f"Model '{name}' does not support in_channels={in_channels}; "
+                f"supported_input_channels={supported}."
+            )
     return ModelClass(in_shape=in_shape, out_size=out_size, **kwargs)
 
 

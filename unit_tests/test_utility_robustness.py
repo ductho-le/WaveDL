@@ -378,3 +378,153 @@ def test_relative_boxplot_percent_label_matches_renderer(monkeypatch, use_tex):
                 assert r"Relative Error (\%)" not in output.getvalue()
         finally:
             plt.close(fig)
+
+
+def test_config_bare_dot_aliases_and_flat_over_nested_precedence(tmp_path):
+    cfg_path = tmp_path / "exp.yaml"
+    cfg_path.write_text(
+        "output_dir: .\nmixed_precision: fp16\nlr: 0.01\noptimizer:\n  lr: -1\n",
+        encoding="utf-8",
+    )
+    loaded = load_config(str(cfg_path))
+    assert loaded["output_dir"] == "."
+    assert validate_config(loaded) == []
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output_dir", type=str, default="out")
+    parser.add_argument("--precision", type=str, default="bf16")
+    parser.add_argument("--lr", type=float, default=1e-3)
+    args = parser.parse_args([])
+    merged = merge_config_with_args(loaded, args, parser=parser, argv=[])
+    assert merged.output_dir == "."
+    assert merged.precision == "fp16"
+    assert merged.lr == pytest.approx(0.01)
+
+
+def test_constraints_pow_exp_overflow_and_file_module_cleanup(tmp_path):
+    import sys
+
+    from wavedl.utils.constraints import FileConstraint
+
+    # Fractional/negative base with learnable exponent stays finite with finite grads
+    y = torch.tensor([[-0.5, 1.5], [2.0, 0.5]], dtype=torch.float32, requires_grad=True)
+    loss_pow = ExpressionConstraint("y0 ** y1 > 0")(y)
+    assert torch.isfinite(loss_pow)
+    loss_pow.backward()
+    assert y.grad is not None and torch.isfinite(y.grad).all()
+
+    # Negative exponent near zero stays finite in fp32 MSE
+    y_neg = torch.tensor([[0.0], [1.0]], dtype=torch.float32, requires_grad=True)
+    loss_neg = ExpressionConstraint("y0 ** -2 < 10")(y_neg)
+    assert torch.isfinite(loss_neg)
+    loss_neg.backward()
+    assert y_neg.grad is not None and torch.isfinite(y_neg.grad).all()
+
+    # Large exp stays finite under MSE squaring
+    y_exp = torch.tensor([[1000.0]], dtype=torch.float32, requires_grad=True)
+    loss_exp = ExpressionConstraint("exp(y0) < 10")(y_exp)
+    assert torch.isfinite(loss_exp)
+    loss_exp.backward()
+    assert y_exp.grad is not None and torch.isfinite(y_exp.grad).all()
+
+    # Overflowing integer literal raises ValueError cleanly (not OverflowError)
+    with pytest.raises(ValueError, match=r"finite real"):
+        ExpressionConstraint(f"y0 < {'1' + '0' * 400}")
+
+    # FileConstraint cleans up sys.modules after loading
+    py_file = tmp_path / "custom_c.py"
+    py_file.write_text(
+        "def constraint(y_pred, inputs):\n    return (-y_pred[:, 0]).relu()\n",
+        encoding="utf-8",
+    )
+    before_mods = {k for k in sys.modules if k.startswith("wavedl_constraint_")}
+    fc = FileConstraint(str(py_file))
+    after_mods = {k for k in sys.modules if k.startswith("wavedl_constraint_")}
+    assert before_mods == after_mods
+    assert torch.isfinite(fc(torch.tensor([[-1.0, 2.0]])))
+
+
+def test_onecycle_preserves_differential_lrs_and_warmup_restores_lr():
+    from wavedl.utils.schedulers import get_scheduler, get_scheduler_with_warmup
+
+    p1 = torch.nn.Parameter(torch.randn(4))
+    p2 = torch.nn.Parameter(torch.randn(4))
+    opt = torch.optim.AdamW(
+        [{"params": [p1], "lr": 1e-4}, {"params": [p2], "lr": 1e-3}]
+    )
+    sched = get_scheduler("onecycle", opt, epochs=5, steps_per_epoch=4)
+    assert sched.total_steps == 20
+    assert opt.param_groups[1]["max_lr"] == pytest.approx(
+        10.0 * opt.param_groups[0]["max_lr"]
+    )
+
+    opt2 = torch.optim.AdamW([p1], lr=5e-4)
+    with pytest.raises(ValueError, match="warmup_epochs"):
+        get_scheduler_with_warmup("cosine", opt2, warmup_epochs=10, epochs=5)
+    assert opt2.param_groups[0]["lr"] == pytest.approx(5e-4)
+
+
+def test_optimizer_honors_submodule_no_weight_decay():
+    from wavedl.utils.optimizers import get_optimizer_with_param_groups
+
+    class _Child(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.special = torch.nn.Parameter(torch.ones(2, 2))
+            self.regular = torch.nn.Parameter(torch.ones(2, 2))
+
+        def no_weight_decay(self):
+            return {"special"}
+
+    class _Parent(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.child = _Child()
+
+    model = _Parent()
+    opt = get_optimizer_with_param_groups("adamw", model, lr=1e-3, weight_decay=0.05)
+    no_decay_ids = {
+        id(p) for g in opt.param_groups if g["weight_decay"] == 0.0 for p in g["params"]
+    }
+    decay_ids = {
+        id(p) for g in opt.param_groups if g["weight_decay"] > 0.0 for p in g["params"]
+    }
+    assert id(model.child.special) in no_decay_ids
+    assert id(model.child.regular) in decay_ids
+
+
+def test_spatial_target_scaler_constant_large_offset_and_chunked_fit():
+    from wavedl.utils.targets import SpatialTargetScaler
+
+    rng = np.random.default_rng(11)
+    y = np.empty((12, 2, 4, 4), dtype=np.float64)
+    y[:, 0] = 1e6
+    y[:, 1] = rng.normal(loc=2.0, scale=0.5, size=(12, 4, 4))
+
+    s_full = create_target_scaler(y)
+    s_batch = SpatialTargetScaler().fit_batches([y[:5], y[5:]])
+    assert s_full.scale_[0] == pytest.approx(1.0)
+    assert s_batch.scale_[0] == pytest.approx(1.0)
+    np.testing.assert_allclose(s_full.mean_, s_batch.mean_, rtol=1e-7, atol=1e-7)
+    np.testing.assert_allclose(s_full.scale_, s_batch.scale_, rtol=1e-7, atol=1e-7)
+
+
+def test_metrics_edge_cases_and_streaming_validation():
+    from wavedl.utils.metrics import MetricTracker, StreamingFieldMetrics
+
+    tracker = MetricTracker()
+    tracker.update(999.0, n=0)
+    assert tracker.count == 0
+    assert tracker.avg == 0.0
+
+    sfm = StreamingFieldMetrics(2)
+    sfm.update(np.ones((2, 2, 4, 4)), np.ones((2, 2, 4, 4)))
+    assert sfm.sample_count == 2
+    with pytest.raises(ValueError, match="field channel"):
+        sfm.update(np.ones((2, 3, 4, 4)), np.ones((2, 3, 4, 4)))
+    assert sfm.sample_count == 2
+
+    const_y = np.full((8, 1), 1e6, dtype=np.float64)
+    assert calc_per_target_r2(const_y, const_y)[0] == pytest.approx(1.0)
+    assert calc_per_target_r2(const_y, const_y + 1.0)[0] == pytest.approx(0.0)
+    assert calc_pearson(const_y, const_y) == pytest.approx(0.0)

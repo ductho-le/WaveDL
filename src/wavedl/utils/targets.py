@@ -9,6 +9,7 @@ keeps the old vector contract intact while providing one canonical form for
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -117,7 +118,23 @@ class SpatialTargetScaler:
         self.eps = eps
 
     def fit(self, values: Any) -> SpatialTargetScaler:
-        return self.fit_batches([values])
+        array = canonicalize_targets(values)
+        if array.ndim != 4:
+            raise ValueError(
+                f"SpatialTargetScaler expects (N,H,W) or (N,C,H,W), got {array.shape}."
+            )
+        if len(array) == 0:
+            raise ValueError("Cannot fit SpatialTargetScaler on empty target batches.")
+        # Chunk large arrays into bounded ~32 MB slices so float64 promotion in
+        # fit_batches never duplicates multi-GB dense target arrays in RAM.
+        sample_bytes = max(1, math.prod(array.shape[1:]) * 8)
+        chunk_size = max(1, (32 * 1024 * 1024) // sample_bytes)
+        if len(array) <= chunk_size:
+            return self.fit_batches([array])
+        return self.fit_batches(
+            array[start : start + chunk_size]
+            for start in range(0, len(array), chunk_size)
+        )
 
     @staticmethod
     def _dense_array(values: Any) -> np.ndarray:
@@ -188,7 +205,13 @@ class SpatialTargetScaler:
         self.mean_ = running_mean[:, None, None]
         self.var_ = variance[:, None, None]
         self.scale_ = np.sqrt(self.var_)
-        self.scale_ = np.where(self.scale_ < self.eps, 1.0, self.scale_)
+        # Scale-relative tolerance prevents float64 rounding residuals on
+        # constant large-offset fields (e.g., 1e9 Pa) from producing a tiny
+        # bogus scale_ that explodes normalized values.
+        scale_tol = np.maximum(
+            self.eps, 10.0 * np.finfo(np.float64).eps * np.abs(self.mean_)
+        )
+        self.scale_ = np.where(self.scale_ < scale_tol, 1.0, self.scale_)
         self.n_features_in_ = target_shape[0]
         self.n_samples_seen_ = sample_count
         self.target_shape_ = target_shape

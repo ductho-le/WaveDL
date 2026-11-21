@@ -11,9 +11,33 @@ Author: Ductho Le (ductho.le@outlook.com)
 Version: 1.0.0
 """
 
+import struct
+from typing import Any
+
 import torch
 import torch.distributed as dist
 from accelerate import Accelerator
+
+
+def _is_bool_scalar(value: Any) -> bool:
+    """Return True for Python ``bool`` and NumPy ``bool_`` scalars."""
+    return isinstance(value, bool) or (
+        hasattr(value, "dtype") and str(getattr(value, "dtype", "")) == "bool"
+    )
+
+
+def _comm_device_for_accelerator(accelerator: Accelerator) -> torch.device:
+    """Select a backend-compatible tensor device for ``torch.distributed`` ops."""
+    backend = None
+    if dist.is_available() and dist.is_initialized():
+        try:
+            backend = dist.get_backend()
+        except (RuntimeError, ValueError):
+            backend = None
+    device = getattr(accelerator, "device", torch.device("cpu"))
+    if backend == "gloo" or getattr(device, "type", None) == "mps":
+        return torch.device("cpu")
+    return device
 
 
 def wait_for_everyone(accelerator: Accelerator) -> None:
@@ -24,9 +48,12 @@ def wait_for_everyone(accelerator: Accelerator) -> None:
     the process group is CPU Gloo. Omitting device IDs preserves the CPU backend.
     Other devices and execution modes keep Accelerate's normal synchronization.
     """
+    num_processes = getattr(accelerator, "num_processes", 1)
+    device_type = getattr(getattr(accelerator, "device", None), "type", None)
     if (
-        accelerator.num_processes > 1
-        and accelerator.device.type == "cpu"
+        isinstance(num_processes, int)
+        and num_processes > 1
+        and device_type == "cpu"
         and dist.is_available()
         and dist.is_initialized()
     ):
@@ -60,14 +87,7 @@ def broadcast_early_stop(should_stop: bool, accelerator: Accelerator) -> bool:
     if accelerator.num_processes <= 1:
         return bool(should_stop)
 
-    backend = (
-        dist.get_backend() if dist.is_available() and dist.is_initialized() else None
-    )
-    comm_device = (
-        torch.device("cpu")
-        if backend == "gloo" or accelerator.device.type == "mps"
-        else accelerator.device
-    )
+    comm_device = _comm_device_for_accelerator(accelerator)
     stop_tensor = torch.tensor(
         1 if should_stop else 0, device=comm_device, dtype=torch.int32
     )
@@ -82,6 +102,9 @@ def broadcast_value(
     Broadcast a scalar value from rank 0 to all processes.
 
     Useful for synchronizing hyperparameters or computed values across ranks.
+    Uses a fixed-schema ``(2,) int64`` payload ``[type_tag, raw_bits]`` so
+    non-main ranks may pass any placeholder type without causing byte-size
+    mismatches or bit reinterpretation.
 
     Args:
         value: Scalar value to broadcast (only rank 0's value is used)
@@ -90,7 +113,7 @@ def broadcast_value(
     Returns:
         Value from rank 0 (synchronized across all ranks)
     """
-    is_bool = isinstance(value, bool)
+    is_bool = _is_bool_scalar(value)
     is_int = not is_bool and (isinstance(value, int) or hasattr(value, "__index__"))
 
     if accelerator.num_processes <= 1:
@@ -98,27 +121,26 @@ def broadcast_value(
             return bool(value)
         return int(value) if is_int else float(value)
 
-    backend = (
-        dist.get_backend() if dist.is_available() and dist.is_initialized() else None
-    )
-    comm_device = (
-        torch.device("cpu")
-        if backend == "gloo" or accelerator.device.type == "mps"
-        else accelerator.device
-    )
+    comm_device = _comm_device_for_accelerator(accelerator)
+    if accelerator.is_main_process:
+        if is_bool:
+            tag, bits = 0, 1 if bool(value) else 0
+        elif is_int:
+            tag, bits = 1, int(value)
+        else:
+            tag = 2
+            bits = struct.unpack("<q", struct.pack("<d", float(value)))[0]
+        payload = torch.tensor([tag, bits], device=comm_device, dtype=torch.int64)
+    else:
+        payload = torch.zeros(2, device=comm_device, dtype=torch.int64)
 
-    if is_bool:
-        tensor = torch.tensor(1 if value else 0, device=comm_device, dtype=torch.int32)
-        dist.broadcast(tensor, src=0)
-        return bool(tensor.item() == 1)
-
-    dtype = torch.int64 if is_int else torch.float64
-    scalar_val = int(value) if is_int else float(value)
-    tensor = torch.tensor(scalar_val, device=comm_device, dtype=dtype)
-    dist.broadcast(tensor, src=0)
-
-    result = tensor.item()
-    return int(result) if is_int else float(result)
+    dist.broadcast(payload, src=0)
+    tag, bits = payload.tolist()
+    if tag == 0:
+        return bool(bits)
+    if tag == 1:
+        return int(bits)
+    return float(struct.unpack("<d", struct.pack("<q", int(bits)))[0])
 
 
 def sync_tensor(
@@ -149,15 +171,18 @@ def sync_tensor(
     if reduction in {"max", "min"}:
         # Accelerate.reduce always uses SUM internally; passing max/min there
         # silently produces incorrect distributed results.
-        result = tensor.clone()
+        orig_device = tensor.device
         if accelerator.num_processes > 1:
             if not dist.is_available() or not dist.is_initialized():
                 raise RuntimeError(
                     "Max/min synchronization requires a torch.distributed process group."
                 )
+            comm_device = _comm_device_for_accelerator(accelerator)
+            result = tensor.to(device=comm_device, copy=True)
             op = dist.ReduceOp.MAX if reduction == "max" else dist.ReduceOp.MIN
             dist.all_reduce(result, op=op)
-        return result
+            return result.to(device=orig_device)
+        return tensor.clone()
     return accelerator.reduce(tensor, reduction=reduction)
 
 

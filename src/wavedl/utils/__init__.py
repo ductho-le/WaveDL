@@ -33,13 +33,23 @@ def setup_hpc_cache_dirs() -> None:
     """
 
     def _ensure_writable_cache_dir(subdir: str) -> str:
+        uid_suffix = (
+            str(os.getuid())
+            if hasattr(os, "getuid")
+            else os.environ.get("USERNAME") or str(os.getpid())
+        )
         candidates = [
             os.path.join(os.getcwd(), f".{subdir}"),
-            os.path.join(tempfile.gettempdir(), "wavedl_cache", f".{subdir}"),
+            os.path.join(
+                tempfile.gettempdir(), f"wavedl_cache_{uid_suffix}", f".{subdir}"
+            ),
         ]
         for candidate in candidates:
             try:
                 os.makedirs(candidate, exist_ok=True)
+                fd, probe = tempfile.mkstemp(prefix=".wavedl_probe_", dir=candidate)
+                os.close(fd)
+                os.unlink(probe)
                 return candidate
             except OSError:
                 continue
@@ -165,6 +175,7 @@ if TYPE_CHECKING:
         MinMaxTargetScaler,
         ShardManifestDataset,
         configure_tf32,
+        inverse_transform_inputs,
         preprocessing_from_args,
         transform_inputs,
         validate_input_channels,
@@ -258,6 +269,7 @@ _LAZY_SUBMODULE_EXPORTS: dict[str, str] = {
     "MinMaxTargetScaler": ".preprocessing",
     "ShardManifestDataset": ".preprocessing",
     "configure_tf32": ".preprocessing",
+    "inverse_transform_inputs": ".preprocessing",
     "preprocessing_from_args": ".preprocessing",
     "transform_inputs": ".preprocessing",
     "validate_input_channels": ".preprocessing",
@@ -337,6 +349,7 @@ __all__ = [
     "get_scheduler",
     "get_scheduler_with_warmup",
     "get_target_shape",
+    "inverse_transform_inputs",
     "is_epoch_based",
     "is_spatial_target_shape",
     "list_losses",

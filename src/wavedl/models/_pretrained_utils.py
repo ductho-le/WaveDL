@@ -65,7 +65,9 @@ def _global_response_norm(x, gamma, beta, spatial_dims, eps):
     beta_w = beta.to(dtype=work.dtype)
     response = torch.linalg.vector_norm(work, dim=spatial_dims, keepdim=True)
     response = response / (response.mean(dim=1, keepdim=True) + eps)
-    return (gamma_w * (work * response) + beta_w + work).to(dtype=x.dtype)
+    # Factor out `work` so autograd does not retain a full extra `work * response` buffer.
+    scale = gamma_w * response + 1.0
+    return (work * scale + beta_w).to(dtype=x.dtype)
 
 
 class GRN1d(nn.Module):
@@ -324,7 +326,9 @@ def adapt_input_channels(
     """
     Adapt a convolutional layer for different input channels.
 
-    For pretrained models, averages RGB weights to grayscale.
+    For pretrained 3-channel models adapted to 1-channel input, sums RGB weights
+    so single-channel inputs produce the same pre-activation scale as replicated
+    RGB inputs (preserving pretrained bias and BatchNorm running statistics).
 
     Args:
         conv_layer: Original conv layer (1D/2D/3D)
@@ -364,7 +368,11 @@ def adapt_input_channels(
             if new_in_channels == conv_layer.in_channels:
                 weight = conv_layer.weight
             elif new_in_channels == 1:
-                weight = conv_layer.weight.mean(dim=1, keepdim=True)
+                weight = (
+                    conv_layer.weight.float()
+                    .sum(dim=1, keepdim=True)
+                    .to(dtype=conv_layer.weight.dtype)
+                )
             else:
                 repeats = math.ceil(new_in_channels / conv_layer.in_channels)
                 repeat_shape = (1, repeats) + (1,) * (conv_layer.weight.ndim - 2)

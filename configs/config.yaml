@@ -10,11 +10,12 @@
 # =============================================================================
 # MODEL
 # =============================================================================
-model: cnn                    # 20+ architecture families (72 variants currently):
+model: cnn                    # 20+ architecture families (74 variants currently):
                               # Run `wavedl-train --list_models` for the
                               # authoritative list installed in your environment.
                               # All models below produce vectors except
-                              # `unet_field`, which produces dense 2D fields.
+                              # `unet_field`, `inversionnet`, and
+                              # `inversionnet_resize`, which produce dense 2D fields.
                               #
                               # ── Classic CNNs ──
                               # CNN:       cnn
@@ -59,6 +60,7 @@ model: cnn                    # 20+ architecture families (72 variants currently
                               # ResNet3D:  resnet3d_18, mc3_18
                               # U-Net:     unet_regression (vector),
                               #            unet_field (dense 2D field)
+                              # InversionNet: inversionnet, inversionnet_resize (dense 2D field)
 
 pretrained: false             # Set to true to use pretrained weights (ImageNet / Kinetics-400)
                               # (effective for pretrained-capable models; ignored otherwise)
@@ -112,9 +114,10 @@ cv_bins: 10                   # Number of bins for stratification
 # =============================================================================
 # DATA & OUTPUT
 # =============================================================================
-# data_path: train_data.npz   # Required - path to training data
+# data_path: train_data.npz   # Required - path to training data (.npz, .h5/.hdf5, .mat, or .txt shard manifest)
                               # Targets: (N,T) vectors, (N,H,W) scalar maps,
                               # or channels-first (N,C,H,W) property maps.
+# val_data_path: null         # Optional fixed validation dataset (disables random split)
 # output_dir: ./experiments   # Output directory for checkpoints/logs
 # cache_dir: null             # Optional shared directory for dataset caches (defaults to output_dir)
 # resume: null                # Path to checkpoint to resume from
@@ -125,6 +128,11 @@ seed: 2025                    # Random seed for reproducibility
 deterministic: false          # Deterministic mode for exact reproducibility (slower)
 cache_validate: sha256        # Cache validation: sha256 (full), fast (partial), size (quick)
 # single_channel: false       # Confirm data is single-channel (for shallow 3D volumes)
+# input_channels: null        # Explicit input channel count for multi-channel data (e.g., 5)
+# input_transform: none       # Input preprocessing: none or signed_log_minmax
+# input_range: [-10.0, 10.0]  # Physical [MIN, MAX] input bounds for signed_log_minmax
+# target_scaling: standard    # Target scaling: standard (Z-score) or minmax (fixed bounds to [-1, 1])
+# target_range: [1500, 4500]  # Physical [MIN, MAX] target bounds for minmax target scaling
 # allow_pickle: false         # Opt in to loading trusted legacy NPZ object arrays
 # import_modules: []          # Python modules/files to import for custom models
                               # Supports: module names (my_model) or file paths (./my_model.py)
@@ -134,6 +142,7 @@ cache_validate: sha256        # Cache validation: sha256 (full), fast (partial),
 # =============================================================================
 precision: bf16               # Options: bf16, fp16, no (for fp32)
 compile: false                # torch.compile() for faster training (PyTorch 2.0+)
+no_tf32: false                # Disable TF32 matmul/cuDNN for strict FP32 precision
 
 # =============================================================================
 # LOGGING & MONITORING

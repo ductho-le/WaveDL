@@ -371,15 +371,20 @@ class UNetField(BaseModel):
         super().__init__(in_shape, out_size)
         _validate_config(in_shape, out_size, base_channels, depth)
 
-        self.dim = len(in_shape)
-        self.base_channels = base_channels
-        self.depth = depth
+        self.dim = len(self.in_shape)
+        self.base_channels = int(base_channels)
+        self.depth = int(depth)
         self.dropout_rate = dropout_rate
 
         if out_shape is None:
-            out_shape = (out_size, *in_shape)
+            out_shape = (self.out_size, *self.in_shape)
         else:
-            out_shape = tuple(out_shape)
+            try:
+                out_shape = tuple(out_shape)
+            except TypeError as exc:
+                raise ValueError(
+                    f"out_shape must be a sequence of positive integers, got {out_shape!r}."
+                ) from exc
 
         expected_rank = self.dim + 1
         if len(out_shape) != expected_rank:

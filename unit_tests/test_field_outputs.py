@@ -343,3 +343,56 @@ def test_inversionnet_onnx_export_roundtrip(tmp_path, model_name):
         atol=1e-4,
         rtol=1e-4,
     )
+
+
+@pytest.mark.parametrize("model_name", ["inversionnet", "inversionnet_resize"])
+def test_inversionnet_bn_handles_batch_size_one_in_train_mode(model_name):
+    model = build_model(
+        model_name,
+        in_shape=(32, 32),
+        out_size=1,
+        out_shape=(1, 16, 16),
+        in_channels=2,
+        base_channels=4,
+        norm="bn",
+    ).train()
+    x = torch.randn(1, 2, 32, 32)
+    out = model(x)
+    assert out.shape == (1, 1, 16, 16)
+    out.sum().backward()
+
+
+def test_inversionnet_resize_default_width_onnx_validation(tmp_path):
+    pytest.importorskip("onnx")
+    pytest.importorskip("onnxruntime")
+
+    from wavedl.test import export_to_onnx
+    from wavedl.utils.preprocessing import MinMaxTargetScaler
+
+    torch.manual_seed(0)
+    model = build_model(
+        "inversionnet_resize",
+        in_shape=(64, 32),
+        out_size=1,
+        out_shape=(1, 32, 32),
+        in_channels=5,
+    ).eval()
+    sample = torch.randn(1, 5, 64, 32)
+    scaler = MinMaxTargetScaler(bounds=(1500.0, 4500.0), target_shape=(1, 32, 32))
+
+    assert export_to_onnx(
+        model=model,
+        sample_input=sample,
+        output_path=str(tmp_path / "inv_resize_raw.onnx"),
+        model_name="inversionnet_resize",
+        validate=True,
+    )
+    assert export_to_onnx(
+        model=model,
+        sample_input=sample,
+        output_path=str(tmp_path / "inv_resize_denorm.onnx"),
+        model_name="inversionnet_resize",
+        scaler=scaler,
+        include_denorm=True,
+        validate=True,
+    )

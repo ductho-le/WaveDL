@@ -41,9 +41,9 @@ _WaveDLSafeLoader.add_implicit_resolver(
     "tag:yaml.org,2002:float",
     re.compile(
         r"""^(?:
-         [-+]?(?:[0-9][0-9_]*)?\.[0-9_]*(?:[eE][-+]?[0-9]+)?
+         [-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+]?[0-9]+)?
+        |[-+]?\.[0-9][0-9_]*(?:[eE][-+]?[0-9]+)?
         |[-+]?(?:[0-9][0-9_]*)(?:[eE][-+]?[0-9]+)
-        |\.[0-9_]+(?:[eE][-+][0-9]+)?
         |[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*
         |[-+]?\.(?:inf|Inf|INF)
         |\.(?:nan|NaN|NAN))$""",
@@ -165,11 +165,78 @@ def _flatten_config(
     return flattened
 
 
+_DEFAULT_KEY_ALIASES: dict[str, str] = {
+    "import": "import_modules",
+    "mixed_precision": "precision",
+}
+
+
+def _build_key_aliases(parser: argparse.ArgumentParser | None) -> dict[str, str]:
+    """Build option-name -> argparse dest alias mapping."""
+    aliases = dict(_DEFAULT_KEY_ALIASES)
+    if parser is not None:
+        for action in parser._actions:
+            if action.dest == "help":
+                continue
+            for opt in action.option_strings:
+                opt_name = opt.lstrip("-").replace("-", "_")
+                if opt_name and opt_name != action.dest:
+                    aliases[opt_name] = action.dest
+    return aliases
+
+
+def _is_sequence_action(action: argparse.Action) -> bool:
+    """Return True only for multi-value argparse actions (not nargs='?')."""
+    if isinstance(action, argparse._AppendAction):
+        return True
+    if action.nargs in ("+", "*"):
+        return True
+    return isinstance(action.nargs, int) and action.nargs > 1
+
+
+def _resolve_effective_entries(
+    config: dict[str, Any],
+    valid_dests: set[str],
+    aliases: dict[str, str],
+) -> tuple[dict[str, tuple[str, Any]], list[str]]:
+    """Resolve config keys with consistent flat-over-nested precedence.
+
+    Returns:
+        Tuple of (resolved_map, unknown_keys), where ``resolved_map`` maps
+        canonical destination name -> ``(original_key, value)``.
+    """
+    resolved: dict[str, tuple[str, Any]] = {}
+    nested_candidates: list[tuple[str, str, Any]] = []
+    unknown: list[str] = []
+
+    # Pass 1: Direct / flat keys (including CLI option aliases like mixed_precision)
+    for key, value in config.items():
+        canonical = aliases.get(key, key)
+        if canonical in valid_dests:
+            resolved[canonical] = (key, value)
+            continue
+        stripped = _strip_known_section_prefix(key)
+        if stripped is not None:
+            stripped_canonical = aliases.get(stripped, stripped)
+            if stripped_canonical in valid_dests:
+                nested_candidates.append((stripped_canonical, key, value))
+                continue
+        unknown.append(key)
+
+    # Pass 2: Nested section-prefixed keys only apply when no flat key set the target
+    for target, orig_key, value in nested_candidates:
+        if target not in resolved:
+            resolved[target] = (orig_key, value)
+
+    return resolved, unknown
+
+
 def merge_config_with_args(
     config: dict[str, Any],
     args: argparse.Namespace,
     parser: argparse.ArgumentParser | None = None,
     ignore_unknown: bool = True,
+    argv: list[str] | None = None,
 ) -> argparse.Namespace:
     """
     Merge YAML config with CLI arguments. CLI args take precedence.
@@ -180,6 +247,7 @@ def merge_config_with_args(
         parser: Optional ArgumentParser to detect defaults (if not provided,
                 uses heuristic comparison with common default values)
         ignore_unknown: If True, skip config keys not in args
+        argv: Optional explicit CLI token list (defaults to ``sys.argv[1:]``)
 
     Returns:
         Updated argparse Namespace
@@ -191,15 +259,16 @@ def merge_config_with_args(
     # Detect which args were explicitly passed on the command line.
     # We cannot simply compare values against parser defaults because a user
     # who explicitly passes the default (e.g., --workers -1) would be silently
-    # overwritten by YAML.  Instead, inspect sys.argv for the actual flags.
+    # overwritten by YAML.  Instead, inspect argv for the actual flags.
     cli_overrides: set[str] = set()
     if parser is not None:
         import sys
 
-        # Check both '--flag value' and '--flag=value' forms in sys.argv,
+        raw_argv = sys.argv[1:] if argv is None else list(argv)
+        # Check both '--flag value' and '--flag=value' forms in argv,
         # stopping at '--' (end-of-options marker).
         argv_tokens: list[str] = []
-        for tok in sys.argv[1:]:
+        for tok in raw_argv:
             if tok == "--":
                 break
             argv_tokens.append(tok)
@@ -225,60 +294,52 @@ def merge_config_with_args(
                 arg_types[action.dest] = action.type
             if action.choices is not None:
                 arg_choices[action.dest] = action.choices
-            if action.nargs or isinstance(action, argparse._AppendAction):
+            if _is_sequence_action(action):
                 sequence_args.add(action.dest)
 
     config = _normalize_yaml_bool_choices(config)
+    valid_dests = set(vars(args).keys())
+    aliases = _build_key_aliases(parser)
+    resolved, unknown_keys = _resolve_effective_entries(config, valid_dests, aliases)
 
     # Apply config values only where CLI didn't override
-    for key, value in config.items():
-        target_key = "import_modules" if key == "import" else key
-        if not hasattr(args, target_key):
-            # Nested YAML key (e.g., "optimizer_lr" from {optimizer: {lr: ...}}).
-            # Only strip recognized section prefixes so flat typos (e.g.
-            # "test_data_path") never silently overwrite valid options.
-            stripped = _strip_known_section_prefix(key)
-            if stripped == "import":
-                stripped = "import_modules"
-            if stripped is not None and hasattr(args, stripped):
-                target_key = stripped
-                logging.debug(f"Config: mapped nested key '{key}' -> '{stripped}'")
+    for target_key, (orig_key, value) in resolved.items():
+        if orig_key != target_key:
+            logging.debug(f"Config: mapped key '{orig_key}' -> '{target_key}'")
+        # Skip if user explicitly set this via CLI
+        if target_key in cli_overrides:
+            logging.debug(f"Config key '{target_key}' skipped: CLI override detected")
+            continue
+        if (
+            value is False
+            and target_key in arg_choices
+            and "no" in arg_choices[target_key]
+        ):
+            value = "no"
+        # Wrap scalar YAML values for multi-value list arguments (e.g.
+        # constraint: "y0 > 0" -> ["y0 > 0"]).
+        if (
+            target_key in sequence_args
+            and value is not None
+            and not isinstance(value, (list, tuple))
+        ):
+            value = [value]
+        elif target_key in sequence_args and isinstance(value, tuple):
+            value = list(value)
+        # Coerce native YAML sequences (e.g. betas: [0.9, 0.999]) or numeric
+        # scalars (e.g. milestones: 30) to the string form expected by str args.
+        expects_str = arg_types.get(target_key) is str or isinstance(
+            getattr(args, target_key, None), str
+        )
+        if target_key not in sequence_args and expects_str:
+            if isinstance(value, (list, tuple)):
+                value = ",".join(str(v) for v in value)
+            elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                value = str(value)
+        setattr(args, target_key, value)
 
-        if hasattr(args, target_key):
-            # Skip if user explicitly set this via CLI
-            if target_key in cli_overrides:
-                logging.debug(
-                    f"Config key '{target_key}' skipped: CLI override detected"
-                )
-                continue
-            if (
-                value is False
-                and target_key in arg_choices
-                and "no" in arg_choices[target_key]
-            ):
-                value = "no"
-            # Wrap scalar YAML values for multi-value list arguments (e.g.
-            # constraint: "y0 > 0" -> ["y0 > 0"]).
-            if (
-                target_key in sequence_args
-                and value is not None
-                and not isinstance(value, (list, tuple))
-            ):
-                value = [value]
-            elif target_key in sequence_args and isinstance(value, tuple):
-                value = list(value)
-            # Coerce native YAML sequences (e.g. betas: [0.9, 0.999]) or numeric
-            # scalars (e.g. milestones: 30) to the string form expected by str args.
-            expects_str = arg_types.get(target_key) is str or isinstance(
-                getattr(args, target_key, None), str
-            )
-            if target_key not in sequence_args and expects_str:
-                if isinstance(value, (list, tuple)):
-                    value = ",".join(str(v) for v in value)
-                elif isinstance(value, (int, float)) and not isinstance(value, bool):
-                    value = str(value)
-            setattr(args, target_key, value)
-        elif not ignore_unknown:
+    for key in unknown_keys:
+        if not ignore_unknown:
             logging.warning(f"Unknown config key: {key}")
         else:
             # Even in ignore_unknown mode, log for discoverability
@@ -457,20 +518,16 @@ def validate_config(
         "scheduler": list_schedulers(),
     }
 
-    # Build effective view mapping recognized nested section keys (e.g. optimizer_lr -> lr)
+    # Build effective view mapping aliases and recognized nested section keys
+    # with the exact same flat-over-nested precedence as merge_config_with_args.
     check_keys = _config_keys(known_keys, parser)
-    effective_config: dict[str, Any] = {}
-    for key, val in config.items():
-        mapped = "import_modules" if key == "import" else key
-        stripped = _strip_known_section_prefix(key)
-        if (
-            mapped not in check_keys
-            and stripped is not None
-            and stripped in check_keys
-            and stripped not in config
-        ):
-            mapped = "import_modules" if stripped == "import" else stripped
-        effective_config.setdefault(mapped, val)
+    aliases = _build_key_aliases(parser)
+    resolved_entries, unknown_keys = _resolve_effective_entries(
+        config, check_keys, aliases
+    )
+    effective_config: dict[str, Any] = {
+        dest: val for dest, (_, val) in resolved_entries.items()
+    }
 
     for key, valid_values in valid_options.items():
         if key in effective_config and effective_config[key] not in valid_values:
@@ -502,6 +559,12 @@ def validate_config(
                     f"Valid options: {list(action.choices)}"
                 )
             values = value if isinstance(value, (list, tuple)) else [value]
+            if isinstance(action.nargs, int) and action.nargs > 1:
+                if not isinstance(value, (list, tuple)) or len(value) != action.nargs:
+                    warnings.append(
+                        f"'{action.dest}' requires exactly {action.nargs} values, "
+                        f"got {value!r}"
+                    )
             if action.type in (int, float):
                 for entry in values:
                     valid_type = (
@@ -523,8 +586,7 @@ def validate_config(
                         f"Invalid type for '{action.dest}': expected a YAML boolean, got {value!r}"
                     )
             if (
-                not action.nargs
-                and not isinstance(action, argparse._AppendAction)
+                not _is_sequence_action(action)
                 and action.dest not in comma_list_str_args
                 and isinstance(value, (list, tuple))
             ):
@@ -575,14 +637,10 @@ def validate_config(
         warnings.append("CV must be 0 (disabled) or at least 2 folds.")
 
     # Check for unknown/unrecognized keys (helps catch typos).
-    for key in config:
-        if key not in check_keys:
-            stripped = _strip_known_section_prefix(key)
-            if stripped is not None and stripped in check_keys:
-                continue
-            warnings.append(
-                f"Unknown config key: '{key}' - check for typos or see wavedl-train --help"
-            )
+    for key in unknown_keys:
+        warnings.append(
+            f"Unknown config key: '{key}' - check for typos or see wavedl-train --help"
+        )
 
     return warnings
 

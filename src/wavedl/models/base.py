@@ -9,6 +9,7 @@ Author: Ductho Le (ductho.le@outlook.com)
 """
 
 from abc import ABC, abstractmethod
+from math import isfinite
 from numbers import Integral
 from typing import Any
 
@@ -77,6 +78,30 @@ def compute_num_groups(num_channels: int, preferred_groups: int = 32) -> int:
             return groups
 
     return 1  # Always valid
+
+
+def validate_dropout_rate(value: Any, name: str = "dropout_rate") -> float:
+    """Validate that a dropout probability is a finite number in ``[0, 1)``."""
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not isfinite(value)
+        or not (0.0 <= float(value) < 1.0)
+    ):
+        raise ValueError(f"{name} must be a finite number in [0, 1), got {value!r}.")
+    return float(value)
+
+
+def validate_drop_path_rate(value: Any, name: str = "drop_path_rate") -> float:
+    """Validate that a stochastic-depth rate is a finite number in ``[0, 1]``."""
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not isfinite(value)
+        or not (0.0 <= float(value) <= 1.0)
+    ):
+        raise ValueError(f"{name} must be a finite number in [0, 1], got {value!r}.")
+    return float(value)
 
 
 class BaseModel(nn.Module, ABC):
@@ -365,9 +390,14 @@ class BaseModel(nn.Module, ABC):
             "a_imag",
         )
         explicit_no_decay: set[str] = set()
-        no_wd_fn = getattr(self, "no_weight_decay", None)
-        if callable(no_wd_fn):
-            explicit_no_decay.update(s.lower() for s in no_wd_fn())
+        for mod_prefix, module in self.named_modules():
+            no_wd_fn = getattr(module, "no_weight_decay", None)
+            if callable(no_wd_fn):
+                for entry in no_wd_fn():
+                    entry_lower = str(entry).lower()
+                    explicit_no_decay.add(entry_lower)
+                    if mod_prefix:
+                        explicit_no_decay.add(f"{mod_prefix.lower()}.{entry_lower}")
 
         decay_params = []
         no_decay_params = []

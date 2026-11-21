@@ -48,6 +48,29 @@ VALID_ACTIVATIONS = (None, "tanh")
 VALID_UPSAMPLE_MODES = ("bilinear", "nearest")
 
 
+class _SingletonSafeBatchNorm2d(nn.BatchNorm2d):
+    """BatchNorm2d that safely falls back to running stats on ``(1, C, 1, 1)`` batches."""
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        if (
+            self.training
+            and input.shape[0] == 1
+            and input.shape[2] == 1
+            and input.shape[3] == 1
+        ):
+            return F.batch_norm(
+                input,
+                self.running_mean,
+                self.running_var,
+                self.weight,
+                self.bias,
+                training=False,
+                momentum=0.0,
+                eps=self.eps,
+            )
+        return super().forward(input)
+
+
 def _make_norm2d(
     norm: str, channels: int, *, is_singleton: bool = False
 ) -> nn.Module | None:
@@ -55,16 +78,21 @@ def _make_norm2d(
     if norm == "none":
         return None
     if norm == "bn":
-        return nn.BatchNorm2d(channels)
+        # Always use _SingletonSafeBatchNorm2d so dynamic/smaller inputs (strict_spatial=False)
+        # that collapse an encoder stage to 1x1 never crash BatchNorm at B=1.
+        return _SingletonSafeBatchNorm2d(channels)
     if norm == "gn":
-        groups = compute_num_groups(channels)
-        if is_singleton and groups == channels:
+        if is_singleton:
             if channels == 1:
                 raise ValueError(
-                    "GroupNorm on a 1x1 bottleneck requires at least 2 channels. "
+                    "GroupNorm on a 1x1 spatial grid requires at least 2 channels. "
                     "Increase base_channels or use norm='none'."
                 )
-            groups = compute_num_groups(channels, preferred_groups=channels // 2)
+            groups = compute_num_groups(
+                channels, preferred_groups=min(32, max(1, channels // 2))
+            )
+        else:
+            groups = compute_num_groups(channels)
         return nn.GroupNorm(groups, channels)
     raise ValueError(f"Unsupported norm {norm!r}; choose from {VALID_NORMS}.")
 
@@ -339,6 +367,7 @@ class _InversionNetBase(BaseModel):
             k_down, s_down, p_down, k_ref, p_ref, h, w = _plan_encoder_stage(
                 h, w, stage_idx, self.bottleneck_grid
             )
+            stage_singleton = h == 1 and w == 1
             encoder_layers.append(
                 ConvBlock2d(
                     c_in,
@@ -347,6 +376,7 @@ class _InversionNetBase(BaseModel):
                     stride=s_down,
                     padding=p_down,
                     norm=norm,
+                    is_singleton=stage_singleton,
                 )
             )
             if stage_idx > 0:
@@ -358,6 +388,7 @@ class _InversionNetBase(BaseModel):
                         stride=1,
                         padding=p_ref,
                         norm=norm,
+                        is_singleton=stage_singleton,
                     )
                 )
         self.encoder = nn.Sequential(*encoder_layers)

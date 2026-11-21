@@ -49,6 +49,11 @@ jobs:
           cache: 'pip'
           cache-dependency-path: pyproject.toml
 
+      - name: Run stdlib-only GUI tests (zero ML dependencies)
+        env:
+          PYTHONPATH: src
+        run: python -m unittest discover -s unit_tests -p test_gui.py -v
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip

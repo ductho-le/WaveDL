@@ -73,7 +73,7 @@ Prepare data for repeated training:
 
 20+ architectures (70+ variants), ready to go:
 - CNNs, ResNets, ViTs, SSMs, WaveNets...
-- Vector regression plus a [dense-output U-Net](#dense-2d-field-regression)
+- Vector regression plus [dense 2D field models](#dense-2d-field-regression) (`unet_field`, `inversionnet`, `inversionnet_resize`)
 - [Add your own](#adding-custom-models) in one line
 
 </td>
@@ -192,7 +192,8 @@ wavedl-gui
 ```
 
 WaveDL Studio opens a local web interface at `http://127.0.0.1:7860` for editing
-YAML configurations, browsing files, and launching `wavedl-train` with live logs.
+YAML configurations, browsing files, launching `wavedl-train` with live logs,
+and evaluating checkpoints or exporting ONNX models via `wavedl-test`.
 The directory you launch it from is the workspace: configurations default to
 `./config.yaml`, and training resolves relative data/output paths from there.
 The GUI is bundled with WaveDL and requires no additional dependencies.
@@ -1033,7 +1034,7 @@ wavedl-hpo --data_path train.npz --n_trials 50 --medium
 # Full search with specific models
 wavedl-hpo --data_path train.npz --n_trials 100 --models cnn resnet18 efficientnet_b0
 
-# Dense field search (auto-selects unet_field and small batch candidates)
+# Dense field search (auto-selects dense 2D models and small batch candidates)
 wavedl-hpo --data_path field_data.npz --n_trials 30
 
 # In-process mode (enables pruning, faster, single-GPU)
@@ -1045,8 +1046,10 @@ wavedl-hpo --data_path train.npz --n_trials 50 --inprocess
 
 HPO inspects the target shape before creating a study. Vector data uses the
 standard CNN/ResNet model presets and batch candidates 16/32/64/128. Dense data
-uses `unet_field` and batch candidates 1/2/4/8. Explicit `--models` values are
-validated against the target contract before any trials launch; use
+uses `unet_field`, `inversionnet`, and `inversionnet_resize` with batch
+candidates 1/2/4/8 (automatically filtering out models incompatible with the
+dataset's input channel count). Explicit `--models` values are
+validated against the target and input-channel contract before any trials launch; use
 `--batch_sizes` to override the memory-conscious dense defaults.
 
 HPO compares trials using the same normalized validation MSE, even when their
@@ -1068,7 +1071,7 @@ wavedl-train --data_path train.npz --model cnn --lr 3.2e-4 --batch_size 128 ...
 
 | Parameter | Default | You Can Override With |
 |-----------|---------|----------------------|
-| Models | Vector: cnn, resnet18, resnet34; dense: unet_field | `--models X Y Z` |
+| Models | Vector: cnn, resnet18, resnet34; dense: unet_field, inversionnet, inversionnet_resize | `--models X Y Z` |
 | Optimizers | [all 6](#optimizers) | `--optimizers X Y` |
 | Schedulers | [all 8](#learning-rate-schedulers) | `--schedulers X Y` |
 | Losses | [5 unweighted losses](#loss-functions) | `--losses X Y` (all 6 supported) |
@@ -1079,9 +1082,9 @@ wavedl-train --data_path train.npz --model cnn --lr 3.2e-4 --batch_size 128 ...
 
 | Mode | Vector models | Dense models | Optimizers | Schedulers | Use Case |
 |------|---------------|--------------|------------|------------|----------|
-| Full (default) | cnn, resnet18, resnet34 | unet_field | all 6 | all 8 | Production search |
-| `--medium` | cnn, resnet18 | unet_field | adamw, adam, sgd | plateau, cosine, onecycle | Balanced exploration |
-| `--quick` | cnn | unet_field | adamw | plateau | Fast validation |
+| Full (default) | cnn, resnet18, resnet34 | unet_field, inversionnet, inversionnet_resize | all 6 | all 8 | Production search |
+| `--medium` | cnn, resnet18 | unet_field, inversionnet, inversionnet_resize | adamw, adam, sgd | plateau, cosine, onecycle | Balanced exploration |
+| `--quick` | cnn | unet_field, inversionnet, inversionnet_resize | adamw | plateau | Fast validation |
 
 **Execution Modes:**
 
@@ -1128,7 +1131,8 @@ WaveDL supports multiple data formats for training and inference:
 |--------|-----------|----------------|
 | **NPZ** | `.npz` | Native NumPy, fast loading, recommended |
 | **HDF5** | `.h5`, `.hdf5` | Large datasets, hierarchical, cross-platform |
-| **MAT** | `.mat` | MATLAB compatibility (**v7.3+ only**, saved with `-v7.3` flag) |
+| **MAT** | `.mat` | MATLAB compatibility (v7.3+ lazy HDF5 recommended; legacy v5/v7 loaded in memory via SciPy) |
+| **Shard Manifest** | `.txt` | Lazy paired `.npy` shards (`<input.npy><TAB><target.npy>`) for large multi-file datasets |
 
 **The framework automatically detects file format and data dimensionality** (1D, 2D, or 3D) — you only need to provide the appropriate model architecture.
 
@@ -1148,11 +1152,11 @@ WaveDL supports multiple data formats for training and inference:
 > - **Dense Target Layout**: Store a scalar map as `(N, H, W)` or multiple property maps as `(N, C, H, W)`. Convert channels-last targets explicitly before saving.
 
 > [!IMPORTANT]
-> **MATLAB Users**: MAT files must be saved with the `-v7.3` flag for memory-efficient loading:
+> **MATLAB Users**: Save large MAT files with `-v7.3` for memory-efficient lazy HDF5 loading:
 > ```matlab
 > save('data.mat', 'input_train', 'output_train', '-v7.3')
 > ```
-> Older MAT formats (v5/v7) are not supported. Convert to NPZ for best compatibility.
+> Legacy MAT v5/v7 files are also supported automatically via `scipy.io.loadmat` (loaded into host memory).
 
 <details>
 <summary><b>Example: Basic Preparation</b></summary>
@@ -1386,7 +1390,7 @@ Beyond the material characterization example above, the WaveDL pipeline can be a
 | Bone QUS | Axial-transmission signals, ... | Porosity, cortical thickness, elastic modulus ... |
 
 > [!NOTE]
-> Adapting WaveDL to these applications requires preparing your own dataset and choosing a suitable model architecture to match your input and target dimensionality. Dense maps use supervised `unet_field` training as described above; conventional FWI still requires an external wave solver and data-misfit optimization loop.
+> Adapting WaveDL to these applications requires preparing your own dataset and choosing a suitable model architecture to match your input and target dimensionality. Dense maps use supervised `unet_field`, `inversionnet`, or `inversionnet_resize` training as described above; conventional FWI still requires an external wave solver and data-misfit optimization loop.
 
 ---
 
@@ -1446,6 +1450,8 @@ Ductho Le would like to acknowledge [NSERC](https://www.nserc-crsng.gc.ca/) and 
 
 This research was enabled in part by support provided by [Compute Ontario](https://www.computeontario.ca/), [Calcul Québec](https://www.calculquebec.ca/), and the [Digital Research Alliance of Canada](https://alliancecan.ca/).
 
+The development of WaveDL v2 is supported by the [National Foundation for Science and Technology Development (NAFOSTED)](https://nafosted.gov.vn).
+
 <br>
 
 <p align="center">
@@ -1458,6 +1464,8 @@ This research was enabled in part by support provided by [Compute Ontario](https
 
 <p align="center">
   <a href="https://alliancecan.ca/"><img src="https://raw.githubusercontent.com/ductho-le/WaveDL/main/logos/drac.png" alt="Digital Research Alliance of Canada" height="50"></a>
+  &emsp;&emsp;
+  <a href="https://nafosted.gov.vn"><img src="https://raw.githubusercontent.com/ductho-le/WaveDL/main/logos/nafosted.png" alt="National Foundation for Science and Technology Development (NAFOSTED)" height="55"></a>
 </p>
 
 ---

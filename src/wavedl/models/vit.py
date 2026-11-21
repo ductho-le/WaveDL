@@ -29,7 +29,12 @@ from typing import Any, ClassVar
 import torch
 import torch.nn as nn
 
-from wavedl.models.base import BaseModel, SpatialShape1D, SpatialShape2D
+from wavedl.models.base import (
+    BaseModel,
+    SpatialShape1D,
+    SpatialShape2D,
+    validate_dropout_rate,
+)
 from wavedl.models.registry import register_model
 
 
@@ -65,12 +70,13 @@ class PatchEmbed(nn.Module):
 
         if (
             isinstance(patch_size, bool)
-            or not isinstance(patch_size, int)
+            or not isinstance(patch_size, Integral)
             or patch_size <= 0
         ):
             raise ValueError(
                 f"patch_size must be a positive integer, got {patch_size!r}"
             )
+        patch_size = int(patch_size)
 
         self.dim = len(in_shape)
         self.patch_size = patch_size
@@ -298,18 +304,43 @@ class ViTBase(BaseModel):
     ):
         super().__init__(in_shape, out_size)
 
-        if not isinstance(depth, Integral) or isinstance(depth, bool) or depth <= 0:
-            raise ValueError(f"depth must be a positive integer, got {depth!r}")
-        if mlp_ratio <= 0:
+        for param_name, param_val in (
+            ("patch_size", patch_size),
+            ("embed_dim", embed_dim),
+            ("depth", depth),
+            ("num_heads", num_heads),
+        ):
+            if (
+                not isinstance(param_val, Integral)
+                or isinstance(param_val, bool)
+                or param_val <= 0
+            ):
+                raise ValueError(
+                    f"{param_name} must be a positive integer, got {param_val!r}"
+                )
+        patch_size = int(patch_size)
+        embed_dim = int(embed_dim)
+        depth = int(depth)
+        num_heads = int(num_heads)
+        if (
+            isinstance(mlp_ratio, bool)
+            or not isinstance(mlp_ratio, (int, float))
+            or mlp_ratio <= 0
+        ):
             raise ValueError(f"mlp_ratio must be positive, got {mlp_ratio!r}")
+        if int(embed_dim * mlp_ratio) < 1:
+            raise ValueError(
+                f"int(embed_dim * mlp_ratio) must be >= 1, got {embed_dim} * {mlp_ratio}"
+            )
         if embed_dim % num_heads != 0:
             raise ValueError(
                 f"embed_dim ({embed_dim}) must be divisible by num_heads ({num_heads})"
             )
+        dropout_rate = validate_dropout_rate(dropout_rate)
 
         self.patch_size = patch_size
         self.embed_dim = embed_dim
-        self.depth = int(depth)
+        self.depth = depth
         self.num_heads = num_heads
         self.dropout_rate = dropout_rate
         self.dim = len(self.in_shape)
@@ -409,7 +440,7 @@ class ViTBase(BaseModel):
             "num_heads": 12,
             "mlp_ratio": 4.0,
             "dropout_rate": 0.1,
-            "pad_if_needed": True,
+            "pad_if_needed": False,
             **copy.deepcopy(getattr(cls, "_variant_defaults", {})),
         }
 

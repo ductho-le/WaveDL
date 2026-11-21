@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import subprocess
 import sys
 import sysconfig
@@ -9,7 +10,8 @@ import threading
 from http.server import ThreadingHTTPServer
 from importlib.resources import files
 from pathlib import Path
-from urllib.request import urlopen
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 import numpy as np
 import torch
@@ -47,7 +49,22 @@ def main():
             html = resp.read().decode("utf-8")
         if "WaveDL" not in html:
             raise RuntimeError("GUI index page did not render expected HTML")
-        with urlopen(f"{base_url}/api/info", timeout=5) as resp:
+        token_match = re.search(r'<meta name="wavedl-token" content="([^"]+)"', html)
+        if not token_match or token_match.group(1) != gui_app.SESSION_TOKEN:
+            raise RuntimeError("GUI index page missing expected session token")
+        try:
+            with urlopen(f"{base_url}/api/info", timeout=5):
+                raise RuntimeError("Unauthenticated /api/info should be rejected")
+        except HTTPError as err:
+            if err.code != 403:
+                raise RuntimeError(
+                    f"Expected 403 for unauthenticated /api/info, got {err.code}"
+                ) from err
+        req = Request(
+            f"{base_url}/api/info",
+            headers={"X-WaveDL-Token": token_match.group(1)},
+        )
+        with urlopen(req, timeout=5) as resp:
             info = json.loads(resp.read().decode("utf-8"))
         if "workspace_root" not in info:
             raise RuntimeError(f"Unexpected /api/info payload: {info}")

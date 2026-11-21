@@ -131,6 +131,11 @@ class FastViTBase(BaseModel):
         adapted_count = find_and_adapt_input_convs(
             stem_target, pretrained=self.pretrained, adapt_all=True
         )
+        # Keep MobileOneBlock.in_chs in sync with the adapted 1-channel convs so
+        # reparameterize() constructs a 1-channel fused reparam_conv.
+        for module in stem_target.modules():
+            if getattr(module, "in_chs", None) == 3:
+                module.in_chs = 1
 
         if adapted_count == 0:
             raise RuntimeError(

@@ -41,13 +41,14 @@ Author: Ductho Le (ductho.le@outlook.com)
 """
 
 import copy
+from numbers import Integral
 from typing import Any, ClassVar
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from wavedl.models.base import BaseModel, compute_num_groups
+from wavedl.models.base import BaseModel, compute_num_groups, validate_dropout_rate
 from wavedl.models.registry import register_model
 
 
@@ -81,8 +82,9 @@ class CausalConv1d(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Pad on the left only (causal)
-        x = F.pad(x, (self.padding, 0))
+        # Pad on the left only (causal); skip no-op pad for kernel_size=1
+        if self.padding > 0:
+            x = F.pad(x, (self.padding, 0))
         return self.conv(x)
 
 
@@ -181,14 +183,14 @@ class TCNBase(BaseModel):
         """
         super().__init__(in_shape, out_size)
 
-        if len(in_shape) != 1:
+        if len(self.in_shape) != 1:
             raise ValueError(
-                f"TCN requires 1D input (L,), got {len(in_shape)}D. "
+                f"TCN requires 1D input (L,), got {len(self.in_shape)}D. "
                 "For 2D/3D data, use ResNet, EfficientNet, or Swin."
             )
 
         if not num_channels or any(
-            isinstance(c, bool) or not isinstance(c, int) or c <= 0
+            isinstance(c, bool) or not isinstance(c, Integral) or c <= 0
             for c in num_channels
         ):
             raise ValueError(
@@ -196,27 +198,28 @@ class TCNBase(BaseModel):
             )
         if (
             isinstance(kernel_size, bool)
-            or not isinstance(kernel_size, int)
+            or not isinstance(kernel_size, Integral)
             or kernel_size < 1
         ):
             raise ValueError(
                 f"kernel_size must be a positive integer, got {kernel_size!r}"
             )
+        dropout_rate = validate_dropout_rate(dropout_rate)
 
-        self.num_channels = num_channels
-        self.kernel_size = kernel_size
+        self.num_channels = [int(c) for c in num_channels]
+        self.kernel_size = int(kernel_size)
         self.dropout_rate = dropout_rate
 
         # Build temporal blocks with exponentially increasing dilation
         layers = []
-        num_levels = len(num_channels)
+        num_levels = len(self.num_channels)
 
         for i in range(num_levels):
             dilation = 2**i
-            in_ch = 1 if i == 0 else num_channels[i - 1]
-            out_ch = num_channels[i]
+            in_ch = 1 if i == 0 else self.num_channels[i - 1]
+            out_ch = self.num_channels[i]
             layers.append(
-                TemporalBlock(in_ch, out_ch, kernel_size, dilation, dropout_rate)
+                TemporalBlock(in_ch, out_ch, self.kernel_size, dilation, dropout_rate)
             )
 
         self.network = nn.Sequential(*layers)

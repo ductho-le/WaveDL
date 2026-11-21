@@ -30,6 +30,7 @@ References:
 Author: Ductho Le (ductho.le@outlook.com)
 """
 
+from numbers import Integral
 from typing import Any
 
 import torch
@@ -62,7 +63,7 @@ class MobileNetV3Base(BaseModel):
 
     Wraps torchvision MobileNetV3 with:
     - Optional pretrained weights (ImageNet-1K)
-    - Automatic input channel adaptation (grayscale → 3ch)
+    - Automatic input channel adaptation (single-channel input)
     - Lightweight regression head (maintains efficiency)
 
     MobileNetV3 is ideal for:
@@ -107,9 +108,9 @@ class MobileNetV3Base(BaseModel):
                 "Install with: pip install torchvision"
             )
 
-        if len(in_shape) != 2:
+        if len(self.in_shape) != 2:
             raise ValueError(
-                f"MobileNetV3 requires 2D input (H, W), got {len(in_shape)}D. "
+                f"MobileNetV3 requires 2D input (H, W), got {len(self.in_shape)}D. "
                 "For 1D data, use TCN. For 3D data, use ResNet3D."
             )
 
@@ -122,12 +123,13 @@ class MobileNetV3Base(BaseModel):
                 )
         if (
             isinstance(regression_hidden, bool)
-            or not isinstance(regression_hidden, int)
+            or not isinstance(regression_hidden, Integral)
             or regression_hidden <= 0
         ):
             raise ValueError(
                 f"regression_hidden must be a positive integer, got {regression_hidden!r}"
             )
+        regression_hidden = int(regression_hidden)
 
         self.pretrained = pretrained
         self.dropout_rate = dropout_rate
@@ -135,7 +137,7 @@ class MobileNetV3Base(BaseModel):
         self.regression_hidden = regression_hidden
 
         # Load pretrained backbone
-        weights = weights_class.IMAGENET1K_V1 if pretrained else None
+        weights = weights_class.DEFAULT if pretrained else None
         self.backbone = model_fn(weights=weights)
 
         # Get the input features to the final classifier

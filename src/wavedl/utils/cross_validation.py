@@ -16,6 +16,7 @@ Version: 1.0.0
 import gc
 import json
 import logging
+import math
 import os
 import pickle
 from datetime import datetime
@@ -140,6 +141,7 @@ def train_fold(
     grad_clip: float,
     scaler: Any,
     logger: logging.Logger,
+    precision: str = "no",
 ) -> dict[str, Any]:
     """
     Train and evaluate a single CV fold.
@@ -157,66 +159,47 @@ def train_fold(
         patience: Early stopping patience
         scaler: Target scaler (for physical units)
         logger: Logger instance
+        precision: Mixed precision mode ("no", "bf16", "fp16")
 
     Returns:
         Dictionary with fold results and metrics
     """
     best_val_loss = float("inf")
+    best_epoch = 0
     patience_ctr = 0
     best_state = None
     history = []
 
+    use_amp = device.type == "cuda" and precision in ("bf16", "fp16")
+    if use_amp and precision == "bf16" and not torch.cuda.is_bf16_supported():
+        precision = "fp16"
+    amp_dtype = torch.bfloat16 if precision == "bf16" else torch.float16
+    use_grad_scaler = use_amp and precision == "fp16"
+    grad_scaler = torch.amp.GradScaler("cuda") if use_grad_scaler else None
+
     # Determine if scheduler steps per batch (OneCycleLR) or per epoch
-    # Use isinstance check since class name 'OneCycleLR' != 'onecycle' string in is_epoch_based
     from torch.optim.lr_scheduler import OneCycleLR
 
     step_per_batch = isinstance(scheduler, OneCycleLR)
+    # MPS does not support float64 tensors; use float32 accumulators on MPS
+    acc_dtype = torch.float32 if device.type == "mps" else torch.float64
+    scale_flat = np.asarray(scaler.scale_, dtype=np.float64).reshape(-1)
+    n_channels = len(scale_flat)
 
     for epoch in range(epochs):
         # Training
         model.train()
-        train_loss = 0.0
+        train_loss_sum = torch.zeros((), device=device, dtype=acc_dtype)
         train_samples = 0
 
         for x, y in train_loader:
-            x, y = x.to(device), y.to(device)
+            x = x.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True)
 
-            optimizer.zero_grad()
-            pred = model(x)
-            if pred.shape != y.shape:
-                raise ValueError(
-                    f"Model output shape {tuple(pred.shape)} does not match "
-                    f"target shape {tuple(y.shape)}."
-                )
-            loss = criterion(pred, y)
-            if not torch.isfinite(loss):
-                raise FloatingPointError(
-                    "Cross-validation training loss is non-finite."
-                )
-            loss.backward()
-            if grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-            optimizer.step()
-
-            # Per-batch LR scheduling (OneCycleLR)
-            if step_per_batch:
-                scheduler.step()
-
-            train_loss += loss.item() * x.size(0)
-            train_samples += x.size(0)
-
-        avg_train_loss = train_loss / train_samples
-
-        # Validation
-        model.eval()
-        val_loss = 0.0
-        val_samples = 0
-        scale_flat = np.asarray(scaler.scale_, dtype=np.float64).reshape(-1)
-        epoch_tracker = StreamingFieldMetrics(len(scale_flat), scale_flat)
-
-        with torch.inference_mode():
-            for x, y in val_loader:
-                x, y = x.to(device), y.to(device)
+            optimizer.zero_grad(set_to_none=True)
+            with torch.amp.autocast(
+                device_type="cuda", dtype=amp_dtype, enabled=use_amp
+            ):
                 pred = model(x)
                 if pred.shape != y.shape:
                     raise ValueError(
@@ -224,30 +207,87 @@ def train_fold(
                         f"target shape {tuple(y.shape)}."
                     )
                 loss = criterion(pred, y)
-                if not torch.isfinite(loss):
-                    raise FloatingPointError(
-                        "Cross-validation validation loss is non-finite."
-                    )
 
-                val_loss += loss.item() * x.size(0)
-                val_samples += x.size(0)
+            if grad_scaler is not None:
+                grad_scaler.scale(loss).backward()
+                if grad_clip > 0:
+                    grad_scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                old_scale = grad_scaler.get_scale() if step_per_batch else 0.0
+                grad_scaler.step(optimizer)
+                grad_scaler.update()
+                step_skipped = step_per_batch and grad_scaler.get_scale() < old_scale
+            else:
+                loss.backward()
+                if grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                optimizer.step()
+                step_skipped = False
 
-                epoch_tracker.update(
-                    y.detach().cpu().numpy(),
-                    pred.detach().cpu().numpy(),
+            # Per-batch LR scheduling (OneCycleLR)
+            if step_per_batch and not step_skipped:
+                scheduler.step()
+
+            train_loss_sum += loss.detach().to(acc_dtype) * x.size(0)
+            train_samples += x.size(0)
+
+        if not torch.isfinite(train_loss_sum):
+            raise FloatingPointError("Cross-validation training loss is non-finite.")
+        avg_train_loss = float(train_loss_sum.item()) / train_samples
+
+        # Validation
+        model.eval()
+        val_loss_sum = torch.zeros((), device=device, dtype=acc_dtype)
+        val_abs_err_sum = torch.zeros(n_channels, device=device, dtype=acc_dtype)
+        val_samples = 0
+        val_elems_per_channel = 0
+
+        with torch.inference_mode():
+            for x, y in val_loader:
+                x = x.to(device, non_blocking=True)
+                y = y.to(device, non_blocking=True)
+                with torch.amp.autocast(
+                    device_type="cuda", dtype=amp_dtype, enabled=use_amp
+                ):
+                    pred = model(x)
+                    if pred.shape != y.shape:
+                        raise ValueError(
+                            f"Model output shape {tuple(pred.shape)} does not match "
+                            f"target shape {tuple(y.shape)}."
+                        )
+                    pred_fp32 = pred.float()
+                    y_fp32 = y.float()
+                    loss = criterion(pred_fp32, y_fp32)
+
+                val_loss_sum += loss.detach().to(acc_dtype) * x.size(0)
+                reduce_axes = (0, *range(2, pred_fp32.ndim))
+                val_abs_err_sum += (
+                    (pred_fp32 - y_fp32).abs().to(acc_dtype).sum(dim=reduce_axes)
                 )
+                val_samples += x.size(0)
+                spatial_elems = (
+                    math.prod(pred_fp32.shape[2:]) if pred_fp32.ndim > 2 else 1
+                )
+                val_elems_per_channel += x.size(0) * spatial_elems
 
-        avg_val_loss = val_loss / val_samples
-        r2, _pcc, mae_per_channel = epoch_tracker.compute()
-        mae = float(np.mean(mae_per_channel))
+        if (
+            not torch.isfinite(val_loss_sum)
+            or not torch.isfinite(val_abs_err_sum).all()
+        ):
+            raise FloatingPointError("Cross-validation validation loss is non-finite.")
+        avg_val_loss = float(val_loss_sum.item()) / val_samples
+        epoch_mae_phys = (
+            val_abs_err_sum.detach().cpu().numpy().astype(np.float64)
+            / val_elems_per_channel
+        ) * scale_flat
+        avg_val_mae = float(np.mean(epoch_mae_phys))
 
         history.append(
             {
                 "epoch": epoch + 1,
                 "train_loss": avg_train_loss,
                 "val_loss": avg_val_loss,
-                "r2": r2,
-                "mae": mae,
+                "mae": avg_val_mae,
             }
         )
 
@@ -261,6 +301,7 @@ def train_fold(
         # Early stopping
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
+            best_epoch = epoch + 1
             patience_ctr = 0
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
         else:
@@ -270,37 +311,40 @@ def train_fold(
             logger.info(f"    Fold {fold + 1}: Early stopping at epoch {epoch + 1}")
             break
 
-    # Restore best model and compute final metrics via streaming accumulator
+    # Restore best model and compute final metrics via single streaming pass
     if best_state:
         model.load_state_dict(best_state)
 
     model.eval()
     scale_flat = np.asarray(scaler.scale_, dtype=np.float64).reshape(-1)
     norm_tracker = StreamingFieldMetrics(len(scale_flat), np.ones_like(scale_flat))
-    phys_tracker = StreamingFieldMetrics(len(scale_flat), scale_flat)
 
     with torch.inference_mode():
         for x, y in val_loader:
-            x, y = x.to(device), y.to(device)
-            pred = model(x)
-            if pred.shape != y.shape:
-                raise ValueError(
-                    f"Model output shape {tuple(pred.shape)} does not match "
-                    f"target shape {tuple(y.shape)}."
-                )
-            y_np = y.detach().cpu().numpy()
-            pred_np = pred.detach().cpu().numpy()
-            norm_tracker.update(y_np, pred_np)
-            # The tracker converts normalized absolute errors to physical units.
-            phys_tracker.update(y_np, pred_np)
+            x = x.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True)
+            with torch.amp.autocast(
+                device_type="cuda", dtype=amp_dtype, enabled=use_amp
+            ):
+                pred = model(x)
+                if pred.shape != y.shape:
+                    raise ValueError(
+                        f"Model output shape {tuple(pred.shape)} does not match "
+                        f"target shape {tuple(y.shape)}."
+                    )
+            norm_tracker.update(
+                y.detach().float().cpu().numpy(),
+                pred.detach().float().cpu().numpy(),
+            )
 
     r2_mean, _pcc, mae_norm_channels = norm_tracker.compute()
     r2_per_channel, _ = norm_tracker.per_channel()
-    _, _, mae_phys_channels = phys_tracker.compute()
+    mae_phys_channels = mae_norm_channels * scale_flat
 
     results = {
         "fold": fold + 1,
         "best_val_loss": best_val_loss,
+        "best_epoch": best_epoch,
         "r2": r2_mean,
         "mae_normalized": float(np.mean(mae_norm_channels)),
         "mae_physical": float(np.mean(mae_phys_channels)),
@@ -362,6 +406,7 @@ def run_cross_validation(
     step_size: int = 30,
     milestones: list[int] | None = None,
     warmup_epochs: int = 5,
+    precision: str = "no",
 ) -> dict[str, Any]:
     """
     Run K-fold cross-validation.
@@ -541,10 +586,12 @@ def run_cross_validation(
         )
         del X_train, X_val, y_train, y_val, y_train_scaled, y_val_scaled
 
+        drop_last = len(train_ds) > batch_size and len(train_ds) % batch_size == 1
         train_loader = DataLoader(
             train_ds,
             batch_size=batch_size,
             shuffle=True,
+            drop_last=drop_last,
             num_workers=workers,
             pin_memory=device.type == "cuda",
         )
@@ -557,7 +604,11 @@ def run_cross_validation(
         )
 
         # Build model
+        from wavedl.utils.preprocessing import validate_input_channels
+
+        in_channels = int(train_ds.X.shape[1])
         model_class = get_model(model_name)
+        validate_input_channels(model_class, in_channels, model_name)
         if len(out_shape) > 1 and not getattr(
             model_class, "supports_spatial_output", False
         ):
@@ -571,7 +622,11 @@ def run_cross_validation(
             raise ValueError(
                 f"Model '{model_name}' requires dense field targets, got {out_shape}."
             )
-        model_kwargs = {"out_shape": out_shape} if len(out_shape) > 1 else {}
+        model_kwargs: dict[str, Any] = {}
+        if len(out_shape) > 1:
+            model_kwargs["out_shape"] = out_shape
+        if in_channels > 1:
+            model_kwargs["in_channels"] = in_channels
         model = build_model(
             model_name,
             in_shape=in_shape,
@@ -628,6 +683,7 @@ def run_cross_validation(
             grad_clip=grad_clip,
             scaler=scaler,
             logger=logger,
+            precision=precision,
         )
 
         fold_results.append(results)
@@ -645,10 +701,11 @@ def run_cross_validation(
         with open(os.path.join(fold_dir, "training_meta.pkl"), "wb") as f:
             pickle.dump(
                 {
-                    "epoch": results["epochs_trained"],
+                    "epoch": results.get("best_epoch") or results["epochs_trained"],
                     "best_val_loss": results["best_val_loss"],
                     "model_name": model_name,
                     "in_shape": in_shape,
+                    "in_channels": in_channels,
                     "out_dim": out_size,
                     "target_shape": out_shape,
                     "cv_fold": fold + 1,

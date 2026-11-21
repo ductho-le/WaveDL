@@ -99,7 +99,7 @@ class EfficientViTBase(BaseModel):
         self.model_name = model_name
         self.dropout_rate = dropout_rate
         self._target_size = None
-        if "m1" in model_name or model_name.startswith("efficientvit_m"):
+        if model_name.startswith("efficientvit_m"):
             if self.in_shape != (224, 224):
                 self._target_size = (224, 224)
                 import warnings

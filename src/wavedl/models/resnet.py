@@ -225,7 +225,8 @@ class ResNetBase(BaseModel):
         self.dim = len(self.in_shape)
         self.base_width = base_width
         self.dropout_rate = dropout_rate
-        self.in_channels = base_width
+        self.in_channels = 1
+        self._inplanes = base_width
 
         Conv, MaxPool, AdaptivePool = _get_conv_layers(self.dim)
 
@@ -267,10 +268,10 @@ class ResNetBase(BaseModel):
         Conv = _get_conv_layers(self.dim)[0]
 
         downsample = None
-        if stride != 1 or self.in_channels != out_channels * block.expansion:
+        if stride != 1 or self._inplanes != out_channels * block.expansion:
             downsample = nn.Sequential(
                 Conv(
-                    self.in_channels,
+                    self._inplanes,
                     out_channels * block.expansion,
                     kernel_size=1,
                     stride=stride,
@@ -283,13 +284,11 @@ class ResNetBase(BaseModel):
             )
 
         layers = []
-        layers.append(
-            block(self.in_channels, out_channels, stride, downsample, self.dim)
-        )
-        self.in_channels = out_channels * block.expansion
+        layers.append(block(self._inplanes, out_channels, stride, downsample, self.dim))
+        self._inplanes = out_channels * block.expansion
 
         for _ in range(1, num_blocks):
-            layers.append(block(self.in_channels, out_channels, dim=self.dim))
+            layers.append(block(self._inplanes, out_channels, dim=self.dim))
 
         return nn.Sequential(*layers)
 
@@ -504,8 +503,8 @@ class PretrainedResNetBase(BaseModel):
         self.dropout_rate = dropout_rate
         self.freeze_backbone = freeze_backbone
 
-        # Load pretrained model
-        weights = weights_class.IMAGENET1K_V1 if pretrained else None
+        # Load pretrained model (DEFAULT selects the best available torchvision weights)
+        weights = weights_class.DEFAULT if pretrained else None
         self.backbone = model_fn(weights=weights)
 
         # Get the fc input features

@@ -25,6 +25,8 @@ from wavedl.utils.preprocessing import (
     MinMaxTargetScaler,
     ShardManifestDataset,
     configure_tf32,
+    inverse_transform_inputs,
+    prepare_preprocessed_data,
     preprocessing_from_args,
     transform_inputs,
 )
@@ -215,7 +217,9 @@ def test_invalid_channel_option(count):
 def test_minmax_scaler_roundtrip_vector_and_field():
     labels = np.linspace(1500, 4500, 120, dtype=np.float32).reshape(5, 1, 4, 6)
     scaler = MinMaxTargetScaler([1500, 4500], (1, 4, 6))
-    expected = ((labels - 1500) / 3000 - 0.5) * 2
+    expected = (((labels.astype(np.float64) - 1500.0) / 3000.0 - 0.5) * 2.0).astype(
+        np.float32
+    )
     np.testing.assert_array_equal(scaler.transform(labels), expected)
     np.testing.assert_allclose(scaler.inverse_transform(expected), labels, atol=3e-4)
     np.testing.assert_array_equal(scaler.mean_, [[[3000]]])
@@ -676,7 +680,11 @@ def test_memmap_worker_init_clears_manifest_handles(tmp_path, monkeypatch):
         lambda: Namespace(dataset=inputs, seed=12345),
     )
     memmap_worker_init_fn(0)
-    assert source._maps == {}
+    assert len(source._maps) == 0
+    # Subsequent reads in the worker must continue using OrderedDict LRU methods
+    _ = source[0]
+    _ = source[1]
+    assert len(source._maps) > 0
 
 
 def test_validate_config_accepts_preprocessing_keys_without_parser():
@@ -695,3 +703,402 @@ def test_validate_config_accepts_preprocessing_keys_without_parser():
         }
     )
     assert warnings == []
+
+
+def test_configure_tf32_does_not_mix_legacy_and_new_matmul_apis():
+    prev_prec = torch.get_float32_matmul_precision()
+    prev_cudnn = torch.backends.cudnn.allow_tf32
+    try:
+        torch.set_float32_matmul_precision("high")
+        torch.backends.cudnn.allow_tf32 = True
+        configure_tf32(Namespace(no_tf32=True, deterministic=False))
+        assert torch.get_float32_matmul_precision() == "highest"
+        assert torch.backends.cuda.matmul.allow_tf32 is False
+        assert torch.backends.cudnn.allow_tf32 is False
+    finally:
+        torch.set_float32_matmul_precision(prev_prec)
+        torch.backends.cudnn.allow_tf32 = prev_cudnn
+
+
+def test_minmax_target_scaler_preserves_float64_precision_for_large_offsets():
+    scaler = MinMaxTargetScaler([1e9, 1e9 + 100.0], (1,))
+    raw = np.array(
+        [[1e9 + 25.0], [1e9 + 75.0], [1e9 + 50.0], [1e9 + 10.0]], dtype=np.float64
+    )
+    scaled = scaler.transform(raw)
+    expected = np.array([[-0.5], [0.5], [0.0], [-0.8]], dtype=np.float32)
+    np.testing.assert_allclose(scaled, expected, atol=1e-6)
+    recovered = scaler.inverse_transform(scaled)
+    np.testing.assert_allclose(recovered, raw, rtol=0, atol=1e-4)
+
+
+def test_inverse_transform_inputs_roundtrips_signed_log_minmax():
+    cfg = preprocessing_from_args(
+        Namespace(
+            input_transform="signed_log_minmax",
+            input_range=[-25.0, 50.0],
+            target_scaling="standard",
+            target_range=None,
+        )
+    )
+    arr = np.array([-20.0, -1.5, 0.0, 3.25, 45.0], dtype=np.float32)
+    transformed_np = transform_inputs(arr, cfg)
+    recovered_np = inverse_transform_inputs(transformed_np, cfg)
+    np.testing.assert_allclose(recovered_np, arr, rtol=1e-5, atol=1e-5)
+
+    tensor = torch.from_numpy(arr)
+    transformed_pt = transform_inputs(tensor, cfg)
+    recovered_pt = inverse_transform_inputs(transformed_pt, cfg)
+    torch.testing.assert_close(recovered_pt, tensor, rtol=1e-5, atol=1e-5)
+
+
+def test_shard_manifest_lru_bounds_open_memmaps(tmp_path):
+    path, _, _ = make_field_manifest(tmp_path, lengths=(2, 2, 2, 2, 2))
+    ds = ShardManifestDataset(path, max_open_shards=2)
+    try:
+        for idx in range(len(ds)):
+            _ = ds[idx]
+            assert len(ds._maps) <= 2
+    finally:
+        ds.close()
+        assert len(ds._maps) == 0
+
+
+def test_prepare_data_does_not_reuse_stale_preprocessed_cache(tmp_path):
+    from wavedl.utils.targets import SpatialTargetScaler
+
+    data_file = tmp_path / "field.npz"
+    x = np.random.default_rng(0).standard_normal((8, 12, 12)).astype(np.float32)
+    y = (
+        np.random.default_rng(1)
+        .uniform(1500.0, 4500.0, size=(8, 12, 12))
+        .astype(np.float32)
+    )
+    np.savez(data_file, input_train=x, output_train=y)
+
+    cache_dir = tmp_path / "shared_cache"
+    logger = logging.getLogger(__name__)
+    acc = CPUAccelerator()
+
+    # Step 1: Populate cache_dir via standard prepare_data (creates train_data_cache.dat)
+    base_args = Namespace(
+        data_path=str(data_file),
+        batch_size=4,
+        workers=0,
+        seed=42,
+        cache_validate="sha256",
+        single_channel=False,
+        allow_pickle=True,
+    )
+    prepare_data(base_args, logger, acc, cache_dir=str(cache_dir), val_split=0.25)
+
+    # Step 2: Run prepare_preprocessed_data in same cache_dir (overwrites data_metadata.pkl + scaler.pkl)
+    prep_cfg = preprocessing_from_args(
+        Namespace(
+            input_transform="none",
+            input_range=None,
+            target_scaling="minmax",
+            target_range=[1500.0, 4500.0],
+        )
+    )
+    prep_args = Namespace(
+        data_path=str(data_file),
+        val_data_path=None,
+        batch_size=4,
+        workers=0,
+        seed=42,
+        single_channel=False,
+        input_channels=None,
+        allow_pickle=True,
+    )
+    prepare_preprocessed_data(
+        prep_args, prep_cfg, logger, acc, str(cache_dir), val_split=0.25
+    )
+
+    # Step 3: Subsequent default prepare_data must invalidate and rebuild with SpatialTargetScaler
+    _, _, rebuilt_scaler, _, _ = prepare_data(
+        base_args, logger, acc, cache_dir=str(cache_dir), val_split=0.25
+    )
+    assert isinstance(rebuilt_scaler, SpatialTargetScaler)
+
+
+def test_3d_single_channel_manifest_with_npz_val_data_path(tmp_path):
+    # Create 1-channel 3D shard manifest: (N, 1, 8, 10, 10) -> (N, 2)
+    x_shard = tmp_path / "x0.npy"
+    y_shard = tmp_path / "y0.npy"
+    np.save(x_shard, np.ones((4, 1, 8, 10, 10), dtype=np.float32))
+    np.save(y_shard, np.ones((4, 2), dtype=np.float32))
+    manifest = tmp_path / "train.txt"
+    manifest.write_text(f"{x_shard.name}\t{y_shard.name}\n", encoding="utf-8")
+
+    # Shallow 3D validation array (M, 8, 10, 10) without explicit channel axis
+    val_npz = tmp_path / "val.npz"
+    np.savez(
+        val_npz,
+        input_train=np.ones((2, 8, 10, 10), dtype=np.float32),
+        output_train=np.ones((2, 2), dtype=np.float32),
+    )
+
+    args = Namespace(
+        data_path=str(manifest),
+        val_data_path=str(val_npz),
+        batch_size=2,
+        workers=0,
+        seed=42,
+        single_channel=True,
+        input_channels=None,
+        allow_pickle=False,
+    )
+    cfg = preprocessing_from_args(args)
+    train_dl, val_dl, _, in_shape, out_dim = prepare_preprocessed_data(
+        args,
+        cfg,
+        logging.getLogger(__name__),
+        CPUAccelerator(),
+        str(tmp_path / "c"),
+        0.2,
+    )
+    assert in_shape == (8, 10, 10)
+    assert out_dim == 2
+    assert len(train_dl.dataset) == 4
+    assert len(val_dl.dataset) == 2
+
+
+def test_prepare_preprocessed_data_rejects_empty_training_set_with_val_path(tmp_path):
+    empty_train = tmp_path / "empty.npz"
+    val_npz = tmp_path / "val.npz"
+    np.savez(
+        empty_train,
+        input_train=np.ones((0, 2, 8, 8), dtype=np.float32),
+        output_train=np.ones((0, 8, 8), dtype=np.float32),
+    )
+    np.savez(
+        val_npz,
+        input_train=np.ones((2, 2, 8, 8), dtype=np.float32),
+        output_train=np.ones((2, 8, 8), dtype=np.float32),
+    )
+    args = Namespace(
+        data_path=str(empty_train),
+        val_data_path=str(val_npz),
+        batch_size=2,
+        workers=0,
+        seed=42,
+        single_channel=False,
+        input_channels=None,
+        allow_pickle=False,
+        input_transform="none",
+        input_range=None,
+        target_scaling="minmax",
+        target_range=[-1.0, 1.0],
+    )
+    cfg = preprocessing_from_args(args)
+    with pytest.raises(ValueError, match="Training dataset is empty"):
+        prepare_preprocessed_data(
+            args,
+            cfg,
+            logging.getLogger(__name__),
+            CPUAccelerator(),
+            str(tmp_path / "c"),
+            0.2,
+        )
+
+
+def test_3d_multichannel_inference_preserves_checkpoint_channel_count(
+    tmp_path, monkeypatch
+):
+    # Create 3-channel 3D manifest: (N, 3, 6, 8, 8)
+    x_shard = tmp_path / "x3d.npy"
+    y_shard = tmp_path / "y3d.npy"
+    np.save(x_shard, np.ones((2, 3, 6, 8, 8), dtype=np.float32))
+    np.save(y_shard, np.ones((2, 2), dtype=np.float32))
+    manifest = tmp_path / "test3d.txt"
+    manifest.write_text(f"{x_shard.name}\t{y_shard.name}\n", encoding="utf-8")
+
+    ckpt = tmp_path / "ckpt3d"
+    ckpt.mkdir()
+    with (ckpt / "training_meta.pkl").open("wb") as file:
+        pickle.dump(
+            {
+                "model_name": "cnn",
+                "in_shape": (6, 8, 8),
+                "in_channels": 3,
+                "out_dim": 2,
+                "target_shape": (2,),
+            },
+            file,
+        )
+
+    captured = {}
+
+    def fake_load_data_for_inference(*args, **kwargs):
+        captured["input_channels"] = kwargs.get("input_channels")
+        raise RuntimeError("sentinel_after_load")
+
+    monkeypatch.setattr(
+        inference, "load_data_for_inference", fake_load_data_for_inference
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["wavedl-test", "--checkpoint", str(ckpt), "--data_path", str(manifest)],
+    )
+    with pytest.raises(RuntimeError, match="sentinel_after_load"):
+        inference.main()
+    assert captured["input_channels"] == 3
+
+
+def test_onnx_metadata_reports_input_transform_embedded_false_when_none(tmp_path):
+    onnx = pytest.importorskip("onnx")
+    pytest.importorskip("onnxruntime")
+    model = TinyMultiChannelDense().eval()
+    model._wavedl_preprocessing = {"input_transform": "none"}
+    raw = torch.randn(1, 5, 8, 6)
+    path = tmp_path / "plain.onnx"
+    assert inference.export_to_onnx(model, raw, str(path))
+    metadata = {entry.key: entry.value for entry in onnx.load(path).metadata_props}
+    assert metadata["input_transform_embedded"] == "false"
+
+
+def test_mat_source_preserves_file_not_found_error(tmp_path):
+    from wavedl.utils.data import MATSource
+
+    missing = str(tmp_path / "nonexistent.mat")
+    src = MATSource()
+    with pytest.raises(FileNotFoundError):
+        src.load(missing)
+    with pytest.raises(FileNotFoundError):
+        src.load_mmap(missing)
+    with pytest.raises(FileNotFoundError):
+        src.load_outputs_only(missing)
+
+
+def test_launcher_honors_nested_training_precision_no(tmp_path, monkeypatch):
+    from wavedl import launcher
+
+    cfg = tmp_path / "nested.yaml"
+    cfg.write_text("model: cnn\ntraining:\n  precision: no\n", encoding="utf-8")
+    captured = {}
+
+    class DummyProc:
+        def wait(self):
+            return 0
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return DummyProc()
+
+    monkeypatch.setattr(launcher.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(launcher, "detect_gpus", lambda: 1)
+    monkeypatch.setattr(sys, "argv", ["wavedl-train", "--config", str(cfg)])
+    assert launcher.main() == 0
+    assert "--mixed_precision=no" in captured["cmd"]
+    prec_idx = captured["cmd"].index("--precision")
+    assert captured["cmd"][prec_idx + 1] == "no"
+
+
+def test_hpo_detect_target_shape_supports_shard_manifest(tmp_path):
+    from wavedl.hpo import _detect_target_shape
+
+    path, _, _ = make_field_manifest(tmp_path, lengths=(2,))
+    assert _detect_target_shape(str(path)) == (1, 4, 6)
+
+
+def test_1d_multichannel_array_dataset_and_load_test_data(tmp_path):
+    from wavedl.utils.data import load_test_data
+    from wavedl.utils.preprocessing import _ArrayDataset
+
+    x = np.random.default_rng(3).normal(size=(4, 3, 32)).astype(np.float32)
+    y = np.random.default_rng(4).normal(size=(4, 2)).astype(np.float32)
+    path = tmp_path / "mc1d.npz"
+    np.savez(path, input_test=x, output_test=y)
+
+    x_loaded, y_loaded = load_test_data(str(path), input_channels=3)
+    assert x_loaded.shape == (4, 3, 32)
+    assert y_loaded.shape == (4, 2)
+
+    from wavedl.utils.targets import create_target_scaler
+
+    ds = _ArrayDataset(
+        x,
+        y,
+        np.arange(len(x)),
+        {"input_transform": "none"},
+        create_target_scaler(y),
+        input_channels=3,
+    )
+    sample_x, sample_y = ds[0]
+    assert sample_x.shape == (3, 32)
+    assert sample_y.shape == (2,)
+
+
+def test_shard_manifest_preserves_float64_targets_and_manifest_inputs_context(tmp_path):
+    from wavedl.utils.preprocessing import ManifestInputs, ShardManifestDataset
+
+    x_shard = tmp_path / "x.npy"
+    y_shard = tmp_path / "y.npy"
+    y_f64 = 1e8 + np.arange(4, dtype=np.float64).reshape(4, 1)
+    np.save(x_shard, np.ones((4, 1, 8, 8), dtype=np.float32))
+    np.save(y_shard, y_f64)
+    manifest = tmp_path / "m.txt"
+    manifest.write_text(f"{x_shard.name}\t{y_shard.name}\n", encoding="utf-8")
+
+    ds = ShardManifestDataset(str(manifest))
+    try:
+        batches = list(ds.target_batches(batch_size=2))
+        stacked = np.concatenate(batches, axis=0)
+        assert stacked.dtype == np.float64
+        np.testing.assert_array_equal(stacked, y_f64)
+    finally:
+        ds.close()
+
+    with ManifestInputs(ShardManifestDataset(str(manifest))) as inputs:
+        assert inputs.shape == (4, 1, 8, 8)
+
+
+def test_prepare_data_enables_drop_last_for_singleton_tail_batch(tmp_path):
+    from types import SimpleNamespace
+
+    from wavedl.utils.data import prepare_data
+
+    x = np.ones((10, 8, 8), dtype=np.float32)
+    y = np.arange(20, dtype=np.float32).reshape(10, 2)
+    path = tmp_path / "ten.npz"
+    np.savez(path, input_train=x, output_train=y)
+
+    train_dl, _, _, _, _ = prepare_data(
+        args=SimpleNamespace(
+            data_path=str(path),
+            batch_size=7,  # 8 train samples % 7 == 1 -> must drop_last
+            workers=0,
+            seed=42,
+            deterministic=False,
+            single_channel=False,
+            allow_pickle=False,
+            cache_validate="sha256",
+        ),
+        logger=logging.getLogger("test_drop_last"),
+        accelerator=CPUAccelerator(),
+        cache_dir=str(tmp_path / "cache"),
+        val_split=0.2,
+    )
+    assert train_dl.drop_last is True
+
+
+def test_transform_inputs_rejects_nonpositive_log_k_and_degenerate_range():
+    from wavedl.utils.preprocessing import transform_inputs
+
+    arr = np.ones((2, 4), dtype=np.float32)
+    with pytest.raises(ValueError, match="log_k"):
+        transform_inputs(
+            arr,
+            {
+                "input_transform": "signed_log_minmax",
+                "input_range": (0.0, 1.0),
+                "log_k": 0.0,
+            },
+        )
+    with pytest.raises(ValueError, match=r"input_range|lo < hi|strictly"):
+        transform_inputs(
+            arr,
+            {"input_transform": "signed_log_minmax", "input_range": (1.0, 1.0)},
+        )

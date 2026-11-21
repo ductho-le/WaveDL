@@ -35,13 +35,15 @@ Author: Ductho Le (ductho.le@outlook.com)
 
 import copy
 import math
+from numbers import Integral
 from typing import Any, ClassVar
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as grad_checkpoint
 
-from wavedl.models.base import BaseModel
+from wavedl.models.base import BaseModel, validate_dropout_rate
 from wavedl.models.registry import register_model
 
 
@@ -110,51 +112,81 @@ class S4DKernel(nn.Module):
     # Limits peak intermediate memory to chunk_size * d_model * d_state * ~4 tensors.
     _KERNEL_CHUNK_SIZE: int = 1024
 
-    def forward(self, L: int) -> torch.Tensor:
+    @staticmethod
+    def _compute_kernel_chunk(
+        start: int,
+        end: int,
+        dA_real: torch.Tensor,
+        dA_imag: torch.Tensor,
+        C_r: torch.Tensor,
+        C_i: torch.Tensor,
+    ) -> torch.Tensor:
+        """Synthesize one ``(chunk_len, d_model)`` block of the S4D kernel."""
+        t = torch.arange(start, end, device=dA_real.device, dtype=dA_real.dtype)
+        t = t.view(-1, 1, 1)  # (chunk_len, 1, 1)
+        mag_t = (t * dA_real).exp()  # (chunk_len, d_model, d_state)
+        cos_t = (t * dA_imag).cos()
+        sin_t = (t * dA_imag).sin()
+        # kernel_t = Re(C * exp(A)^t * B) — B=1 for S4D-Lin
+        return (mag_t * (C_r * cos_t - C_i * sin_t)).sum(dim=-1)
+
+    def forward(self, L: int, *, dtype: torch.dtype = torch.float32) -> torch.Tensor:
         """
         Compute the S4D-Lin convolution kernel for sequence length L.
 
-        Uses chunked computation along the sequence dimension to avoid
-        materializing full (L, d_model, d_state) intermediates when L is
-        large (e.g. L=8192, d_model=256, d_state=64 → ~2 GB unchunked).
+        Uses chunked computation (with gradient checkpointing during training
+        for long sequences) to avoid retaining O(L * d_model * d_state) autograd
+        intermediates when L is large.
 
         Returns:
             kernel: (d_model, L) real-valued convolution kernel
         """
-        # Always synthesize the SSM kernel in float32: bfloat16/float16 quantizes
-        # integer sample indices t > 256/2048 and is unsupported by torch.fft.rfft.
+        if L <= 0:
+            raise ValueError(f"Sequence length L must be positive, got {L}.")
+        work_dtype = torch.float64 if dtype == torch.float64 else torch.float32
+        # Always synthesize the SSM kernel in at least float32: bfloat16/float16
+        # quantizes integer indices t > 256/2048 and is unsupported by rfft.
         with torch.amp.autocast(device_type=self.log_dt.device.type, enabled=False):
-            dt = self.log_dt.float().exp()  # (d_model, d_state)
+            # Clamp log_dt to prevent exp() overflow/underflow during training
+            dt = self.log_dt.to(dtype=work_dtype).clamp(-12.0, 4.0).exp()
 
             # Discretize: A_bar = exp(dt * A)
-            # A shape: (d_state,), dt shape: (d_model, d_state)
-            # Clamp A_real to non-positive: guarantees exp(t*A_real) decays,
-            # preventing exponential kernel growth if A_real drifts positive.
-            dA_real = dt * self.A_real.float().clamp(max=0)  # (d_model, d_state)
-            dA_imag = dt * self.A_imag.float()  # (d_model, d_state)
+            # Use -abs(A_real).clamp(min=1e-4) instead of clamp(max=0) so poles
+            # stay strictly stable without zero-gradient dead zones if A_real > 0.
+            dA_real = dt * (-self.A_real.to(dtype=work_dtype).abs().clamp(min=1e-4))
+            dA_imag = dt * self.A_imag.to(dtype=work_dtype)
 
             # C coefficients (broadcast-ready)
-            C_r = self.C_real.float().unsqueeze(0)  # (1, d_model, d_state)
-            C_i = self.C_imag.float().unsqueeze(0)  # (1, d_model, d_state)
+            C_r = self.C_real.to(dtype=work_dtype).unsqueeze(0)  # (1, d_model, d_state)
+            C_i = self.C_imag.to(dtype=work_dtype).unsqueeze(0)  # (1, d_model, d_state)
 
-            # Chunked computation: process L in blocks to limit peak memory.
-            # Each chunk materializes (chunk_size, d_model, d_state) intermediates
-            # and immediately sums over d_state, keeping only (d_model, chunk_size).
             chunk_size = self._KERNEL_CHUNK_SIZE
+            seq_len = int(L)
+            use_ckpt = (
+                seq_len > chunk_size
+                and torch.is_grad_enabled()
+                and not torch.onnx.is_in_onnx_export()
+            )
             kernel_chunks: list[torch.Tensor] = []
 
             for start in range(0, L, chunk_size):
                 end = min(start + chunk_size, L)
-                t = torch.arange(start, end, device=dt.device, dtype=torch.float32)
-                t = t.view(-1, 1, 1)  # (chunk_len, 1, 1)
-
-                mag_t = (t * dA_real).exp()  # (chunk_len, d_model, d_state)
-                cos_t = (t * dA_imag).cos()
-                sin_t = (t * dA_imag).sin()
-
-                # kernel_t = Re(C * exp(A)^t * B) — B=1 for S4D-Lin
-                k_real = mag_t * (C_r * cos_t - C_i * sin_t)
-                kernel_chunks.append(k_real.sum(dim=-1))  # (chunk_len, d_model)
+                if use_ckpt:
+                    chunk = grad_checkpoint(
+                        self._compute_kernel_chunk,
+                        start,
+                        end,
+                        dA_real,
+                        dA_imag,
+                        C_r,
+                        C_i,
+                        use_reentrant=False,
+                    )
+                else:
+                    chunk = self._compute_kernel_chunk(
+                        start, end, dA_real, dA_imag, C_r, C_i
+                    )
+                kernel_chunks.append(chunk)
 
             kernel = torch.cat(kernel_chunks, dim=0)  # (L, d_model)
             return kernel.permute(1, 0)  # (d_model, L)
@@ -220,23 +252,28 @@ class S4DLayer(nn.Module):
         z = self.norm(x)  # (B, L, d_model)
         z = z.permute(0, 2, 1)  # (B, d_model, L)
 
-        # Compute kernel and causal convolution in float32 (FFT does not support
-        # bf16/non-pow2 fp16, and ONNX opset 17 lacks aten::fft_rfft).
+        # Compute kernel and causal convolution in at least float32 (preserve float64;
+        # FFT does not support bf16/non-pow2 fp16, and ONNX opset 17 lacks aten::fft_rfft).
+        work_dtype = torch.float64 if z.dtype == torch.float64 else torch.float32
         with torch.amp.autocast(device_type=z.device.type, enabled=False):
-            k = self.kernel(L)  # (d_model, L), float32
-            z_f32 = z.float()
+            k = self.kernel(L, dtype=work_dtype)  # (d_model, L)
+            z_work = z.to(dtype=work_dtype)
             if is_onnx:
-                y_f32 = F.conv1d(
-                    F.pad(z_f32, (L - 1, 0)),
+                y_work = F.conv1d(
+                    F.pad(z_work, (L - 1, 0)),
                     k.flip(-1).unsqueeze(1),
-                    groups=int(z_f32.shape[1]),
+                    groups=int(z_work.shape[1]),
                 )
             else:
-                k_f = torch.fft.rfft(k, n=2 * L)  # (d_model, L+1) complex
-                z_f = torch.fft.rfft(z_f32, n=2 * L)  # (B, d_model, L+1) complex
+                # Pad FFT length to next power of 2 >= 2*L for optimal radix-2 FFT speed
+                fft_len = 1 << (2 * L - 1).bit_length()
+                k_f = torch.fft.rfft(k, n=fft_len)  # (d_model, fft_len//2 + 1)
+                z_f = torch.fft.rfft(z_work, n=fft_len)  # (B, d_model, fft_len//2 + 1)
                 y_f = k_f.unsqueeze(0) * z_f  # broadcast over batch
-                y_f32 = torch.fft.irfft(y_f, n=2 * L)[..., :L]  # (B, d_model, L)
-            y = (y_f32 + self.D.float().view(1, -1, 1) * z_f32).to(dtype=z.dtype)
+                y_work = torch.fft.irfft(y_f, n=fft_len)[..., :L]  # (B, d_model, L)
+            y = (y_work + self.D.to(dtype=work_dtype).view(1, -1, 1) * z_work).to(
+                dtype=z.dtype
+            )
 
         y = y.permute(0, 2, 1)  # (B, L, d_model)
         y = self.act(y)
@@ -289,9 +326,9 @@ class S4DBase(BaseModel):
         """
         super().__init__(in_shape, out_size)
 
-        if len(in_shape) != 1:
+        if len(self.in_shape) != 1:
             raise ValueError(
-                f"S4D requires 1D input (L,), got {len(in_shape)}D. "
+                f"S4D requires 1D input (L,), got {len(self.in_shape)}D. "
                 "For 2D/3D data, use ResNet, EfficientNet, or Swin."
             )
 
@@ -303,12 +340,18 @@ class S4DBase(BaseModel):
         ):
             if (
                 isinstance(param_val, bool)
-                or not isinstance(param_val, int)
+                or not isinstance(param_val, Integral)
                 or param_val <= 0
             ):
                 raise ValueError(
                     f"{param_name} must be a positive integer, got {param_val!r}."
                 )
+        dropout_rate = validate_dropout_rate(dropout_rate)
+
+        d_model = int(d_model)
+        n_layers = int(n_layers)
+        d_state = int(d_state)
+        expand = int(expand)
 
         self.d_model = d_model
         self.n_layers = n_layers
@@ -400,7 +443,7 @@ class S4DSmall(S4DBase):
     """
     S4D-Small: Lightweight diagonal SSM for 1D waveform regression.
 
-    ~0.8M parameters. d_model=64, n_layers=4, d_state=32.
+    ~0.11M parameters. d_model=64, n_layers=4, d_state=32.
 
     Recommended for:
         - Quick experiments with SSM architectures
@@ -442,7 +485,7 @@ class S4D(S4DBase):
     """
     S4D: Standard diagonal SSM for 1D waveform regression.
 
-    ~3.2M parameters. d_model=128, n_layers=6, d_state=64.
+    ~0.66M parameters. d_model=128, n_layers=6, d_state=64.
 
     Recommended for:
         - Ultrasonic waveform analysis (large receptive field)
@@ -485,7 +528,7 @@ class S4DLarge(S4DBase):
     """
     S4D-Large: High-capacity diagonal SSM for 1D waveform regression.
 
-    ~11M parameters. d_model=256, n_layers=8, d_state=64.
+    ~3.07M parameters. d_model=256, n_layers=8, d_state=64.
 
     Recommended for:
         - Long sequences with complex temporal dynamics (> 8192 samples)

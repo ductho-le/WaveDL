@@ -366,7 +366,7 @@ def main() -> int:
     cv_args, _ = cv_parser.parse_known_args(train_args)
     launcher_config: dict[str, object] = {}
     if cv_args.config:
-        from wavedl.utils.config import load_config
+        from wavedl.utils.config import _strip_known_section_prefix, load_config
 
         try:
             launcher_config = load_config(cv_args.config)
@@ -377,14 +377,25 @@ def main() -> int:
             )
             return 2
 
+        def _lookup_config_option(*names: str) -> tuple[bool, object]:
+            for name in names:
+                if name in launcher_config:
+                    return True, launcher_config[name]
+            for key, value in launcher_config.items():
+                stripped = _strip_known_section_prefix(key)
+                if stripped in names:
+                    return True, value
+            return False, None
+    else:
+
+        def _lookup_config_option(*names: str) -> tuple[bool, object]:
+            return False, None
+
     if cv_args.cv is not None:
         cv_folds = cv_args.cv
     else:
-        cv_folds = 0
-        for cv_key in ("cv", "cross_validation_cv", "cv_cv"):
-            if cv_key in launcher_config:
-                cv_folds = launcher_config[cv_key]
-                break
+        found_cv, raw_cv = _lookup_config_option("cv")
+        cv_folds = raw_cv if found_cv else 0
     if isinstance(cv_folds, bool) or not isinstance(cv_folds, int) or cv_folds < 0:
         print(
             f"Error: cv must be a non-negative integer, got {cv_folds!r}.",
@@ -397,16 +408,9 @@ def main() -> int:
         for argument in sys.argv[1:]
     )
     if not explicit_precision:
-        for prec_key in (
-            "precision",
-            "mixed_precision",
-            "performance_precision",
-            "performance_mixed_precision",
-        ):
-            if prec_key in launcher_config:
-                raw_prec = launcher_config[prec_key]
-                args.mixed_precision = "no" if raw_prec is False else raw_prec
-                break
+        found_prec, raw_prec = _lookup_config_option("precision", "mixed_precision")
+        if found_prec:
+            args.mixed_precision = "no" if raw_prec is False else raw_prec
     if args.mixed_precision not in {"no", "fp16", "bf16"}:
         print("Error: precision must be 'no', 'fp16', or 'bf16'.", file=sys.stderr)
         return 2
@@ -414,6 +418,10 @@ def main() -> int:
         if args.num_machines > 1:
             print("Error: Cross-validation requires one machine.", file=sys.stderr)
             return 2
+        if num_gpus != 1:
+            print(
+                f"Note: Cross-validation runs single-process; overriding NUM_GPUS={num_gpus} -> 1."
+            )
         num_gpus = 1
 
     # Keep Accelerate and training precision consistent (both accept the aliases).
@@ -479,29 +487,60 @@ def main() -> int:
             exit_code = result.returncode
         else:
             proc = subprocess.Popen(cmd)
+            sigterm_received = False
+
+            def _terminate_child_gracefully(initial_signal: int) -> None:
+                if proc.poll() is not None:
+                    return
+                try:
+                    proc.send_signal(initial_signal)
+                except OSError:
+                    return
+                try:
+                    proc.wait(timeout=30.0)
+                    return
+                except (subprocess.TimeoutExpired, KeyboardInterrupt):
+                    pass
+                if proc.poll() is None:
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=5.0)
+                    except (subprocess.TimeoutExpired, KeyboardInterrupt, OSError):
+                        pass
+                if proc.poll() is None:
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=5.0)
+                    except (subprocess.TimeoutExpired, OSError):
+                        pass
+
+            def _proc_running() -> bool:
+                poll_fn = getattr(proc, "poll", None)
+                return callable(poll_fn) and poll_fn() is None
 
             def _forward_sigterm(signum, _frame):
-                if proc.poll() is None:
-                    proc.terminate()
+                nonlocal sigterm_received
+                sigterm_received = True
+                if _proc_running():
+                    try:
+                        proc.terminate()
+                    except OSError:
+                        pass
 
             prev_sigterm = signal.signal(signal.SIGTERM, _forward_sigterm)
             try:
                 exit_code = proc.wait()
+                if sigterm_received and exit_code == 0:
+                    exit_code = 143
             except KeyboardInterrupt:
                 print(
                     "\n\n⚠️  Training interrupted by user — waiting for checkpoint save..."
                 )
-                try:
-                    proc.wait(timeout=30.0)
-                except subprocess.TimeoutExpired:
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=5.0)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                        proc.wait()
+                _terminate_child_gracefully(signal.SIGINT)
                 exit_code = 130
             finally:
+                if _proc_running():
+                    _terminate_child_gracefully(signal.SIGTERM)
                 signal.signal(signal.SIGTERM, prev_sigterm)
     except KeyboardInterrupt:
         print("\n\n⚠️  Training interrupted by user")
@@ -511,11 +550,8 @@ def main() -> int:
         exit_code = 1
 
     # Print summary
-    wandb_enabled = (
-        "--wandb" in train_args
-        or bool(launcher_config.get("wandb", False))
-        or bool(launcher_config.get("logging_wandb", False))
-    )
+    found_wandb, raw_wandb = _lookup_config_option("wandb")
+    wandb_enabled = "--wandb" in train_args or (found_wandb and bool(raw_wandb))
     print_summary(
         exit_code,
         wandb_enabled,

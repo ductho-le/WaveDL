@@ -9,30 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Dense 2D encoder-decoder models**: Add general-purpose 2D field regression architectures `inversionnet` (transposed-convolution decoder) and `inversionnet_resize` (resize-convolution decoder) supporting arbitrary input channels, aspect ratios, and output field grids
-- **Data preprocessing & shard manifests**: Add lazy paired-shard `.txt` manifests (`<input.npy><TAB><target.npy>`), fixed validation datasets (`--val_data_path`), multi-channel input contracts (`--input_channels` / `BaseModel.supported_input_channels`), persisted input transforms (`--input_transform signed_log_minmax`) and min-max target scaling (`--target_scaling minmax`) with automatic inference restoration and ONNX embedding, and explicit TF32 control (`--no_tf32`)
-- **WaveDL Studio**: Bundle a browser interface available through `wavedl-gui` or `python -m wavedl.gui`, with current-directory workspaces, YAML editing, and training, testing, and ONNX export jobs sharing a live console; no additional dependencies
-- **Dataset caching**: Add `--cache_dir` to `wavedl-train` and reuse a preprocessed dataset cache across sequential HPO trials
-- **MATLAB data**: Support legacy MAT v5/v7 files alongside HDF5-based v7.3 files
+- **Dense 2D encoder-decoder models**: Add `inversionnet` (transposed-convolution decoder) and `inversionnet_resize` (resize-convolution decoder) for multi-channel 2D field regression across arbitrary input/output grids
+- **Preprocessing & shard manifests**: Add lazy paired-shard `.txt` manifests (`<input.npy><TAB><target.npy>`), fixed validation datasets (`--val_data_path`), multi-channel contracts (`--input_channels` / `BaseModel.supported_input_channels`), persisted transforms (`--input_transform signed_log_minmax`, `--target_scaling minmax`) with automatic inference restoration and ONNX embedding, and `--no_tf32`
+- **WaveDL Studio**: Bundle a zero-dependency local browser workspace (`wavedl-gui` / `python -m wavedl.gui`) with live YAML sync and integrated training, testing, and ONNX export console
+- **Dataset caching & MATLAB**: Add `--cache_dir` (reused across DDP ranks and HPO trials) and legacy MATLAB v5/v7 `.mat` loading alongside v7.3
+
+### Changed
+
+- **Production defaults**: Promote package classifier to `Production/Stable`, upgrade torchvision pretrained backbones to `DEFAULT` weights, use sum-projection for single-channel input adaptation (matching `timm`), and auto-enable `drop_last` on singleton training tail batches (`N % B == 1`)
 
 ### Fixed
 
-- **Pretrained backbones**: Infer actual feature widths and safely adapt single-channel convolutions for EfficientViT and FastViT, including wrappers with read-only `in_channels`
-- **Model numerics**: Preserve activation dtype in global response normalization and avoid low-precision sampling errors in stochastic depth; validate Swin input sizes and warn when patch embedding truncates border pixels
-- **Mixed-precision training**: Unscale FP16 gradients before rescaling partial accumulation windows, without unscaling twice during gradient clipping
-- **Distributed training**: Synchronize auto-resume checkpoint selection across ranks and move loss buffers to the accelerator device after wrapping physical constraints
-- **Checkpoint I/O**: Remove DDP and compiled-model wrappers from portable weights, atomically replace checkpoint metadata and standalone weight files, stage emergency checkpoints before publication, and prefer the newest weights in multi-format checkpoints
-- **OneCycle resume**: Preserve the saved learning-rate schedule and reject requests that exceed its update budget before training resumes
-- **Cache validation**: Rebuild caches when switching to a stronger validation mode so stale data cannot be certified with a new source fingerprint
-- **Cross-validation metrics**: Apply target scaling exactly once when reporting physical MAE for vector and dense-field targets
-- **Configuration**: Accept scientific-notation YAML values, normalize list and precision options, and preserve valid flat keys such as `scheduler_patience`, `scheduler_factor`, and `cv_bins` when validating nested sections
-- **ONNX export**: Broadcast channel de-normalization buffers correctly over dense fields, scale validation tolerances to physical units, and validate the requested opset against the supported range of 11–20
-- **GUI reliability**: Validate session tokens, request origins, and YAML paths; support IPv6, retry failed job launches, quote YAML reserved strings, use the correct exponential-scheduler default, and provide a clipboard fallback outside secure contexts
-- **In-process HPO**: Preserve positional compatibility in `train_single_trial()` when adding keyword-only gradient clipping and record the best validation loss before returning a pruned trial
-- **Plotting**: Validate diagnostic inputs, support dense-field targets, render relative-error percentages correctly, and fall back from LaTeX when `dvipng` is unavailable
-- **Public API and launcher**: Export all built-in registered model classes and recognize YAML-configured WandB logging in the launcher summary
-- **Release checks**: Give reusable lint and test workflows distinct concurrency groups so they cannot cancel each other during a release
-- **Distributed smoke check**: Configure a static IPv4 rendezvous before worker startup, including macOS loopback defaults
+- **Models & numerics**: Fix EfficientViT/FastViT feature-width inference and single-channel `FastViT.reparameterize()`; preserve GRN dtype and low-precision `DropPath` stability; add gradient checkpointing and stability clamps to S4D and Mamba; make `InversionNet` norms singleton-safe on tiny grids; validate Swin sizes, `nn.Module` registration, `in_channels`, and submodule `no_weight_decay()`
+- **Training, DDP & recovery**: Fix FP16 partial-accumulation unscaling, collective non-finite step skipping, cross-rank scalar broadcast dtype mismatches, NCCL `min`/`max` device placement, and auto-resume rank sync; add `SIGTERM` handling, CUDA `bf16` fallback, MPS-safe accumulation, and atomic best-checkpoint/CSV/portable-weight writes
+- **Schedulers, CV & HPO**: Preserve differential group LRs and resume budgets in `OneCycleLR` and restore LRs on warmup error; apply CV target scaling once for physical MAE; forward `--precision` through CV and HPO, filter HPO models by `in_channels`, and preserve `train_single_trial()` positional compatibility and pruned best-loss logging
+- **Data, caching & constraints**: Support 1D multi-channel `(N, C, L)` arrays, preserve `float64` shard target precision until post-scaling, chunk `SpatialTargetScaler.fit()` with scale-relative constant tolerances, rebuild caches on stronger validation modes with pre-hash checks, close HDF5/MAT/shard handles reliably, and harden physics-constraint power/exp numerics and AST validation
+- **Configuration, ONNX & plotting**: Unify YAML flat-over-nested precedence, key aliases (`mixed_precision`, `import`), and scalar/scientific-notation parsing; fix dense ONNX denormalization broadcasting, physical tolerances, and opset 11–20 checks; guard metric/plotting edge cases, dense-field plots, large-dataset plot memory, and `dvipng`-free LaTeX fallback
+- **WaveDL Studio**: Eliminate DOM XSS in dynamic model rendering; validate session tokens, origins, malformed port headers, YAML paths, and empty-YAML launches; lock lazy model discovery; align stdlib YAML fallback with PyYAML; support IPv6, launch retry, browser error recovery, and non-HTTPS clipboard copy
+- **Launcher, API & CI**: Export all built-in model classes, terminate child processes gracefully on interrupt, detect YAML-configured W&B runs in the launcher, isolate reusable lint/test workflow concurrency groups, verify stdlib-only GUI tests pre-install in CI, and pin static IPv4 rendezvous in the distributed smoke check
 
 ## [1.9.0] - 2026-10-11
 

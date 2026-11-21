@@ -99,7 +99,7 @@ def _detect_gpu_count() -> int:
 DEFAULT_MODELS = ["cnn", "resnet18", "resnet34"]
 QUICK_MODELS = ["cnn"]
 MEDIUM_MODELS = ["cnn", "resnet18"]
-DENSE_MODELS = ["unet_field"]
+DENSE_MODELS = ["unet_field", "inversionnet", "inversionnet_resize"]
 DEFAULT_BATCH_SIZES = [16, 32, 64, 128]
 DENSE_BATCH_SIZES = [1, 2, 4, 8]
 
@@ -129,21 +129,35 @@ QUICK_LOSSES = ["mse"]
 MEDIUM_LOSSES = ["mse", "mae", "huber"]
 
 
+def _detect_input_channels(data_path: str) -> int:
+    """Return input channel count for manifests (defaults to 1 for array files)."""
+    if str(data_path).lower().endswith(".txt"):
+        from wavedl.utils.preprocessing import ShardManifestDataset
+
+        dataset = ShardManifestDataset(data_path)
+        try:
+            return int(dataset.in_channels)
+        finally:
+            dataset.close()
+    return 1
+
+
 def _detect_target_shape(
     data_path: str, *, allow_pickle: bool = False
 ) -> tuple[int, ...]:
-    """Inspect labels and return WaveDL's canonical per-sample shape.
+    """Inspect labels and return WaveDL's canonical per-sample shape."""
+    from wavedl.utils.data import DataSource, get_data_source, load_outputs_only
+    from wavedl.utils.targets import canonical_target_shape
 
-    HDF5 and MAT files expose dataset metadata lazily, so large target maps are
-    not materialized just to configure a sweep. NPZ has no general lazy shape
-    API, but only its output member is loaded rather than the input data.
-    """
-    from wavedl.utils import (
-        DataSource,
-        canonical_target_shape,
-        get_data_source,
-        load_outputs_only,
-    )
+    if str(data_path).lower().endswith(".txt"):
+        from wavedl.utils.preprocessing import ShardManifestDataset
+
+        dataset = ShardManifestDataset(data_path)
+        try:
+            assert dataset.target_shape is not None
+            return dataset.target_shape
+        finally:
+            dataset.close()
 
     data_format = DataSource.detect_format(data_path)
     if data_format in ("hdf5", "mat"):
@@ -175,8 +189,9 @@ def _resolve_models_for_target(
     *,
     quick: bool = False,
     medium: bool = False,
+    in_channels: int = 1,
 ) -> list[str]:
-    """Choose an HPO model space and reject incompatible model/target pairs."""
+    """Choose an HPO model space and reject incompatible model/target/channel pairs."""
     from wavedl.models import get_model
 
     target_shape = tuple(target_shape)
@@ -199,17 +214,21 @@ def _resolve_models_for_target(
         models = DEFAULT_MODELS.copy()
 
     incompatible = []
+    channel_incompatible = []
     for model_name in models:
         model_class = get_model(model_name)
         if (
             is_field and not getattr(model_class, "supports_spatial_output", False)
         ) or (not is_field and getattr(model_class, "requires_spatial_output", False)):
             incompatible.append(model_name)
+        supported_ch = getattr(model_class, "supported_input_channels", (1,))
+        if supported_ch is not None and in_channels not in supported_ch:
+            channel_incompatible.append(model_name)
 
     if incompatible:
         target_kind = "dense 2D field" if is_field else "vector"
         recommendation = (
-            "Use --models unet_field or register a model with "
+            f"Use --models {' '.join(DENSE_MODELS)} or register a model with "
             "supports_spatial_output=True."
             if is_field
             else "Choose a vector-output model such as cnn or unet_regression."
@@ -218,6 +237,19 @@ def _resolve_models_for_target(
             f"Model(s) {', '.join(incompatible)} are incompatible with {target_kind} "
             f"targets shaped {target_shape}. {recommendation}"
         )
+
+    if channel_incompatible:
+        if requested_models:
+            raise ValueError(
+                f"Model(s) {', '.join(channel_incompatible)} do not support "
+                f"in_channels={in_channels}."
+            )
+        models = [m for m in models if m not in channel_incompatible]
+        if not models:
+            raise ValueError(
+                f"No default HPO models support in_channels={in_channels}. "
+                "Specify compatible models via --models."
+            )
 
     return models
 
@@ -343,6 +375,9 @@ def create_objective(args):
             trial_kwargs = {}
             if shared_cache_dir is not None:
                 trial_kwargs["cache_dir"] = shared_cache_dir
+            hpo_prec = getattr(args, "precision", None)
+            if isinstance(hpo_prec, str) and hpo_prec in {"bf16", "fp16", "no"}:
+                trial_kwargs["precision"] = hpo_prec
 
             try:
                 result = train_single_trial(
@@ -430,7 +465,12 @@ def create_objective(args):
             "--workers",
             "0",
         ]
-        if shared_cache_dir is not None and n_jobs == 1:
+        precision = getattr(args, "precision", None)
+        if isinstance(precision, str) and precision in {"bf16", "fp16", "no"}:
+            cmd.extend(["--precision", precision])
+        if shared_cache_dir is not None and (
+            n_jobs == 1 or getattr(args, "_shared_cache_ready", False) is True
+        ):
             cmd.extend(["--cache_dir", shared_cache_dir])
         if getattr(args, "allow_pickle", False) is True:
             cmd.append("--allow_pickle")
@@ -686,6 +726,13 @@ Examples:
     parser.add_argument(
         "--seed", type=int, default=2025, help="Random seed (default: 2025)"
     )
+    parser.add_argument(
+        "--precision",
+        type=str,
+        default=None,
+        choices=["bf16", "fp16", "no"],
+        help="Mixed precision mode for trials (default: auto-detect bf16/fp16/no)",
+    )
 
     # Output
     parser.add_argument(
@@ -738,11 +785,13 @@ Examples:
         args.target_shape = _detect_target_shape(
             args.data_path, allow_pickle=args.allow_pickle
         )
+        args.in_channels = _detect_input_channels(args.data_path)
         args.models = _resolve_models_for_target(
             args.target_shape,
             args.models,
             quick=args.quick,
             medium=args.medium,
+            in_channels=args.in_channels,
         )
     except (KeyError, OSError, ValueError) as error:
         parser.error(str(error))
@@ -875,11 +924,58 @@ Examples:
             "--storage none to avoid distribution-mismatch errors."
         )
 
-    # Run optimization with a shared temporary memmap cache for single-worker runs
+    # Run optimization with a shared temporary memmap cache.
+    # For parallel subprocess sweeps (n_jobs > 1) on non-manifest datasets,
+    # pre-populate the shared cache once in the parent so all workers reuse it
+    # read-only without building duplicate multi-GB memmap files per trial.
     with tempfile.TemporaryDirectory(
         prefix="wavedl_hpo_cache_", ignore_cleanup_errors=True
     ) as shared_cache_dir:
         args._shared_cache_dir = shared_cache_dir
+        args._shared_cache_ready = False
+        if (
+            not args.inprocess
+            and args.n_jobs > 1
+            and not str(args.data_path).lower().endswith(".txt")
+        ):
+            try:
+                import logging as _logging
+
+                import torch as _torch
+
+                from wavedl.utils.data import prepare_data as _prepare_data
+
+                class _CacheOnlyAccelerator:
+                    is_main_process = True
+                    device = _torch.device("cpu")
+                    num_processes = 1
+
+                    @staticmethod
+                    def wait_for_everyone():
+                        pass
+
+                cache_args = argparse.Namespace(
+                    data_path=args.data_path,
+                    batch_size=16,
+                    workers=0,
+                    seed=args.seed,
+                    cache_validate="fast",
+                    single_channel=False,
+                    allow_pickle=args.allow_pickle,
+                )
+                _prepare_data(
+                    cache_args,
+                    _logging.getLogger("HPO"),
+                    _CacheOnlyAccelerator(),
+                    cache_dir=shared_cache_dir,
+                    val_split=0.2,
+                )
+                args._shared_cache_ready = True
+            except Exception as cache_err:
+                print(
+                    f"⚠️  Could not pre-populate shared HPO cache ({cache_err}); "
+                    "trials will use per-trial caches."
+                )
         objective = create_objective(args)
         # catch=(Exception,): a trial that errors (OOM, NaN, bad config combo, crashed
         # subprocess) is recorded as FAILED and the sweep continues, instead of one

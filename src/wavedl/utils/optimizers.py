@@ -197,9 +197,18 @@ def get_optimizer_with_param_groups(
         "a_imag",
     }
     if use_default_norm_detection:
-        no_wd_fn = getattr(model, "no_weight_decay", None)
-        if callable(no_wd_fn):
-            explicit_no_decay_names = set(no_wd_fn())
+        # Collect no_weight_decay() declarations from both the top-level model
+        # and nested submodules (e.g., wrapped timm backbones like Swin/ViT).
+        for mod_prefix, module in model.named_modules():
+            no_wd_fn = getattr(module, "no_weight_decay", None)
+            if callable(no_wd_fn):
+                for entry in no_wd_fn():
+                    entry_lower = str(entry).lower()
+                    explicit_no_decay_names.add(entry_lower)
+                    if mod_prefix:
+                        explicit_no_decay_names.add(
+                            f"{mod_prefix.lower()}.{entry_lower}"
+                        )
 
         norm_types = (
             torch.nn.modules.batchnorm._NormBase,
@@ -234,7 +243,7 @@ def get_optimizer_with_param_groups(
                 param.ndim <= 1
                 or id(param) in norm_param_ids
                 or getattr(param, "_no_weight_decay", False)
-                or name_param in explicit_no_decay_names
+                or lower_name in explicit_no_decay_names
                 or leaf_name in explicit_no_decay_names
                 or bool(path_parts & default_special_tokens)
                 or leaf_name in default_special_tokens

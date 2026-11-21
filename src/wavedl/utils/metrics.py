@@ -214,6 +214,8 @@ class MetricTracker:
             val: New value (or mean of values if n > 1)
             n: Number of samples this value represents
         """
+        if n <= 0:
+            return
         self.val = val
         self.sum += val * n
         self.count += n
@@ -267,13 +269,16 @@ def calc_pearson(y_true: np.ndarray, y_pred: np.ndarray) -> float:
         # maps into a reported zero correlation. Promote one channel at a time.
         true_channel = np.asarray(y_true[:, i], dtype=np.float64)
         pred_channel = np.asarray(y_pred[:, i], dtype=np.float64)
-        # Check for near-constant arrays to avoid NaN
-        std_true = np.std(true_channel)
-        std_pred = np.std(pred_channel)
+        # Check for near-constant arrays (scale-aware) to avoid float64 rounding
+        # noise on constant large-offset fields (e.g. 0.1 * 1e9) yielding bogus corr.
+        std_true = float(np.std(true_channel))
+        std_pred = float(np.std(pred_channel))
+        tol_true = 1e-14 * max(1.0, abs(float(np.mean(true_channel))))
+        tol_pred = 1e-14 * max(1.0, abs(float(np.mean(pred_channel))))
 
         # Pearson is degenerate for < 3 samples (any 2 points are perfectly
         # collinear → a spurious ±1.0), so report 0.0 instead of a misleading 1.0.
-        if n_samples < 3 or std_true == 0 or std_pred == 0:
+        if n_samples < 3 or std_true <= tol_true or std_pred <= tol_pred:
             correlations.append(0.0)
         else:
             corr, _ = pearsonr(true_channel, pred_channel)
@@ -298,10 +303,13 @@ def calc_per_target_r2(y_true: np.ndarray, y_pred: np.ndarray) -> np.ndarray:
 
     r2_scores = []
     for i in range(y_true.shape[1]):
-        r2 = r2_score(
-            np.asarray(y_true[:, i], dtype=np.float64),
-            np.asarray(y_pred[:, i], dtype=np.float64),
-        )
+        true_channel = np.asarray(y_true[:, i], dtype=np.float64)
+        pred_channel = np.asarray(y_pred[:, i], dtype=np.float64)
+        tol_true = 1e-14 * max(1.0, abs(float(np.mean(true_channel))))
+        if float(np.std(true_channel)) <= tol_true:
+            r2 = 1.0 if np.array_equal(true_channel, pred_channel) else 0.0
+        else:
+            r2 = r2_score(true_channel, pred_channel)
         r2_scores.append(r2)
 
     return np.array(r2_scores)
@@ -359,30 +367,38 @@ class StreamingFieldMetrics:
             raise ValueError(
                 "Targets and predictions must contain only finite real values."
             )
-        if self.track_relative_l2 and target.ndim > 2 and len(target):
-            # Canonicalize unchannelized 3D (N, H, W) fields to (N, 1, H, W)
-            # before computing per-sample, per-channel relative L2 over spatial axes.
-            target_l2 = target[:, np.newaxis] if target.ndim == 3 else target
-            pred_l2 = prediction[:, np.newaxis] if prediction.ndim == 3 else prediction
-            if target_l2.shape[1] != self.channels:
-                raise ValueError(f"Expected {self.channels} field channel(s).")
-            spatial_axes = tuple(range(2, target_l2.ndim))
-            target64 = target_l2.astype(np.float64, copy=False)
-            error64 = pred_l2.astype(np.float64, copy=False) - target64
-            true_norm = np.sqrt(np.sum(np.square(target64), axis=spatial_axes))
-            error_norm = np.sqrt(np.sum(np.square(error64), axis=spatial_axes))
-            self.sum_relative_l2 += (error_norm / np.maximum(true_norm, 1e-12)).sum(
-                axis=0
+        # Validate channel count BEFORE mutating any running counters.
+        if target.ndim > 2:
+            target_canon = target[:, np.newaxis] if target.ndim == 3 else target
+            pred_canon = (
+                prediction[:, np.newaxis] if prediction.ndim == 3 else prediction
             )
-            del target64, error64
-        self.sample_count += len(target)
+            if target_canon.shape[1] != self.channels:
+                raise ValueError(f"Expected {self.channels} field channel(s).")
+            target64 = target_canon.astype(np.float64, copy=False)
+            pred64 = pred_canon.astype(np.float64, copy=False)
+            if self.track_relative_l2 and len(target_canon):
+                spatial_axes = tuple(range(2, target64.ndim))
+                error64 = pred64 - target64
+                true_norm = np.sqrt(np.sum(np.square(target64), axis=spatial_axes))
+                error_norm = np.sqrt(np.sum(np.square(error64), axis=spatial_axes))
+                self.sum_relative_l2 += (error_norm / np.maximum(true_norm, 1e-12)).sum(
+                    axis=0
+                )
+                del error64
+            target_flat = np.moveaxis(target64, 1, -1).reshape(-1, self.channels)
+            prediction_flat = np.moveaxis(pred64, 1, -1).reshape(-1, self.channels)
+        else:
+            target_flat = flatten_targets_by_channel(target).astype(
+                np.float64, copy=False
+            )
+            prediction_flat = flatten_targets_by_channel(prediction).astype(
+                np.float64, copy=False
+            )
+            if target_flat.shape[1] != self.channels:
+                raise ValueError(f"Expected {self.channels} field channel(s).")
 
-        target_flat = flatten_targets_by_channel(target).astype(np.float64, copy=False)
-        prediction_flat = flatten_targets_by_channel(prediction).astype(
-            np.float64, copy=False
-        )
-        if target_flat.shape[1] != self.channels:
-            raise ValueError(f"Expected {self.channels} field channel(s).")
+        self.sample_count += len(target)
         batch_count = len(target_flat)
         if batch_count == 0:
             return
@@ -491,19 +507,29 @@ def _prepare_plot_data(
     param_names: list[str] | None = None,
     max_samples: int | None = None,
     seed: int = 42,
+    *,
+    subsample_mode: str = "random",
+    prevalidated: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, list[str], int]:
     """Prepare data for plotting: reshape, sample, and generate param names."""
-    y_true, y_pred = _validated_metric_arrays(y_true, y_pred)
+    if prevalidated is not None:
+        y_true, y_pred = prevalidated
+    else:
+        y_true, y_pred = _validated_metric_arrays(y_true, y_pred)
     num_params = y_true.shape[1]
 
     # Subsample BEFORE allocating float64 copies (critical for dense 2D fields
     # where y_true has N*H*W rows). Use a seeded local generator so figures are
     # reproducible across runs and the global numpy RNG state is left untouched.
     if max_samples and len(y_true) > max_samples:
-        rng = np.random.default_rng(seed)
-        indices = rng.choice(len(y_true), max_samples, replace=False)
-        y_true = y_true[indices]
-        y_pred = y_pred[indices]
+        if subsample_mode == "head":
+            y_true = y_true[:max_samples]
+            y_pred = y_pred[:max_samples]
+        else:
+            rng = np.random.default_rng(seed)
+            indices = rng.choice(len(y_true), max_samples, replace=False)
+            y_true = y_true[indices]
+            y_pred = y_pred[indices]
 
     # Compute plotting statistics in double precision, matching reported metrics.
     y_true = np.asarray(y_true, dtype=np.float64)
@@ -590,11 +616,24 @@ def plot_scientific_scatter(
         Matplotlib Figure object (can be saved or logged to WandB)
     """
     _ensure_style_configured()
-    # Compute R² on the FULL dataset BEFORE subsampling so the annotation matches
-    # the reported (full-dataset) metric rather than a random 2000-point subset.
-    full_r2 = calc_per_target_r2(y_true, y_pred)
+    # Validate and flatten once, compute full-dataset R² BEFORE subsampling so
+    # annotations match reported metrics without duplicating validation work.
+    valid_true, valid_pred = _validated_metric_arrays(y_true, y_pred)
+    full_r2_list = []
+    for i in range(valid_true.shape[1]):
+        tc = np.asarray(valid_true[:, i], dtype=np.float64)
+        pc = np.asarray(valid_pred[:, i], dtype=np.float64)
+        if float(np.std(tc)) <= 1e-14 * max(1.0, abs(float(np.mean(tc)))):
+            full_r2_list.append(1.0 if np.array_equal(tc, pc) else 0.0)
+        else:
+            full_r2_list.append(r2_score(tc, pc))
+    full_r2 = np.array(full_r2_list)
     y_true, y_pred, param_names, num_params = _prepare_plot_data(
-        y_true, y_pred, param_names, max_samples
+        y_true,
+        y_pred,
+        param_names,
+        max_samples,
+        prevalidated=(valid_true, valid_pred),
     )
     fig, axes = _create_subplot_grid(num_params, height_ratio=1.0)
 
@@ -651,6 +690,7 @@ def plot_error_histogram(
     y_pred: np.ndarray,
     param_names: list[str] | None = None,
     bins: int = 50,
+    max_samples: int = 200000,
 ) -> plt.Figure:
     """
     Generate publication-quality error distribution histograms.
@@ -663,13 +703,14 @@ def plot_error_histogram(
         y_pred: Predicted values of shape (N, num_targets)
         param_names: Optional list of parameter names for titles
         bins: Number of histogram bins
+        max_samples: Maximum samples to plot (caps memory on dense fields)
 
     Returns:
         Matplotlib Figure object
     """
     _ensure_style_configured()
     y_true, y_pred, param_names, num_params = _prepare_plot_data(
-        y_true, y_pred, param_names
+        y_true, y_pred, param_names, max_samples=max_samples
     )
     errors = y_pred - y_true
     fig, axes = _create_subplot_grid(num_params)
@@ -1043,10 +1084,11 @@ def plot_qq(
 
         # Standardize errors for QQ plot
         err = errors[:, i]
-        std_err = np.std(err)
+        std_err = float(np.std(err))
+        scale_tol = 1e-12 * max(1.0, float(np.max(np.abs(err))))
 
-        # Guard against zero variance (constant errors)
-        if std_err < 1e-10:
+        # Guard against zero variance (constant errors) using scale-relative tol
+        if std_err <= scale_tol:
             title = param_names[i]
             ax.text(
                 0.5,
@@ -1103,6 +1145,7 @@ def plot_correlation_heatmap(
     y_true: np.ndarray,
     y_pred: np.ndarray,
     param_names: list[str] | None = None,
+    max_samples: int = 200000,
 ) -> plt.Figure:
     """
     Generate correlation heatmap between predicted parameters.
@@ -1114,6 +1157,7 @@ def plot_correlation_heatmap(
         y_true: Ground truth values of shape (N, num_targets)
         y_pred: Predicted values of shape (N, num_targets)
         param_names: Optional list of parameter names for labels
+        max_samples: Maximum samples to use (caps memory on dense fields)
 
     Returns:
         Matplotlib Figure object
@@ -1124,7 +1168,7 @@ def plot_correlation_heatmap(
     from matplotlib.patches import Rectangle
 
     y_true, y_pred, param_names, num_params = _prepare_plot_data(
-        y_true, y_pred, param_names
+        y_true, y_pred, param_names, max_samples=max_samples
     )
 
     if num_params < 2:
@@ -1417,13 +1461,15 @@ def plot_prediction_vs_index(
         Matplotlib Figure object
     """
     _ensure_style_configured()
-    # This plot promises sample order. Random subsampling would display shuffled
-    # samples under fabricated sequential indices and hide time-dependent errors.
+    # This plot promises sample order. Slice head BEFORE float64 conversion so
+    # dense fields do not allocate multi-GB float64 copies before truncation.
     y_true, y_pred, param_names, num_params = _prepare_plot_data(
-        y_true, y_pred, param_names
+        y_true,
+        y_pred,
+        param_names,
+        max_samples=max_samples,
+        subsample_mode="head",
     )
-    if max_samples is not None:
-        y_true, y_pred = y_true[:max_samples], y_pred[:max_samples]
     indices = np.arange(len(y_true))
     fig, axes = _create_subplot_grid(num_params)
 

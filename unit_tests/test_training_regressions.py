@@ -610,7 +610,8 @@ def test_custom_imports_same_filename_are_distinct_and_idempotent(tmp_path):
             directory.mkdir()
             module = directory / "model.py"
             module.write_text(
-                f"from wavedl.models import register_model\n@register_model('{name}')\nclass Model: pass\n"
+                f"import torch\nfrom wavedl.models import register_model\n"
+                f"@register_model('{name}')\nclass Model(torch.nn.Module): pass\n"
             )
             modules.append(str(module))
         import_model_modules(modules)

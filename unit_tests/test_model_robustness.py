@@ -106,11 +106,9 @@ def test_input_adaptation_preserves_padding_subclass_and_tensor_properties():
     assert not adapted.training and not adapted.weight.requires_grad
     torch.testing.assert_close(adapted.bias, original.bias)
     x = torch.randn(2, 1, 6, 8, dtype=torch.float64)
-    # RGB averaging retains the pre-existing grayscale initialization contract.
-    expected = (
-        original(x.expand(-1, 3, -1, -1)) - original.bias[None, :, None, None]
-    ) / 3
-    expected += original.bias[None, :, None, None]
+    # Summing RGB weights matches feeding a replicated grayscale image through
+    # the pretrained RGB stem, preserving bias and downstream BatchNorm scale.
+    expected = original(x.expand(-1, 3, -1, -1))
     torch.testing.assert_close(adapted(x), expected)
 
 
@@ -218,3 +216,97 @@ def test_wavenet_has_no_unused_trainable_parameters():
         if p.requires_grad
     )
     assert "blocks.1.residual_conv.weight" in model.state_dict()
+
+
+def test_registry_and_build_model_channel_validation():
+    from wavedl.models.registry import register_model
+
+    with pytest.raises(TypeError, match=r"nn\.Module"):
+        register_model("_invalid_non_module_test")(object)
+
+    with pytest.raises(ValueError, match="in_channels=3"):
+        build_model("cnn", in_shape=(16, 16), out_size=2, in_channels=3)
+
+
+def test_fastvit_reparameterize_single_channel_forward():
+    model = build_model("fastvit_t8", in_shape=(64, 64), out_size=2, pretrained=False)
+    model.eval()
+    x = torch.randn(1, 1, 64, 64)
+    with torch.no_grad():
+        before = model(x)
+    model.reparameterize()
+    with torch.no_grad():
+        after = model(x)
+    assert after.shape == (1, 2)
+    assert torch.isfinite(after).all()
+    torch.testing.assert_close(before, after, atol=1e-4, rtol=1e-4)
+
+
+@pytest.mark.parametrize("norm", ["bn", "gn"])
+def test_inversionnet_tiny_grid_singleton_safe_norms(norm):
+    from wavedl.models.inversionnet import InversionNet
+
+    model = InversionNet(
+        in_shape=(16, 16), out_size=1, out_shape=(1, 16, 16), in_channels=1, norm=norm
+    ).train()
+    x = torch.randn(1, 1, 16, 16)
+    y = model(x)
+    assert y.shape == (1, 1, 16, 16)
+    assert torch.isfinite(y).all()
+    y.square().mean().backward()
+    assert all(
+        p.grad is not None and torch.isfinite(p.grad).all()
+        for p in model.parameters()
+        if p.requires_grad
+    )
+
+
+def test_s4d_kernel_checkpointing_float64_and_guard():
+    from wavedl.models.s4d import S4DKernel
+
+    kernel = S4DKernel(d_model=8, d_state=4)
+    with pytest.raises(ValueError, match="positive"):
+        kernel(0)
+
+    k_long = kernel(1100)
+    assert k_long.shape == (8, 1100)
+    assert torch.isfinite(k_long).all()
+    k_long.square().mean().backward()
+    assert all(
+        p.grad is not None and torch.isfinite(p.grad).all()
+        for p in kernel.parameters()
+        if p.requires_grad
+    )
+
+    k64 = kernel(32, dtype=torch.float64)
+    assert k64.dtype == torch.float64
+    assert torch.isfinite(k64).all()
+
+
+def test_mamba_chunk_size_forwarding_and_a_log_stability():
+    from wavedl.models.mamba import Mamba1DBase
+
+    model = Mamba1DBase((96,), 2, d_model=16, n_layers=1, chunk_size=32)
+    assert model.blocks[0].ssm.chunk_size == 32
+    with torch.no_grad():
+        model.blocks[0].ssm.A_log.fill_(100.0)
+    x = torch.randn(2, 1, 96)
+    out = model(x)
+    assert out.shape == (2, 2)
+    assert torch.isfinite(out).all()
+    out.square().mean().backward()
+    assert all(
+        p.grad is not None and torch.isfinite(p.grad).all()
+        for p in model.parameters()
+        if p.requires_grad
+    )
+
+
+def test_vit_default_config_resnet_in_channels_and_maxvit_native_size():
+    from wavedl.models.maxvit import MaxViTBase
+    from wavedl.models.resnet import ResNet18
+    from wavedl.models.vit import ViTBase
+
+    assert ViTBase.get_default_config()["pad_if_needed"] is False
+    assert ResNet18((32, 32), 2, pretrained=False).in_channels == 1
+    assert MaxViTBase._get_native_size("maxvit_tiny_tf_384.in1k") == 384

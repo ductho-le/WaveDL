@@ -30,14 +30,21 @@ Author: Ductho Le (ductho.le@outlook.com)
 """
 
 import copy
+import warnings
 from numbers import Integral
 from typing import Any, ClassVar
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as grad_checkpoint
 
-from wavedl.models.base import BaseModel, SpatialShape1D, SpatialShape2D
+from wavedl.models.base import (
+    BaseModel,
+    SpatialShape1D,
+    SpatialShape2D,
+    validate_dropout_rate,
+)
 from wavedl.models.registry import register_model
 
 
@@ -123,6 +130,7 @@ class SelectiveSSM(nn.Module):
         self.d_state = d_state
         self.d_inner = d_model * expand
         self.chunk_size = chunk_size
+        self._warned_long_seq = False
         self.register_buffer("scan_version", torch.tensor(2, dtype=torch.int64))
 
         # Input projection
@@ -189,10 +197,14 @@ class SelectiveSSM(nn.Module):
         """
         _B, L, _D = x.shape
 
-        # Warn for very long sequences
-        if L > MAX_RECOMMENDED_SEQUENCE_LENGTH and self.training:
-            import warnings
-
+        # Warn once outside torch.compile traces for very long sequences
+        if (
+            not torch.compiler.is_compiling()
+            and not self._warned_long_seq
+            and L > MAX_RECOMMENDED_SEQUENCE_LENGTH
+            and self.training
+        ):
+            self._warned_long_seq = True
             warnings.warn(
                 f"Sequence length {L} > {MAX_RECOMMENDED_SEQUENCE_LENGTH}. "
                 "This pure-PyTorch scan may be expensive; a separate implementation "
@@ -231,10 +243,10 @@ class SelectiveSSM(nn.Module):
                     if self.dt_proj.bias is not None
                     else None,
                 )
-            )
+            ).clamp(min=1e-6)
             B_scan = B_param.to(dtype=scan_dtype)
             C_scan = C_param.to(dtype=scan_dtype)
-            A = -torch.exp(self.A_log.to(dtype=scan_dtype))
+            A = -torch.exp(self.A_log.to(dtype=scan_dtype).clamp(max=20.0))
             D_scan = self.D.to(dtype=scan_dtype)
 
             # Use chunked scan for long sequences, direct scan for short
@@ -298,6 +310,30 @@ class SelectiveSSM(nn.Module):
         h = self._scan_states(A_bar, BX)
         return (C.unsqueeze(2) * h).sum(-1) + D * x
 
+    @classmethod
+    def _scan_chunk(
+        cls,
+        x_chunk: torch.Tensor,
+        delta_chunk: torch.Tensor,
+        A: torch.Tensor,
+        B_chunk: torch.Tensor,
+        C_chunk: torch.Tensor,
+        D: torch.Tensor,
+        h_state: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run one associative-scan chunk and return ``(y_chunk, final_state)``."""
+        A_bar = torch.exp(delta_chunk.unsqueeze(-1) * A)
+        BX = delta_chunk.unsqueeze(-1) * B_chunk.unsqueeze(2) * x_chunk.unsqueeze(-1)
+        # Fold the previous chunk's final state into this chunk's first input
+        # contribution, then apply the zero-state associative scan.
+        BX = torch.cat(
+            [BX[:, :1] + A_bar[:, :1] * h_state.unsqueeze(1), BX[:, 1:]],
+            dim=1,
+        )
+        h = cls._scan_states(A_bar, BX)
+        y_chunk = (C_chunk.unsqueeze(2) * h).sum(-1) + D * x_chunk
+        return y_chunk, h[:, -1]
+
     def _chunked_selective_scan(
         self,
         x: torch.Tensor,
@@ -307,7 +343,7 @@ class SelectiveSSM(nn.Module):
         C: torch.Tensor,
         D: torch.Tensor,
     ) -> torch.Tensor:
-        """Scan bounded chunks while preserving the exact recurrent state."""
+        """Scan bounded chunks with gradient checkpointing to cap peak VRAM."""
         batch_size, seq_len, d_inner = x.shape
         if seq_len == 0:
             raise ValueError("Selective scan requires a nonempty sequence.")
@@ -315,26 +351,35 @@ class SelectiveSSM(nn.Module):
         h_state = torch.zeros(
             batch_size, d_inner, self.d_state, device=x.device, dtype=state_dtype
         )
+        use_ckpt = (
+            seq_len > self.chunk_size
+            and torch.is_grad_enabled()
+            and not torch.onnx.is_in_onnx_export()
+        )
         y_chunks = []
         for start in range(0, seq_len, self.chunk_size):
             end = min(start + self.chunk_size, seq_len)
             x_chunk = x[:, start:end]
             delta_chunk = delta[:, start:end]
-            A_bar = torch.exp(delta_chunk.unsqueeze(-1) * A)
-            BX = (
-                delta_chunk.unsqueeze(-1)
-                * B[:, start:end].unsqueeze(2)
-                * x_chunk.unsqueeze(-1)
-            )
-            # Fold the previous chunk's final state into this chunk's first
-            # input contribution, then use the same zero-state scan.
-            BX = torch.cat(
-                [BX[:, :1] + A_bar[:, :1] * h_state.unsqueeze(1), BX[:, 1:]],
-                dim=1,
-            )
-            h = self._scan_states(A_bar, BX)
-            y_chunks.append((C[:, start:end].unsqueeze(2) * h).sum(-1) + D * x_chunk)
-            h_state = h[:, -1]
+            B_chunk = B[:, start:end]
+            C_chunk = C[:, start:end]
+            if use_ckpt:
+                y_chunk, h_state = grad_checkpoint(
+                    self._scan_chunk,
+                    x_chunk,
+                    delta_chunk,
+                    A,
+                    B_chunk,
+                    C_chunk,
+                    D,
+                    h_state,
+                    use_reentrant=False,
+                )
+            else:
+                y_chunk, h_state = self._scan_chunk(
+                    x_chunk, delta_chunk, A, B_chunk, C_chunk, D, h_state
+                )
+            y_chunks.append(y_chunk)
         return torch.cat(y_chunks, dim=1)
 
 
@@ -357,10 +402,11 @@ class MambaBlock(nn.Module):
         d_state: int = 16,
         d_conv: int = 4,
         expand: int = 2,
+        chunk_size: int = 256,
     ):
         super().__init__()
         self.norm = nn.LayerNorm(d_model)
-        self.ssm = SelectiveSSM(d_model, d_state, d_conv, expand)
+        self.ssm = SelectiveSSM(d_model, d_state, d_conv, expand, chunk_size=chunk_size)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return x + self.ssm(self.norm(x))
@@ -385,11 +431,16 @@ class BidirectionalMambaBlock(nn.Module):
         d_state: int = 16,
         d_conv: int = 4,
         expand: int = 2,
+        chunk_size: int = 256,
     ):
         super().__init__()
         self.norm = nn.LayerNorm(d_model)
-        self.ssm_forward = SelectiveSSM(d_model, d_state, d_conv, expand)
-        self.ssm_backward = SelectiveSSM(d_model, d_state, d_conv, expand)
+        self.ssm_forward = SelectiveSSM(
+            d_model, d_state, d_conv, expand, chunk_size=chunk_size
+        )
+        self.ssm_backward = SelectiveSSM(
+            d_model, d_state, d_conv, expand, chunk_size=chunk_size
+        )
         self.merge = nn.Linear(d_model * 2, d_model)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -430,20 +481,31 @@ class Mamba1DBase(BaseModel):
         d_conv: int = 4,
         expand: int = 2,
         dropout_rate: float = 0.1,
+        chunk_size: int = 256,
         **kwargs,
     ):
         super().__init__(in_shape, out_size)
 
-        if len(in_shape) != 1:
-            raise ValueError(f"Mamba1D requires 1D input (L,), got {len(in_shape)}D")
-        if (
-            not isinstance(n_layers, Integral)
-            or isinstance(n_layers, bool)
-            or n_layers <= 0
+        if len(self.in_shape) != 1:
+            raise ValueError(
+                f"Mamba1D requires 1D input (L,), got {len(self.in_shape)}D"
+            )
+        for param_name, param_val in (
+            ("d_model", d_model),
+            ("n_layers", n_layers),
         ):
-            raise ValueError(f"n_layers must be a positive integer, got {n_layers!r}")
+            if (
+                not isinstance(param_val, Integral)
+                or isinstance(param_val, bool)
+                or param_val <= 0
+            ):
+                raise ValueError(
+                    f"{param_name} must be a positive integer, got {param_val!r}"
+                )
+        dropout_rate = validate_dropout_rate(dropout_rate)
 
         self.d_model = int(d_model)
+        self._warned_pos_len = False
 
         # Input projection
         self.input_proj = nn.Linear(1, self.d_model)
@@ -455,19 +517,19 @@ class Mamba1DBase(BaseModel):
         # Mamba blocks
         self.blocks = nn.ModuleList(
             [
-                MambaBlock(self.d_model, d_state, d_conv, expand)
+                MambaBlock(self.d_model, d_state, d_conv, expand, chunk_size=chunk_size)
                 for _ in range(int(n_layers))
             ]
         )
 
         # Final norm
-        self.norm = nn.LayerNorm(d_model)
+        self.norm = nn.LayerNorm(self.d_model)
 
         # Regression head
-        head_hidden = max(d_model // 2, 1)
+        head_hidden = max(self.d_model // 2, 1)
         self.head = nn.Sequential(
             nn.Dropout(dropout_rate),
-            nn.Linear(d_model, head_hidden),
+            nn.Linear(self.d_model, head_hidden),
             nn.GELU(),
             nn.Dropout(dropout_rate * 0.5),
             nn.Linear(head_hidden, out_size),
@@ -483,11 +545,14 @@ class Mamba1DBase(BaseModel):
         """
         _B, _C, L = x.shape
 
-        # Validate positional encoding coverage
+        # Validate positional encoding coverage (warn once outside torch.compile)
         pos_len = self.pos_embed.shape[1]
-        if pos_len < L:
-            import warnings
-
+        if (
+            not torch.compiler.is_compiling()
+            and not self._warned_pos_len
+            and pos_len < L
+        ):
+            self._warned_pos_len = True
             warnings.warn(
                 f"Input length {L} exceeds pos_embed size "
                 f"{pos_len} (from in_shape). "
@@ -558,29 +623,30 @@ class VisionMambaBase(BaseModel):
         d_conv: int = 4,
         expand: int = 2,
         dropout_rate: float = 0.1,
+        chunk_size: int = 256,
         **kwargs,
     ):
         super().__init__(in_shape, out_size)
 
-        if len(in_shape) != 2:
+        if len(self.in_shape) != 2:
             raise ValueError(
-                f"VisionMamba requires 2D input (H, W), got {len(in_shape)}D"
+                f"VisionMamba requires 2D input (H, W), got {len(self.in_shape)}D"
             )
 
-        if (
-            not isinstance(patch_size, Integral)
-            or isinstance(patch_size, bool)
-            or patch_size <= 0
+        for param_name, param_val in (
+            ("patch_size", patch_size),
+            ("d_model", d_model),
+            ("n_layers", n_layers),
         ):
-            raise ValueError(
-                f"patch_size must be a positive integer, got {patch_size!r}"
-            )
-        if (
-            not isinstance(n_layers, Integral)
-            or isinstance(n_layers, bool)
-            or n_layers <= 0
-        ):
-            raise ValueError(f"n_layers must be a positive integer, got {n_layers!r}")
+            if (
+                not isinstance(param_val, Integral)
+                or isinstance(param_val, bool)
+                or param_val <= 0
+            ):
+                raise ValueError(
+                    f"{param_name} must be a positive integer, got {param_val!r}"
+                )
+        dropout_rate = validate_dropout_rate(dropout_rate)
 
         patch_size = int(patch_size)
         d_model = int(d_model)
@@ -633,7 +699,9 @@ class VisionMambaBase(BaseModel):
         # Bidirectional Mamba blocks
         self.blocks = nn.ModuleList(
             [
-                BidirectionalMambaBlock(d_model, d_state, d_conv, expand)
+                BidirectionalMambaBlock(
+                    d_model, d_state, d_conv, expand, chunk_size=chunk_size
+                )
                 for _ in range(n_layers)
             ]
         )

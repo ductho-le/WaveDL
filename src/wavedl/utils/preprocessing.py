@@ -18,8 +18,10 @@ problems:
 from __future__ import annotations
 
 import bisect
+import contextlib
 import os
 import pickle
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -132,11 +134,15 @@ def add_preprocessing_arguments(parser: Any) -> None:
     )
 
 
-def transform_inputs(values: Any, preprocessing: dict[str, Any] | None) -> Any:
-    """Copy and transform NumPy arrays or PyTorch tensors without mutating mmaps."""
+def transform_inputs(
+    values: Any, preprocessing: dict[str, Any] | None, *, copy: bool = True
+) -> Any:
+    """Transform NumPy arrays or PyTorch tensors without mutating shared buffers."""
     config = preprocessing or {}
     mode = config.get("input_transform", "none")
     if mode == "none":
+        if not copy:
+            return values
         return (
             values.clone() if torch.is_tensor(values) else np.array(values, copy=True)
         )
@@ -145,19 +151,64 @@ def transform_inputs(values: Any, preprocessing: dict[str, Any] | None) -> Any:
 
     low, high = _validate_range(config.get("input_range"), "input_range")
     k = float(config.get("log_k", 1.0))
+    if not np.isfinite(k) or k <= 0:
+        raise ValueError(f"log_k must be finite and positive, got {k!r}.")
     low_t = float(np.log1p(abs(k * low)) * np.sign(low))
     high_t = float(np.log1p(abs(k * high)) * np.sign(high))
     span = high_t - low_t
+    if not np.isfinite(span) or span <= 0:
+        raise ValueError(
+            f"Invalid transformed input span ({span!r}) for input_range={[low, high]} and log_k={k}."
+        )
 
     if torch.is_tensor(values):
-        result = torch.log1p(torch.abs(k * values)) * torch.sign(values)
+        work = (
+            values.float()
+            if values.dtype in (torch.float16, torch.bfloat16)
+            else values
+        )
+        result = torch.log1p(torch.abs(k * work)) * torch.sign(work)
         return ((result - low_t) / span - 0.5) * 2.0
 
-    arr = np.array(values, dtype=np.float32, copy=True)
+    arr = np.asarray(values, dtype=np.float64)
     result = np.log1p(np.abs(k * arr)) * np.sign(arr)
-    result -= low_t
-    result /= span
-    return (result - 0.5) * 2.0
+    result = ((result - low_t) / span - 0.5) * 2.0
+    return result.astype(np.float32, copy=False)
+
+
+def inverse_transform_inputs(values: Any, preprocessing: dict[str, Any] | None) -> Any:
+    """Invert a serializable input preprocessing transform back to physical units."""
+    config = preprocessing or {}
+    mode = config.get("input_transform", "none")
+    if mode == "none":
+        return values
+    if mode != "signed_log_minmax":
+        raise ValueError(f"Unsupported input_transform: {mode!r}.")
+
+    low, high = _validate_range(config.get("input_range"), "input_range")
+    k = float(config.get("log_k", 1.0))
+    if not np.isfinite(k) or k <= 0:
+        raise ValueError(f"log_k must be finite and positive, got {k!r}.")
+    low_t = float(np.log1p(abs(k * low)) * np.sign(low))
+    high_t = float(np.log1p(abs(k * high)) * np.sign(high))
+    span = high_t - low_t
+    if not np.isfinite(span) or span <= 0:
+        raise ValueError(
+            f"Invalid transformed input span ({span!r}) for input_range={[low, high]} and log_k={k}."
+        )
+
+    if torch.is_tensor(values):
+        work = (
+            values.float()
+            if values.dtype in (torch.float16, torch.bfloat16)
+            else values
+        )
+        signed_log = (work / 2.0 + 0.5) * span + low_t
+        return torch.sign(signed_log) * torch.expm1(torch.abs(signed_log)) / k
+
+    arr = np.asarray(values, dtype=np.float64)
+    signed_log = (arr / 2.0 + 0.5) * span + low_t
+    return np.sign(signed_log) * np.expm1(np.abs(signed_log)) / k
 
 
 class MinMaxTargetScaler:
@@ -193,14 +244,13 @@ class MinMaxTargetScaler:
         return array
 
     def transform(self, values: Any) -> np.ndarray:
-        result = self._array(values).astype(np.float32, copy=True)
+        array = self._array(values).astype(np.float64, copy=False)
         low, high = self.bounds
-        result -= low
-        result /= high - low
-        return (result - 0.5) * 2.0
+        scaled = ((array - low) / (high - low) - 0.5) * 2.0
+        return scaled.astype(np.float32, copy=False)
 
     def inverse_transform(self, values: Any) -> np.ndarray:
-        array = self._array(values)
+        array = self._array(values).astype(np.float64, copy=False)
         low, high = self.bounds
         return (array / 2.0 + 0.5) * (high - low) + low
 
@@ -215,6 +265,14 @@ def validate_input_channels(model_class: type, count: int, name: str) -> None:
         )
 
 
+def _close_memmap(array: Any) -> None:
+    """Release the underlying mmap handle of a read-only ``np.memmap`` if present."""
+    mmap_obj = getattr(array, "_mmap", None)
+    if mmap_obj is not None:
+        with contextlib.suppress(Exception):
+            mmap_obj.close()
+
+
 class ShardManifestDataset(Dataset):
     """Lazy paired ``.npy`` shard dataset addressed by cumulative lengths.
 
@@ -226,61 +284,94 @@ class ShardManifestDataset(Dataset):
     read-only and each sample is copied before any transform.
     """
 
+    DEFAULT_MAX_OPEN_SHARDS = 32
+
     def __init__(
         self,
         path: str | Path,
         preprocessing: dict[str, Any] | None = None,
         scaler: Any = None,
         indices: np.ndarray | None = None,
+        *,
+        max_open_shards: int = DEFAULT_MAX_OPEN_SHARDS,
+        _validated_spec: tuple[
+            list[tuple[str, str]],
+            list[int],
+            tuple[int, ...],
+            tuple[int, ...],
+        ]
+        | None = None,
     ) -> None:
         self.path = Path(path).resolve()
         self.preprocessing = preprocessing
         self.scaler = scaler
-        self.paths: list[tuple[str, str]] = []
-        self.ends: list[int] = []
-        self._maps: dict[tuple[int, bool], np.ndarray] = {}
-        total = 0
-        self.input_shape: tuple[int, ...] | None = None
-        self.target_shape: tuple[int, ...] | None = None
+        self.max_open_shards = max(2, int(max_open_shards))
+        self._maps: OrderedDict[tuple[int, bool], np.ndarray] = OrderedDict()
 
-        for line_number, line in enumerate(
-            self.path.read_text(encoding="utf-8").splitlines(), 1
-        ):
-            if not line.strip():
-                continue
-            pair = line.split("\t")
-            if len(pair) != 2 or not all(part.strip() for part in pair):
-                raise ValueError(
-                    f"{self.path}:{line_number}: expected input.npy<TAB>target.npy."
-                )
-            paths = (
-                str((self.path.parent / pair[0].strip()).resolve()),
-                str((self.path.parent / pair[1].strip()).resolve()),
-            )
-            x, y = (np.load(p, mmap_mode="r", allow_pickle=False) for p in paths)
-            if not (3 <= x.ndim <= 5) or not all(x.shape) or x.dtype.kind not in "biuf":
-                raise ValueError(
-                    "Shard inputs require non-empty channels-first real arrays of "
-                    f"rank 3-5, got {x.shape}."
-                )
-            if y.dtype.kind not in "biuf":
-                raise ValueError("Shard targets must contain finite real values.")
-            shape = canonical_target_shape(y.shape)
-            if len(x) != len(y):
-                raise ValueError(
-                    f"Input/target shard mismatch: {x.shape} and {y.shape}."
-                )
-            if self.input_shape is not None and (
-                self.input_shape != tuple(x.shape[1:]) or self.target_shape != shape
+        if _validated_spec is not None:
+            paths_list, ends_list, in_shape, tgt_shape = _validated_spec
+            self.paths = list(paths_list)
+            self.ends = list(ends_list)
+            self.input_shape: tuple[int, ...] | None = in_shape
+            self.target_shape: tuple[int, ...] | None = tgt_shape
+            total = self.ends[-1]
+        else:
+            self.paths = []
+            self.ends = []
+            total = 0
+            self.input_shape = None
+            self.target_shape = None
+
+            for line_number, line in enumerate(
+                self.path.read_text(encoding="utf-8").splitlines(), 1
             ):
-                raise ValueError(
-                    "All manifest shards must share the same input and target sample shapes."
+                if not line.strip():
+                    continue
+                pair = line.split("\t")
+                if len(pair) != 2 or not all(part.strip() for part in pair):
+                    raise ValueError(
+                        f"{self.path}:{line_number}: expected input.npy<TAB>target.npy."
+                    )
+                paths = (
+                    str((self.path.parent / pair[0].strip()).resolve()),
+                    str((self.path.parent / pair[1].strip()).resolve()),
                 )
-            self.input_shape = tuple(x.shape[1:])
-            self.target_shape = shape
-            total += len(x)
-            self.paths.append(paths)
-            self.ends.append(total)
+                x = np.load(paths[0], mmap_mode="r", allow_pickle=False)
+                y = np.load(paths[1], mmap_mode="r", allow_pickle=False)
+                try:
+                    if (
+                        not (3 <= x.ndim <= 5)
+                        or not all(x.shape)
+                        or x.dtype.kind not in "biuf"
+                    ):
+                        raise ValueError(
+                            "Shard inputs require non-empty channels-first real arrays of "
+                            f"rank 3-5, got {x.shape}."
+                        )
+                    if y.dtype.kind not in "biuf":
+                        raise ValueError(
+                            "Shard targets must contain finite real values."
+                        )
+                    shape = canonical_target_shape(y.shape)
+                    if len(x) != len(y):
+                        raise ValueError(
+                            f"Input/target shard mismatch: {x.shape} and {y.shape}."
+                        )
+                    if self.input_shape is not None and (
+                        self.input_shape != tuple(x.shape[1:])
+                        or self.target_shape != shape
+                    ):
+                        raise ValueError(
+                            "All manifest shards must share the same input and target sample shapes."
+                        )
+                    self.input_shape = tuple(x.shape[1:])
+                    self.target_shape = shape
+                    total += len(x)
+                    self.paths.append(paths)
+                    self.ends.append(total)
+                finally:
+                    _close_memmap(x)
+                    _close_memmap(y)
 
         if total == 0 or self.input_shape is None or self.target_shape is None:
             raise ValueError(f"Empty shard manifest: {self.path}")
@@ -288,45 +379,114 @@ class ShardManifestDataset(Dataset):
         self.in_channels = self.input_shape[0]
         self.shape = (total, *self.input_shape)
 
+    def clone_with(
+        self,
+        *,
+        preprocessing: dict[str, Any] | None = None,
+        scaler: Any = None,
+        indices: np.ndarray | None = None,
+    ) -> ShardManifestDataset:
+        """Create a view sharing already-validated manifest metadata without re-reading headers."""
+        assert self.input_shape is not None and self.target_shape is not None
+        return ShardManifestDataset(
+            self.path,
+            preprocessing=preprocessing,
+            scaler=scaler,
+            indices=indices,
+            max_open_shards=self.max_open_shards,
+            _validated_spec=(
+                self.paths,
+                self.ends,
+                self.input_shape,
+                self.target_shape,
+            ),
+        )
+
+    def close(self) -> None:
+        """Close all cached read-only shard memmaps."""
+        while self._maps:
+            _, evicted = self._maps.popitem(last=False)
+            _close_memmap(evicted)
+
     def __len__(self) -> int:
         return len(self.indices)
+
+    def _open_shard(self, shard: int, target: bool) -> np.ndarray:
+        key = (shard, target)
+        if key in self._maps:
+            self._maps.move_to_end(key)
+        else:
+            if len(self._maps) >= self.max_open_shards:
+                _, evicted = self._maps.popitem(last=False)
+                _close_memmap(evicted)
+            self._maps[key] = np.load(
+                self.paths[shard][int(target)], mmap_mode="r", allow_pickle=False
+            )
+        return self._maps[key]
 
     def _sample(self, index: int, target: bool = False) -> np.ndarray:
         real_index = int(self.indices[index])
         shard = bisect.bisect_right(self.ends, real_index)
         offset = real_index - (self.ends[shard - 1] if shard else 0)
-        key = (shard, target)
-        if key not in self._maps:
-            self._maps[key] = np.load(
-                self.paths[shard][int(target)], mmap_mode="r", allow_pickle=False
-            )
-        result = np.array(self._maps[key][offset], dtype=np.float32, copy=True)
+        arr = self._open_shard(shard, target)
+        # Preserve native dtype (e.g. float64) for targets so scalers do not
+        # lose precision on large physical offsets before standardization.
+        if target:
+            result = np.array(arr[offset], copy=True)
+        else:
+            result = np.array(arr[offset], dtype=np.float32, copy=True)
         if not np.isfinite(result).all():
             raise ValueError("Shard samples must contain finite real values.")
         return result
 
     def target_batches(self, indices: Any = None, batch_size: int = 64):
-        """Yield canonicalized target batches without materializing inputs."""
-        selected = range(len(self)) if indices is None else indices
-        for start in range(0, len(selected), batch_size):
-            yield canonicalize_targets(
-                np.stack(
-                    [
-                        self._sample(int(i), True)
-                        for i in selected[start : start + batch_size]
-                    ]
-                )
-            )
+        """Yield canonicalized target batches via contiguous per-shard slices."""
+        if indices is None:
+            real_indices = self.indices
+        else:
+            real_indices = self.indices[np.asarray(indices, dtype=np.int64)]
+        for start in range(0, len(real_indices), batch_size):
+            chunk = real_indices[start : start + batch_size]
+            if len(chunk) == 0:
+                continue
+            parts: list[np.ndarray] = []
+            pos = 0
+            while pos < len(chunk):
+                first_real = int(chunk[pos])
+                shard = bisect.bisect_right(self.ends, first_real)
+                shard_start = self.ends[shard - 1] if shard else 0
+                shard_end = self.ends[shard]
+                run_end = pos + 1
+                while (
+                    run_end < len(chunk)
+                    and shard_start <= int(chunk[run_end]) < shard_end
+                ):
+                    run_end += 1
+                arr = self._open_shard(shard, True)
+                offsets = np.asarray(chunk[pos:run_end], dtype=np.int64) - shard_start
+                if len(offsets) == 1 or (
+                    offsets[-1] - offsets[0] == len(offsets) - 1
+                    and np.all(np.diff(offsets) == 1)
+                ):
+                    sub = np.array(arr[offsets[0] : offsets[-1] + 1], copy=True)
+                else:
+                    sub = np.array(arr[offsets], copy=True)
+                if not np.isfinite(sub).all():
+                    raise ValueError("Shard samples must contain finite real values.")
+                parts.append(sub)
+                pos = run_end
+            batch = parts[0] if len(parts) == 1 else np.concatenate(parts, axis=0)
+            yield canonicalize_targets(batch)
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
-        x = transform_inputs(self._sample(index), self.preprocessing)
+        x = transform_inputs(self._sample(index), self.preprocessing, copy=False)
         y = canonicalize_targets(self._sample(index, True)[None])
         if self.scaler is not None:
             y = self.scaler.transform(y)
         return torch.from_numpy(x), torch.from_numpy(np.asarray(y[0], dtype=np.float32))
 
     def __getstate__(self) -> dict[str, Any]:
-        return {**self.__dict__, "_maps": {}}
+        return {**self.__dict__, "_maps": OrderedDict()}
 
 
 class ManifestInputs(Dataset):
@@ -336,6 +496,17 @@ class ManifestInputs(Dataset):
         self.source = source
         self.shape = source.shape
         self.ndim = len(self.shape)
+
+    def close(self) -> None:
+        """Close all cached read-only shard memmaps owned by the underlying source."""
+        self.source.close()
+
+    def __enter__(self) -> ManifestInputs:
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
+        self.close()
+        return False
 
     def __len__(self) -> int:
         return len(self.source)
@@ -367,12 +538,22 @@ class _ArrayDataset(Dataset):
         if self.x.dtype.kind not in "biuf":
             raise ValueError("Inputs must contain finite real values.")
         self.indices, self.preprocessing, self.scaler = indices, preprocessing, scaler
-        channels_first = x.ndim >= 5 or (
-            x.ndim == 4
-            and not single_channel
-            and input_channels != 1
-            and (
-                (input_channels is not None and input_channels > 1) or x.shape[1] <= 16
+        channels_first = (
+            x.ndim >= 5
+            or (
+                x.ndim == 4
+                and not single_channel
+                and input_channels != 1
+                and (
+                    (input_channels is not None and input_channels > 1)
+                    or x.shape[1] <= 16
+                )
+            )
+            or (
+                x.ndim == 3
+                and not single_channel
+                and input_channels is not None
+                and input_channels > 1
             )
         )
         self.add_channel = not channels_first
@@ -395,7 +576,7 @@ class _ArrayDataset(Dataset):
             x = x[None]
         y = self.scaler.transform(self.y[i : i + 1])[0]
         return torch.from_numpy(
-            transform_inputs(x, self.preprocessing)
+            transform_inputs(x, self.preprocessing, copy=False)
         ), torch.from_numpy(np.asarray(y, dtype=np.float32))
 
 
@@ -415,6 +596,7 @@ def prepare_preprocessed_data(
     Statistics are always fitted on training targets only.
     """
     from .data import (
+        _iter_target_batches,
         _validate_scaler_compatibility,
         load_training_data,
         memmap_worker_init_fn,
@@ -422,6 +604,7 @@ def prepare_preprocessed_data(
 
     val_path = getattr(args, "val_data_path", None)
     manifest = str(args.data_path).lower().endswith(".txt")
+    source: ShardManifestDataset | None = None
     if manifest:
         source = ShardManifestDataset(args.data_path)
         n = len(source)
@@ -434,72 +617,133 @@ def prepare_preprocessed_data(
         n = len(x)
         if n != len(targets):
             raise ValueError("Input/output sample mismatch.")
-    if n < 2 and not val_path:
-        raise ValueError("Training requires at least two input samples.")
+    try:
+        if n == 0:
+            raise ValueError("Training dataset is empty.")
+        if n < 2 and not val_path:
+            raise ValueError("Training requires at least two input samples.")
 
-    tr_idx, val_idx = (
-        (np.arange(n), None)
-        if val_path
-        else train_test_split(np.arange(n), test_size=val_split, random_state=args.seed)
-    )
-    shape = source.target_shape if manifest else tuple(targets.shape[1:])
-    if config["target_scaling"] == "minmax":
-        scaler = MinMaxTargetScaler(config["target_range"], shape)
-    elif manifest:
-        if len(shape) == 3:
-            scaler = SpatialTargetScaler().fit_batches(source.target_batches(tr_idx))
+        tr_idx, val_idx = (
+            (np.arange(n), None)
+            if val_path
+            else train_test_split(
+                np.arange(n), test_size=val_split, random_state=args.seed
+            )
+        )
+        shape = source.target_shape if manifest else tuple(targets.shape[1:])
+        assert shape is not None
+
+        def _fit_scaler() -> Any:
+            if config["target_scaling"] == "minmax":
+                return MinMaxTargetScaler(config["target_range"], shape)
+            if manifest:
+                assert source is not None
+                if len(shape) == 3:
+                    return SpatialTargetScaler().fit_batches(
+                        source.target_batches(tr_idx)
+                    )
+                return create_target_scaler(
+                    np.concatenate(list(source.target_batches(tr_idx)), axis=0)
+                )
+            if len(shape) == 3:
+                return SpatialTargetScaler().fit_batches(
+                    _iter_target_batches(targets, tr_idx)
+                )
+            return create_target_scaler(targets[tr_idx])
+
+        is_distributed = (
+            getattr(accelerator, "num_processes", 1) > 1
+            and torch.distributed.is_available()
+            and torch.distributed.is_initialized()
+        )
+        scaler_path = Path(cache_dir) / "scaler.pkl"
+        if is_distributed:
+            fit_error: Exception | None = None
+            scaler = None
+            if accelerator.is_main_process:
+                try:
+                    scaler = _fit_scaler()
+                    if expected_scaler is not None:
+                        _validate_scaler_compatibility(scaler, expected_scaler)
+                    os.makedirs(cache_dir, exist_ok=True)
+                    tmp_scaler = scaler_path.with_suffix(".pkl.tmp")
+                    with tmp_scaler.open("wb") as file:
+                        pickle.dump(scaler, file)
+                    tmp_scaler.replace(scaler_path)
+                except Exception as exc:
+                    fit_error = exc
+            err_msg = [str(fit_error) if fit_error is not None else None]
+            torch.distributed.broadcast_object_list(err_msg, src=0)
+            if err_msg[0] is not None:
+                if fit_error is not None:
+                    raise fit_error
+                raise ValueError(err_msg[0])
+            if not accelerator.is_main_process:
+                with scaler_path.open("rb") as file:
+                    scaler = pickle.load(file)
         else:
-            scaler = create_target_scaler(
-                np.concatenate(list(source.target_batches(tr_idx)), axis=0)
-            )
-    else:
-        scaler = create_target_scaler(targets[tr_idx])
+            scaler = _fit_scaler()
+            if expected_scaler is not None:
+                _validate_scaler_compatibility(scaler, expected_scaler)
 
-    if expected_scaler is not None:
-        _validate_scaler_compatibility(scaler, expected_scaler)
-
-    if manifest:
-        train_ds: Dataset = ShardManifestDataset(args.data_path, config, scaler, tr_idx)
-        if val_path and not str(val_path).lower().endswith(".txt"):
-            vx, vy = load_training_data(
-                val_path, allow_pickle=getattr(args, "allow_pickle", False)
+        if manifest:
+            assert source is not None
+            train_ds: Dataset = source.clone_with(
+                preprocessing=config, scaler=scaler, indices=tr_idx
             )
-            if len(vx) == 0:
-                raise ValueError("Validation dataset is empty.")
-            val_ds: Dataset = _ArrayDataset(
-                vx,
-                vy,
-                np.arange(len(vx)),
-                config,
-                scaler,
-                input_channels=train_ds.in_channels
-                if train_ds.in_channels > 1
-                else None,
-            )
-        else:
-            val_ds = ShardManifestDataset(
-                val_path or args.data_path, config, scaler, val_idx
-            )
-    else:
-        kwargs = {
-            "preprocessing": config,
-            "scaler": scaler,
-            "input_channels": getattr(args, "input_channels", None),
-            "single_channel": getattr(args, "single_channel", False),
-        }
-        train_ds = _ArrayDataset(x, targets, tr_idx, **kwargs)
-        if val_path:
-            if str(val_path).lower().endswith(".txt"):
-                val_ds = ShardManifestDataset(val_path, config, scaler)
-            else:
+            if val_path and not str(val_path).lower().endswith(".txt"):
                 vx, vy = load_training_data(
                     val_path, allow_pickle=getattr(args, "allow_pickle", False)
                 )
                 if len(vx) == 0:
                     raise ValueError("Validation dataset is empty.")
-                val_ds = _ArrayDataset(vx, vy, np.arange(len(vx)), **kwargs)
+                is_single_ch_3d = (
+                    train_ds.in_channels == 1 and len(train_ds.input_shape) == 4
+                )
+                val_ds: Dataset = _ArrayDataset(
+                    vx,
+                    vy,
+                    np.arange(len(vx)),
+                    config,
+                    scaler,
+                    input_channels=(
+                        train_ds.in_channels
+                        if train_ds.in_channels > 1
+                        else getattr(args, "input_channels", None)
+                    ),
+                    single_channel=(
+                        getattr(args, "single_channel", False) or is_single_ch_3d
+                    ),
+                )
+            elif val_path:
+                val_ds = ShardManifestDataset(val_path, config, scaler, val_idx)
+            else:
+                val_ds = source.clone_with(
+                    preprocessing=config, scaler=scaler, indices=val_idx
+                )
         else:
-            val_ds = _ArrayDataset(x, targets, val_idx, **kwargs)
+            kwargs = {
+                "preprocessing": config,
+                "scaler": scaler,
+                "input_channels": getattr(args, "input_channels", None),
+                "single_channel": getattr(args, "single_channel", False),
+            }
+            train_ds = _ArrayDataset(x, targets, tr_idx, **kwargs)
+            if val_path:
+                if str(val_path).lower().endswith(".txt"):
+                    val_ds = ShardManifestDataset(val_path, config, scaler)
+                else:
+                    vx, vy = load_training_data(
+                        val_path, allow_pickle=getattr(args, "allow_pickle", False)
+                    )
+                    if len(vx) == 0:
+                        raise ValueError("Validation dataset is empty.")
+                    val_ds = _ArrayDataset(vx, vy, np.arange(len(vx)), **kwargs)
+            else:
+                val_ds = _ArrayDataset(x, targets, val_idx, **kwargs)
+    finally:
+        if source is not None:
+            source.close()
 
     if (
         train_ds.input_shape != val_ds.input_shape
@@ -552,8 +796,11 @@ def prepare_preprocessed_data(
         "persistent_workers": args.workers > 0,
         "worker_init_fn": memmap_worker_init_fn if args.workers > 0 else None,
     }
+    drop_last_train = len(train_ds) > args.batch_size and (
+        len(train_ds) % args.batch_size == 1
+    )
     return (
-        DataLoader(train_ds, shuffle=True, **options),
+        DataLoader(train_ds, shuffle=True, drop_last=drop_last_train, **options),
         DataLoader(val_ds, shuffle=False, **options),
         scaler,
         train_ds.input_shape[1:],
@@ -564,5 +811,5 @@ def prepare_preprocessed_data(
 def configure_tf32(args: Any) -> None:
     """Disable matmul and cuDNN TF32 for explicit FP32 precision or determinism."""
     if getattr(args, "no_tf32", False) or getattr(args, "deterministic", False):
-        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.set_float32_matmul_precision("highest")
         torch.backends.cudnn.allow_tf32 = False

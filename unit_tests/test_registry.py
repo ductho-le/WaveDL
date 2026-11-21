@@ -240,9 +240,10 @@ class TestListModels:
 
         broken_file = tmp_path / "broken_custom_model.py"
         broken_file.write_text(
+            "import torch.nn as nn\n"
             "from wavedl.models import register_model\n"
             "@register_model('transient_broken_model')\n"
-            "class TransientModel:\n"
+            "class TransientModel(nn.Module):\n"
             "    pass\n"
             "raise RuntimeError('boom during import')\n",
             encoding="utf-8",

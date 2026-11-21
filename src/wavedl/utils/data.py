@@ -380,7 +380,10 @@ class NPZSource(DataSource):
             for key in keys:
                 if key in data:
                     arr = data[key]
-                    result[key] = arr.copy() if hasattr(arr, "copy") else arr
+                    if isinstance(arr, np.ndarray):
+                        result[key] = arr if arr.flags.owndata else arr.copy()
+                    else:
+                        result[key] = arr.copy() if hasattr(arr, "copy") else arr
             return result
         except Exception as e:
             NPZSource._raise_if_pickle_error(e)
@@ -508,20 +511,25 @@ class HDF5Source(DataSource):
                 pass  # File automatically closed
         """
         f = h5py.File(path, "r")  # Keep file open for lazy access
-        keys = list(f.keys())
+        try:
+            keys = list(f.keys())
 
-        input_key, output_key = self._find_paired_keys(keys, INPUT_KEYS, OUTPUT_KEYS)
-
-        if input_key is None or output_key is None:
-            f.close()
-            raise KeyError(
-                f"HDF5 must contain input and output datasets. "
-                f"Supported keys: {INPUT_KEYS} / {OUTPUT_KEYS}. "
-                f"Found: {keys}"
+            input_key, output_key = self._find_paired_keys(
+                keys, INPUT_KEYS, OUTPUT_KEYS
             )
 
-        # Return wrapped handle for proper cleanup
-        return LazyDataHandle(f[input_key], f[output_key], file_handle=f)
+            if input_key is None or output_key is None:
+                raise KeyError(
+                    f"HDF5 must contain input and output datasets. "
+                    f"Supported keys: {INPUT_KEYS} / {OUTPUT_KEYS}. "
+                    f"Found: {keys}"
+                )
+
+            # Return wrapped handle for proper cleanup
+            return LazyDataHandle(f[input_key], f[output_key], file_handle=f)
+        except Exception:
+            f.close()
+            raise
 
     def load_outputs_only(self, path: str) -> np.ndarray:
         """Load only targets from HDF5 (avoids loading large input arrays)."""
@@ -663,14 +671,14 @@ class _TransposedH5Dataset:
 
 class MATSource(DataSource):
     """
-    Load data from MATLAB .mat files (v7.3+ only, which uses HDF5 format).
+    Load data from MATLAB .mat files (v7.3+ HDF5 and legacy v5/v7 formats).
 
     Note: MAT v7.3 files are HDF5 files under the hood, so we use h5py for
-    memory-efficient lazy loading. Save with: save('file.mat', '-v7.3')
+    memory-efficient lazy loading (save with: ``save('file.mat', '-v7.3')``).
+    Legacy MAT v5/v7 files are also supported via ``scipy.io.loadmat``
+    (loaded in memory).
 
     Supports MATLAB sparse matrices (automatically converted to dense).
-
-    For older MAT files (v5/v7), convert to NPZ or save with -v7.3 flag.
     """
 
     @staticmethod
@@ -723,6 +731,8 @@ class MATSource(DataSource):
             )
         try:
             info = scipy.io.whosmat(path)
+        except FileNotFoundError:
+            raise
         except Exception as e:
             raise ValueError(
                 f"Failed to load MAT file: {path}. "
@@ -840,6 +850,8 @@ class MATSource(DataSource):
                         # Single sample with multiple targets: (T, 1) → (1, T)
                         outp = outp.T
 
+        except FileNotFoundError:
+            raise
         except OSError:
             return self._load_legacy_mat(path, require_outputs=True)
 
@@ -863,6 +875,13 @@ class MATSource(DataSource):
         """
         try:
             f = h5py.File(path, "r")  # Keep file open for lazy access
+        except FileNotFoundError:
+            raise
+        except OSError:
+            inp, outp = self._load_legacy_mat(path, require_outputs=True)
+            return LazyDataHandle(inp, outp, file_handle=None)
+
+        try:
             keys = list(f.keys())
 
             input_key, output_key = self._find_paired_keys(
@@ -870,7 +889,6 @@ class MATSource(DataSource):
             )
 
             if input_key is None or output_key is None:
-                f.close()
                 raise KeyError(
                     f"MAT file must contain input and output arrays. "
                     f"Supported keys: {INPUT_KEYS} / {OUTPUT_KEYS}. "
@@ -897,10 +915,9 @@ class MATSource(DataSource):
 
             # Return wrapped handle for proper cleanup
             return LazyDataHandle(inp, outp, file_handle=f)
-
-        except OSError:
-            inp, outp = self._load_legacy_mat(path, require_outputs=True)
-            return LazyDataHandle(inp, outp, file_handle=None)
+        except Exception:
+            f.close()
+            raise
 
     def load_outputs_only(self, path: str) -> np.ndarray:
         """Load only targets from MAT file (avoids loading large input arrays on v7.3)."""
@@ -927,6 +944,8 @@ class MATSource(DataSource):
                 if outp.ndim == 2 and outp.shape[0] == 1:
                     outp = outp.T
 
+        except FileNotFoundError:
+            raise
         except OSError:
             return self._load_legacy_mat(path, outputs_only=True)
 
@@ -1141,6 +1160,8 @@ def _load_mat_for_test(
                         outp.shape[1] == 1 and outp.shape[0] != num_samples
                     ):
                         outp = outp.T
+    except FileNotFoundError:
+        raise
     except OSError:
         return MATSource._load_legacy_mat(
             path,
@@ -1214,12 +1235,20 @@ def load_test_data(
         from .preprocessing import ManifestInputs, ShardManifestDataset
 
         source = ShardManifestDataset(path)
-        if input_channels is not None and input_channels != source.in_channels:
-            raise ValueError(
-                f"Requested input_channels={input_channels}, "
-                f"but manifest has {source.in_channels} channels."
+        try:
+            if input_channels is not None and input_channels != source.in_channels:
+                raise ValueError(
+                    f"Requested input_channels={input_channels}, "
+                    f"but manifest has {source.in_channels} channels."
+                )
+            labels_np = _as_finite_float32(
+                np.concatenate(list(source.target_batches()), axis=0), "Targets"
             )
-        labels = torch.from_numpy(np.concatenate(list(source.target_batches())))
+            labels = torch.from_numpy(np.ascontiguousarray(labels_np))
+        finally:
+            # Release target shard mmaps immediately; ManifestInputs lazily
+            # reopens input shards on demand.
+            source.close()
         return ManifestInputs(source), labels
 
     if format == "auto":
@@ -1334,12 +1363,15 @@ def load_test_data(
 
     # Add channel dimension if needed (dimension-agnostic)
     # X.ndim == 2: 1D data (N, L) → (N, 1, L)
-    # X.ndim == 3: 2D data (N, H, W) → (N, 1, H, W)
+    # X.ndim == 3: 2D data (N, H, W) → (N, 1, H, W), OR multi-channel 1D (N, C, L)
+    #              when input_channels > 1 is explicitly requested
     # X.ndim == 4: Check if already has channel dim
     if X.ndim == 2:
         X = X.unsqueeze(1)  # 1D signal: (N, L) → (N, 1, L)
     elif X.ndim == 3:
-        X = X.unsqueeze(1)  # 2D image: (N, H, W) → (N, 1, H, W)
+        if input_channels is None or input_channels == 1:
+            X = X.unsqueeze(1)  # 2D image: (N, H, W) → (N, 1, H, W)
+        # else: explicit multi-channel 1D (N, C, L) — keep existing channel dim
     elif X.ndim == 4:
         # Could be 3D volume (N, D, H, W) or 2D with channel (N, C, H, W)
         if input_channels is not None:
@@ -1375,6 +1407,12 @@ def load_test_data(
                     stacklevel=2,
                 )
     # X.ndim >= 5: assume channel dimension already exists
+
+    if input_channels is not None and X.shape[1] != input_channels:
+        raise ValueError(
+            f"Requested input_channels={input_channels}, "
+            f"but input data has {X.shape[1]} channels (shape {tuple(X.shape)})."
+        )
 
     return X, y
 
@@ -1413,7 +1451,7 @@ def memmap_worker_init_fn(worker_id: int):
                 ds.target_data = None
             if isinstance(ds, Dataset):
                 if isinstance(getattr(ds, "_maps", None), dict):
-                    ds._maps = {}
+                    ds._maps = type(ds._maps)()
                 source = getattr(ds, "source", None)
                 if isinstance(source, Dataset):
                     _reset_memmap_handles(source)
@@ -1694,11 +1732,22 @@ def prepare_data(
         )
 
     # Validate cache using content hash (portable across folders/machines)
-    # File size is a fast pre-check, content hash is definitive validation
+    # Perform all cheap O(1) metadata, size, split, mode, and scaler checks BEFORE
+    # computing any expensive multi-GB file hash, and reuse the hash on rebuild.
+    precomputed_hash: str | None = None
+    precomputed_hash_mode: str | None = None
     if accelerator.is_main_process and cache_exists:
         try:
             with open(META_FILE, "rb") as f:
                 meta = pickle.load(f)
+            cached_prep = meta.get("preprocessing") or {}
+            if (
+                meta.get("source") in ("manifest", "preprocessed")
+                or cached_prep.get("input_transform", "none") != "none"
+                or cached_prep.get("target_scaling", "standard") != "standard"
+                or meta.get("val_data_path") is not None
+            ):
+                cache_exists = False
             cached_file_size = meta.get("file_size", None)
             cached_content_hash = meta.get("content_hash", None)
             cached_hash_mode = meta.get("content_hash_mode", "sha256")
@@ -1722,59 +1771,31 @@ def prepare_data(
             ):
                 cache_exists = False
 
-            if cache_exists:
-                expected_input_bytes = (
-                    int(np.prod(meta["shape"])) * np.dtype(np.float32).itemsize
-                )
-                if os.path.getsize(CACHE_FILE) != expected_input_bytes:
-                    cache_exists = False
-
-            if cache_exists and meta.get("output_kind") == "field":
-                target_cache_shape = tuple(meta.get("target_cache_shape", ()))
-                expected_target_bytes = (
-                    int(np.prod(target_cache_shape)) * np.dtype(np.float32).itemsize
-                )
-                if (
-                    not target_cache_shape
-                    or os.path.getsize(TARGET_CACHE_FILE) != expected_target_bytes
-                ):
-                    if accelerator.is_main_process:
-                        logger.warning(
-                            "⚠️  Dense target cache has an unexpected size; "
-                            "regenerating it..."
-                        )
-                    cache_exists = False
-
-            # Get current file stats
-            current_stats = os.stat(args.data_path)
-            current_size = current_stats.st_size
-
-            # Check if file size changed (fast check before expensive hash)
-            if cached_file_size is not None and cached_file_size != current_size:
-                if accelerator.is_main_process:
-                    logger.warning(
-                        f"⚠️  Data file size changed!\n"
-                        f"   Cached size: {cached_file_size:,} bytes\n"
-                        f"   Current size: {current_size:,} bytes\n"
-                        f"   Invalidating cache and regenerating..."
-                    )
+            # Verify completion sentinel early — catches interrupted cache writes
+            if cache_exists and not meta.get("cache_complete", False):
+                logger.info("   Cache incomplete (interrupted write). Regenerating...")
                 cache_exists = False
-            # Content hash check (robust against cloud sync mtime changes)
-            elif cached_content_hash is not None:
+
+            # Check split parameters early (O(1)) before any hashing
+            if cache_exists:
+                cached_val_split = meta.get("val_split", None)
+                cached_seed = meta.get("seed", None)
+                if (cached_val_split is not None and cached_val_split != val_split) or (
+                    cached_seed is not None
+                    and cached_seed != getattr(args, "seed", None)
+                ):
+                    logger.warning(
+                        "⚠️  val_split/seed changed since cache was built; "
+                        "regenerating to refit the scaler on the correct "
+                        "training split (avoids validation-set leakage)..."
+                    )
+                    cache_exists = False
+
+            # Check if validation mode was upgraded (O(1)) before hashing
+            if cache_exists and cached_content_hash is not None:
                 requested_mode = getattr(args, "cache_validate", "sha256")
                 mode_strength = {"size": 0, "fast": 1, "sha256": 2}
-                # Compare using the recorded mode. A stronger validation mode
-                # requires rebuilding: hashing today's source cannot certify
-                # cached data created using a weaker fingerprint.
-                compare_hash = _compute_file_hash(args.data_path, mode=cached_hash_mode)
-                if cached_content_hash != compare_hash:
-                    if accelerator.is_main_process:
-                        logger.warning(
-                            "⚠️  Data file content changed!\n"
-                            "   Cache is stale, regenerating..."
-                        )
-                    cache_exists = False
-                elif mode_strength.get(requested_mode, 2) > mode_strength.get(
+                if mode_strength.get(requested_mode, 2) > mode_strength.get(
                     cached_hash_mode, 2
                 ):
                     logger.info(
@@ -1784,34 +1805,29 @@ def prepare_data(
                     )
                     cache_exists = False
 
-            # The scaler is fit on the training split, which depends on val_split
-            # and seed. If either changed since the cache was built, reusing the
-            # cached scaler would fit it on samples now in the validation set
-            # (leakage). Regenerate so the scaler matches the current split.
             if cache_exists:
-                cached_val_split = meta.get("val_split", None)
-                cached_seed = meta.get("seed", None)
-                if (cached_val_split is not None and cached_val_split != val_split) or (
-                    cached_seed is not None
-                    and cached_seed != getattr(args, "seed", None)
-                ):
-                    if accelerator.is_main_process:
-                        logger.warning(
-                            "⚠️  val_split/seed changed since cache was built; "
-                            "regenerating to refit the scaler on the correct "
-                            "training split (avoids validation-set leakage)..."
-                        )
+                expected_input_bytes = (
+                    math.prod(meta["shape"]) * np.dtype(np.float32).itemsize
+                )
+                if os.path.getsize(CACHE_FILE) != expected_input_bytes:
                     cache_exists = False
 
-            # Verify completion sentinel — catches interrupted cache writes
-            if cache_exists and not meta.get("cache_complete", False):
-                if accelerator.is_main_process:
-                    logger.info(
-                        "   Cache incomplete (interrupted write). Regenerating..."
+            if cache_exists and meta.get("output_kind") == "field":
+                target_cache_shape = tuple(meta.get("target_cache_shape", ()))
+                expected_target_bytes = (
+                    math.prod(target_cache_shape) * np.dtype(np.float32).itemsize
+                )
+                if (
+                    not target_cache_shape
+                    or os.path.getsize(TARGET_CACHE_FILE) != expected_target_bytes
+                ):
+                    logger.warning(
+                        "⚠️  Dense target cache has an unexpected size; "
+                        "regenerating it..."
                     )
-                cache_exists = False
+                    cache_exists = False
 
-            # Validate scaler file integrity early (H4)
+            # Validate scaler file integrity early (cheap) before hashing
             if cache_exists:
                 try:
                     with open(SCALER_FILE, "rb") as f:
@@ -1823,11 +1839,35 @@ def prepare_data(
                         raise ValueError("Scaler not fitted")
                     del _test_scaler
                 except Exception:
-                    if accelerator.is_main_process:
-                        logger.warning(
-                            "⚠️  Corrupt scaler file detected. Regenerating cache..."
-                        )
+                    logger.warning(
+                        "⚠️  Corrupt scaler file detected. Regenerating cache..."
+                    )
                     cache_exists = False
+
+            # Check file size (fast O(1)) and content hash ONLY if all cheap checks passed
+            if cache_exists:
+                current_stats = os.stat(args.data_path)
+                current_size = current_stats.st_size
+                if cached_file_size is not None and cached_file_size != current_size:
+                    logger.warning(
+                        f"⚠️  Data file size changed!\n"
+                        f"   Cached size: {cached_file_size:,} bytes\n"
+                        f"   Current size: {current_size:,} bytes\n"
+                        f"   Invalidating cache and regenerating..."
+                    )
+                    cache_exists = False
+                elif cached_content_hash is not None:
+                    compare_hash = _compute_file_hash(
+                        args.data_path, mode=cached_hash_mode
+                    )
+                    precomputed_hash = compare_hash
+                    precomputed_hash_mode = cached_hash_mode
+                    if cached_content_hash != compare_hash:
+                        logger.warning(
+                            "⚠️  Data file content changed!\n"
+                            "   Cache is stale, regenerating..."
+                        )
+                        cache_exists = False
 
         except Exception as e:
             logging.debug(f"Cache validation failed ({e}). Regenerating...")
@@ -2046,7 +2086,15 @@ def prepare_data(
                     # scaler) as the completion sentinel — see cache_complete flag.
                     file_stats = os.stat(args.data_path)
                     hash_mode = getattr(args, "cache_validate", "sha256")
-                    content_hash = _compute_file_hash(args.data_path, mode=hash_mode)
+                    if (
+                        precomputed_hash is not None
+                        and precomputed_hash_mode == hash_mode
+                    ):
+                        content_hash = precomputed_hash
+                    else:
+                        content_hash = _compute_file_hash(
+                            args.data_path, mode=hash_mode
+                        )
                     _cache_meta = {
                         "shape": full_shape,
                         "out_dim": out_dim,
@@ -2058,9 +2106,7 @@ def prepare_data(
                             else None
                         ),
                         "target_cache_shape": (num_samples, *target_shape),
-                        "target_cache_nbytes": int(
-                            np.prod((num_samples, *target_shape))
-                        )
+                        "target_cache_nbytes": math.prod((num_samples, *target_shape))
                         * np.dtype(np.float32).itemsize,
                         "data_path": os.path.abspath(args.data_path),
                         "allow_pickle": getattr(args, "allow_pickle", False),
@@ -2075,43 +2121,49 @@ def prepare_data(
 
                     # Create memmap cache
                     if not os.path.exists(CACHE_FILE):
+                        from .preprocessing import _close_memmap
+
                         logger.info("   Writing Memmap Cache (one-time operation)...")
                         fp = np.memmap(
                             CACHE_FILE, dtype="float32", mode="w+", shape=full_shape
                         )
+                        try:
+                            chunk_size = _bounded_batch_size(
+                                full_shape, np.float32, 2000
+                            )
+                            pbar = tqdm(
+                                range(0, num_samples, chunk_size),
+                                desc="Caching",
+                                disable=not accelerator.is_main_process,
+                            )
 
-                        chunk_size = _bounded_batch_size(full_shape, np.float32, 2000)
-                        pbar = tqdm(
-                            range(0, num_samples, chunk_size),
-                            desc="Caching",
-                            disable=not accelerator.is_main_process,
-                        )
+                            for i in pbar:
+                                end = min(i + chunk_size, num_samples)
+                                batch = inp[i:end]
 
-                        for i in pbar:
-                            end = min(i + chunk_size, num_samples)
-                            batch = inp[i:end]
+                                # Handle sparse/dense conversion
+                                if issparse(batch):
+                                    data_chunk = batch.toarray()
+                                elif issparse(batch[0]) or hasattr(batch[0], "toarray"):
+                                    data_chunk = np.stack([x.toarray() for x in batch])
+                                else:
+                                    data_chunk = np.asarray(batch)
+                                data_chunk = _as_finite_float32(data_chunk, "Inputs")
 
-                            # Handle sparse/dense conversion
-                            if issparse(batch):
-                                data_chunk = batch.toarray()
-                            elif issparse(batch[0]) or hasattr(batch[0], "toarray"):
-                                data_chunk = np.stack([x.toarray() for x in batch])
-                            else:
-                                data_chunk = np.asarray(batch)
-                            data_chunk = _as_finite_float32(data_chunk, "Inputs")
+                                # Add channel dimension if needed (handles 1D, 2D, and 3D spatial data)
+                                if data_chunk.ndim == len(full_shape) - 1:
+                                    data_chunk = np.expand_dims(data_chunk, 1)
 
-                            # Add channel dimension if needed (handles 1D, 2D, and 3D spatial data)
-                            if data_chunk.ndim == len(full_shape) - 1:
-                                data_chunk = np.expand_dims(data_chunk, 1)
+                                fp[i:end] = data_chunk
 
-                            fp[i:end] = data_chunk
+                                # Periodic flush to disk
+                                if i % 10000 == 0:
+                                    fp.flush()
 
-                            # Periodic flush to disk
-                            if i % 10000 == 0:
-                                fp.flush()
-
-                        fp.flush()
-                        del fp
+                            fp.flush()
+                        finally:
+                            _close_memmap(fp)
+                            del fp
                         gc.collect()
 
                     # Train/Val split and scaler fitting
@@ -2152,6 +2204,8 @@ def prepare_data(
                         os.replace(scaler_tmp, SCALER_FILE)
 
                     if output_kind == "field" and not os.path.exists(TARGET_CACHE_FILE):
+                        from .preprocessing import _close_memmap
+
                         logger.info("   Writing scaled target memmap cache...")
                         target_full_shape = (num_samples, *target_shape)
                         target_fp = np.memmap(
@@ -2160,17 +2214,20 @@ def prepare_data(
                             mode="w+",
                             shape=target_full_shape,
                         )
-                        target_chunk_size = _bounded_batch_size(
-                            outp.shape, outp.dtype, 256
-                        )
-                        for start in range(0, num_samples, target_chunk_size):
-                            end = min(start + target_chunk_size, num_samples)
-                            target_batch = canonicalize_targets(outp[start:end])
-                            target_fp[start:end] = _as_finite_float32(
-                                scaler.transform(target_batch), "Scaled targets"
+                        try:
+                            target_chunk_size = _bounded_batch_size(
+                                outp.shape, outp.dtype, 256
                             )
-                        target_fp.flush()
-                        del target_fp
+                            for start in range(0, num_samples, target_chunk_size):
+                                end = min(start + target_chunk_size, num_samples)
+                                target_batch = canonicalize_targets(outp[start:end])
+                                target_fp[start:end] = _as_finite_float32(
+                                    scaler.transform(target_batch), "Scaled targets"
+                                )
+                            target_fp.flush()
+                        finally:
+                            _close_memmap(target_fp)
+                            del target_fp
 
                     # Write META_FILE LAST as completion sentinel.
                     _cache_meta["cache_complete"] = True
@@ -2267,7 +2324,7 @@ def prepare_data(
             f"Cache metadata is incomplete: {META_FILE}. Remove the output cache "
             "directory and rerun training."
         )
-    expected_input_bytes = int(np.prod(full_shape)) * np.dtype(np.float32).itemsize
+    expected_input_bytes = math.prod(full_shape) * np.dtype(np.float32).itemsize
     if os.path.getsize(CACHE_FILE) != expected_input_bytes:
         raise RuntimeError(
             f"Input cache has an unexpected size: {CACHE_FILE}. Remove the output "
@@ -2276,7 +2333,7 @@ def prepare_data(
     if output_kind == "field":
         target_cache_shape = (full_shape[0], *target_shape)
         expected_target_bytes = (
-            int(np.prod(target_cache_shape)) * np.dtype(np.float32).itemsize
+            math.prod(target_cache_shape) * np.dtype(np.float32).itemsize
         )
         if (
             not os.path.exists(TARGET_CACHE_FILE)
@@ -2345,7 +2402,12 @@ def prepare_data(
         "worker_init_fn": memmap_worker_init_fn if args.workers > 0 else None,
     }
 
-    train_dl = DataLoader(tr_ds, shuffle=True, **loader_kwargs)
+    drop_last_train = len(tr_ds) > args.batch_size and (
+        len(tr_ds) % args.batch_size == 1
+    )
+    train_dl = DataLoader(
+        tr_ds, shuffle=True, drop_last=drop_last_train, **loader_kwargs
+    )
     val_dl = DataLoader(val_ds, shuffle=False, **loader_kwargs)
 
     # Return spatial shape (H, W) for model initialization
