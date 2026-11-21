@@ -23,6 +23,7 @@ Version: 1.0.0
 """
 
 import argparse
+import json
 import logging
 import math
 import re
@@ -91,6 +92,19 @@ def _normalize_yaml_bool_choices(config: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def parse_model_kwargs(value: str) -> dict[str, Any]:
+    """Parse the CLI architecture overrides; YAML supplies a mapping directly."""
+    try:
+        overrides = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError(
+            f"model_kwargs must be a JSON object: {exc}"
+        ) from exc
+    if not isinstance(overrides, dict):
+        raise argparse.ArgumentTypeError("model_kwargs must be a JSON object.")
+    return overrides
+
+
 def load_config(config_path: str | Path) -> dict[str, Any]:
     """
     Load configuration from a YAML file.
@@ -152,7 +166,10 @@ def _flatten_config(
         if key == "_metadata":
             continue
         new_key = f"{parent_key}{sep}{key}" if parent_key else key
-        if isinstance(value, dict):
+        if isinstance(value, dict) and "model_kwargs" not in (
+            new_key,
+            _strip_known_section_prefix(new_key),
+        ):
             # Recursively flatten, passing full accumulated key path
             items.extend(_flatten_config(value, new_key, sep).items())
         else:
@@ -424,6 +441,7 @@ def _config_keys(
         return keys | internal_keys
     return {
         "model",
+        "model_kwargs",
         "import",
         "import_modules",
         "pretrained",
@@ -534,6 +552,13 @@ def validate_config(
             warnings.append(
                 f"Invalid {key}='{effective_config[key]}'. Valid options: {valid_values}"
             )
+
+    if "model_kwargs" in effective_config:
+        overrides = effective_config["model_kwargs"]
+        if not isinstance(overrides, dict) or any(
+            not isinstance(key, str) for key in overrides
+        ):
+            warnings.append("model_kwargs must be a mapping with string keys.")
 
     # Validate argparse choice-constrained options (precision, mixed_precision,
     # cache_validate, constraint_reduction, ...). merge bypasses argparse, so

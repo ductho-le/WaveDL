@@ -1,5 +1,10 @@
 """Focused tests for dense spatial model outputs."""
 
+import argparse
+import logging
+import pickle
+from pathlib import Path
+
 import pytest
 import torch
 
@@ -396,3 +401,99 @@ def test_inversionnet_resize_default_width_onnx_validation(tmp_path):
         include_denorm=True,
         validate=True,
     )
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_inversionnet_model_kwargs_checkpoint_roundtrip(tmp_path, legacy):
+    """Overrides round-trip; legacy metadata without model_kwargs uses defaults."""
+    from wavedl.test import load_checkpoint
+    from wavedl.train import (
+        _build_model_for_targets,
+        _save_best_checkpoint,
+        _validate_resume_metadata,
+    )
+    from wavedl.utils.targets import SpatialTargetScaler
+
+    model_name = "inversionnet_resize"
+    in_shape = (16, 16)
+    out_shape = (1, 7, 7)
+    overrides = (
+        {}
+        if legacy
+        else {
+            "base_channels": 2,
+            "bottleneck_grid": 2,
+            "dropout_rate": 0.2,
+            "norm": "bn",
+            "output_activation": "tanh",
+            "upsample_mode": "nearest",
+        }
+    )
+    scaler = SpatialTargetScaler().fit(torch.randn(4, *out_shape).numpy())
+    model, target_shape = _build_model_for_targets(
+        model_name,
+        in_shape,
+        out_shape[0],
+        scaler,
+        model_kwargs=overrides,
+    )
+    assert target_shape == out_shape
+    args = argparse.Namespace(
+        output_dir=str(tmp_path), model=model_name, model_kwargs=overrides
+    )
+
+    class SavingAccelerator:
+        is_main_process = True
+        num_processes = 1
+
+        @staticmethod
+        def save_state(path, **_kwargs):
+            Path(path).mkdir()
+            torch.save(model.state_dict(), Path(path) / "model.bin")
+
+        @staticmethod
+        def wait_for_everyone():
+            pass
+
+    _save_best_checkpoint(
+        SavingAccelerator(),
+        model,
+        args,
+        0,
+        0.5,
+        in_shape,
+        1,
+        scaler,
+        logging.getLogger(__name__),
+    )
+    checkpoint = tmp_path / "best_checkpoint"
+    meta_path = checkpoint / "training_meta.pkl"
+    with meta_path.open("rb") as file:
+        metadata = pickle.load(file)
+    assert metadata["model_kwargs"] == overrides
+    if legacy:
+        del metadata["model_kwargs"]
+        with meta_path.open("wb") as file:
+            pickle.dump(metadata, file)
+
+    _validate_resume_metadata(
+        metadata, model_name, in_shape, 1, out_shape, model_kwargs=overrides
+    )
+    with pytest.raises(ValueError, match=r"Checkpoint is incompatible.*model_kwargs"):
+        _validate_resume_metadata(
+            metadata,
+            model_name,
+            in_shape,
+            1,
+            out_shape,
+            model_kwargs={"base_channels": 4},
+        )
+
+    # load_checkpoint loads the state dict strictly. Compare predictions as well,
+    # since options such as output_activation and upsample_mode do not affect it.
+    rebuilt, _ = load_checkpoint(checkpoint, in_shape, 1)
+    model.eval()
+    with torch.no_grad():
+        sample = torch.randn(1, 1, *in_shape)
+        torch.testing.assert_close(rebuilt(sample), model(sample))
+    assert rebuilt.dropout_rate == model.dropout_rate

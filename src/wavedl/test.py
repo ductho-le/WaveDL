@@ -63,6 +63,7 @@ from tqdm.auto import tqdm  # noqa: E402
 
 # Local imports
 from wavedl.models import build_model, get_model, list_models  # noqa: E402
+from wavedl.models.registry import validate_model_kwargs  # noqa: E402
 from wavedl.utils import (  # noqa: E402
     FIGURE_DPI,
     SpatialTargetScaler,
@@ -478,7 +479,8 @@ def load_checkpoint(
             f"Requested in_channels={in_channels} differs from checkpoint in_channels={checkpoint_channels}."
         )
     validate_input_channels(model_class, in_channels, model_name)
-    model_kwargs: dict[str, Any] = {"pretrained": False, "in_channels": in_channels}
+    model_kwargs = validate_model_kwargs(model_name, (meta or {}).get("model_kwargs"))
+    model_kwargs.update(pretrained=False, in_channels=in_channels)
     if out_shape is not None and len(out_shape) > 1:
         model_kwargs["out_shape"] = out_shape
     model = build_model(

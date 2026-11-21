@@ -35,7 +35,13 @@ import pytest
 import torch
 
 from wavedl.models.cnn import CNN
-from wavedl.models.registry import build_model, get_model, list_models
+from wavedl.models.registry import (
+    MODEL_REGISTRY,
+    build_model,
+    get_model,
+    list_models,
+    validate_model_kwargs,
+)
 
 
 # Mark all tests in this module as slow (run with -m slow)
@@ -453,6 +459,52 @@ class TestModelRegistry:
     def test_build_model(self):
         model = build_model("cnn", in_shape=(256,), out_size=3)
         assert model is not None
+
+
+def test_model_kwargs_cli_and_yaml_validation(tmp_path, monkeypatch):
+    from wavedl.train import parse_args
+    from wavedl.utils.config import load_config, merge_config_with_args, validate_config
+
+    overrides = {"base_channels": 8, "norm": "none"}
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "model: inversionnet\nmodel_kwargs:\n  base_channels: 8\n  norm: none\n"
+    )
+    config = load_config(path)
+    monkeypatch.setattr("sys.argv", ["wavedl-train"])
+    args, parser = parse_args()
+    assert validate_config(config, parser=parser) == []
+    merge_config_with_args(config, args, parser=parser)
+    assert validate_model_kwargs(args.model, args.model_kwargs) == overrides
+
+    monkeypatch.setattr(
+        "sys.argv", ["wavedl-train", "--model_kwargs", '{"base_channels": 2}']
+    )
+    args, parser = parse_args()
+    merge_config_with_args(config, args, parser=parser)
+    assert args.model_kwargs == {"base_channels": 2}
+    assert validate_config({"model_kwargs": "not a mapping"}, parser=parser) == [
+        "model_kwargs must be a mapping with string keys."
+    ]
+
+    with pytest.raises(
+        ValueError, match="Unknown model_kwargs for model 'inversionnet': base_chanel"
+    ):
+        validate_model_kwargs("inversionnet", {"base_chanel": 2})
+    with pytest.raises(ValueError, match=r"Unknown model_kwargs.*in_channels"):
+        validate_model_kwargs("inversionnet", {"in_channels": 2})
+
+
+def test_model_kwargs_support_vector_and_custom_model_options(monkeypatch):
+    class CustomModel(torch.nn.Module):
+        def __init__(self, in_shape, out_size, width=4, **kwargs):
+            super().__init__()
+
+    monkeypatch.setitem(MODEL_REGISTRY, "custom_test_model", CustomModel)
+    assert validate_model_kwargs("cnn", {"base_channels": 12}) == {"base_channels": 12}
+    assert validate_model_kwargs("custom_test_model", {"width": 8}) == {"width": 8}
+    with pytest.raises(ValueError, match=r"Unknown model_kwargs.*other"):
+        validate_model_kwargs("custom_test_model", {"other": True})
 
 
 # ==============================================================================

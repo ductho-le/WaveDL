@@ -126,6 +126,7 @@ from sklearn.metrics import r2_score
 from tqdm.auto import tqdm
 
 from wavedl.models import build_model, get_model, list_models
+from wavedl.models.registry import validate_model_kwargs
 from wavedl.utils import (
     FIGURE_DPI,
     MetricTracker,
@@ -150,6 +151,7 @@ from wavedl.utils import (
     sync_tensor,
     wait_for_everyone,
 )
+from wavedl.utils.config import parse_model_kwargs
 from wavedl.utils.preprocessing import (
     add_preprocessing_arguments,
     configure_tf32,
@@ -229,16 +231,18 @@ def _build_model_for_targets(
     in_shape: tuple[int, ...],
     out_dim: int,
     scaler: Any,
+    *,
+    model_kwargs: dict[str, Any] | None = None,
     **kwargs,
 ) -> tuple[torch.nn.Module, tuple[int, ...]]:
     """Build a vector or field model from the fitted target scaler."""
 
     target_shape = scaler_target_shape(scaler, out_dim)
-    model_kwargs = dict(kwargs)
+    build_kwargs = {**validate_model_kwargs(model_name, model_kwargs), **kwargs}
     model_class = get_model(model_name)
-    in_channels = model_kwargs.get("in_channels", 1)
+    in_channels = build_kwargs.get("in_channels", 1)
     validate_input_channels(model_class, in_channels, model_name)
-    model_kwargs["in_channels"] = in_channels
+    build_kwargs["in_channels"] = in_channels
     if len(target_shape) > 1 and not getattr(
         model_class, "supports_spatial_output", False
     ):
@@ -256,9 +260,9 @@ def _build_model_for_targets(
             "as --model cnn, or provide (N,H,W)/(N,C,H,W) targets."
         )
     if len(target_shape) > 1:
-        model_kwargs["out_shape"] = target_shape
+        build_kwargs["out_shape"] = target_shape
 
-    model = build_model(model_name, in_shape=in_shape, out_size=out_dim, **model_kwargs)
+    model = build_model(model_name, in_shape=in_shape, out_size=out_dim, **build_kwargs)
     return model, target_shape
 
 
@@ -272,6 +276,7 @@ def _validate_resume_metadata(
     preprocessing: dict[str, Any] | None = None,
     scheduler_name: str | None = None,
     optimizer_name: str | None = None,
+    model_kwargs: dict[str, Any] | None = None,
 ) -> None:
     """Reject checkpoints that describe a different model, target, or schedule contract."""
 
@@ -308,6 +313,15 @@ def _validate_resume_metadata(
             or preprocessing.get("target_scaling", "standard") != "standard"
         ):
             mismatches.append("preprocessing differs from legacy defaults")
+    if model_kwargs is not None:
+        saved_kwargs = metadata.get("model_kwargs", {})
+        if saved_kwargs != model_kwargs:
+            get_defaults = getattr(get_model(model_name), "get_default_config", None)
+            defaults = get_defaults() if callable(get_defaults) else {}
+            if {**defaults, **saved_kwargs} != {**defaults, **model_kwargs}:
+                mismatches.append(
+                    f"model_kwargs={saved_kwargs!r} (current {model_kwargs!r})"
+                )
     if scheduler_name is not None and metadata.get("scheduler") not in (
         None,
         scheduler_name,
@@ -487,6 +501,13 @@ def parse_args() -> tuple[argparse.Namespace, argparse.ArgumentParser]:
         action="store_true",
         help="Use ImageNet pretrained weights (only for *_pretrained model variants). "
         "Default: train from scratch.",
+    )
+
+    parser.add_argument(
+        "--model_kwargs",
+        type=parse_model_kwargs,
+        default={},
+        help='Architecture overrides as a JSON object, e.g. {"base_channels": 16}.',
     )
 
     # Configuration File
@@ -958,6 +979,7 @@ def _save_best_checkpoint(
                     "in_shape": in_shape,
                     "in_channels": vars(args).get("in_channels", 1),
                     "preprocessing": vars(args).get("preprocessing", {}),
+                    "model_kwargs": vars(args).get("model_kwargs", {}),
                     "scheduler": vars(args).get("scheduler"),
                     "optimizer": vars(args).get("optimizer"),
                     "out_dim": out_dim,
@@ -1036,6 +1058,7 @@ def train_single_trial(
     *,
     grad_clip: float = 1.0,
     cache_dir: str | None = None,
+    model_kwargs: dict[str, Any] | None = None,
 ) -> dict:
     """
     Single-trial training function for in-process HPO.
@@ -1047,6 +1070,7 @@ def train_single_trial(
     Args:
         data_path: Path to training data (NPZ, HDF5, MAT)
         model_name: Model architecture name (from registry)
+        model_kwargs: Optional model-specific architecture overrides
         lr: Learning rate
         batch_size: Batch size
         epochs: Maximum epochs
@@ -1181,6 +1205,7 @@ def train_single_trial(
                 in_shape,
                 out_dim,
                 target_scaler,
+                model_kwargs=model_kwargs,
                 pretrained=False,
                 in_channels=getattr(args, "in_channels", 1),
             )
@@ -1449,6 +1474,7 @@ def main():
     if args.fresh and args.resume:
         parser.error("--fresh and --resume are mutually exclusive.")
     try:
+        args.model_kwargs = validate_model_kwargs(args.model, args.model_kwargs)
         parsed_betas, parsed_loss_weights, parsed_milestones = _parse_training_lists(
             args
         )
@@ -1587,6 +1613,7 @@ def main():
                 loss_weights=parsed_loss_weights,
                 huber_delta=args.huber_delta,
                 pretrained=args.pretrained,
+                model_kwargs=args.model_kwargs,
                 optimizer_name=args.optimizer,
                 scheduler_name=args.scheduler,
                 scheduler_patience=args.scheduler_patience,
@@ -1905,6 +1932,7 @@ def _run_training(args, accelerator):
         in_shape,
         out_dim,
         scaler,
+        model_kwargs=getattr(args, "model_kwargs", {}),
         pretrained=args.pretrained,
         in_channels=getattr(args, "in_channels", 1),
     )
@@ -2127,6 +2155,7 @@ def _run_training(args, accelerator):
                     preprocessing=getattr(args, "preprocessing", None),
                     scheduler_name=args.scheduler,
                     optimizer_name=args.optimizer,
+                    model_kwargs=getattr(args, "model_kwargs", {}),
                 )
 
             # Detect checkpoint format: standalone (from KeyboardInterrupt)
@@ -2734,6 +2763,7 @@ def _run_training(args, accelerator):
                             "in_shape": in_shape,
                             "in_channels": vars(args).get("in_channels", 1),
                             "preprocessing": vars(args).get("preprocessing", {}),
+                            "model_kwargs": vars(args).get("model_kwargs", {}),
                             "scheduler": args.scheduler,
                             "optimizer": args.optimizer,
                             "out_dim": out_dim,
@@ -2805,6 +2835,7 @@ def _run_training(args, accelerator):
                         "in_shape": in_shape,
                         "in_channels": vars(args).get("in_channels", 1),
                         "preprocessing": vars(args).get("preprocessing", {}),
+                        "model_kwargs": vars(args).get("model_kwargs", {}),
                         "scheduler": args.scheduler,
                         "optimizer": args.optimizer,
                         "out_dim": out_dim,

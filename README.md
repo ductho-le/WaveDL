@@ -300,6 +300,24 @@ channels to keep result directories manageable.
 
 Use `--model unet_field`, `--model inversionnet`, or `--model inversionnet_resize` for supervised, pixel-wise prediction of an elasticity, stiffness, velocity, density, or similar 2D property map. These models are field-only; continue using `unet_regression` or another vector architecture for `(N, T)` targets. `unet_field` uses skip-connected single-channel inputs (`(H_in, W_in)`), while `inversionnet` (transposed-convolution decoder) and `inversionnet_resize` (resize-convolution decoder) are skip-free 2D encoder-decoders supporting both single-channel and multi-channel (`--input_channels`) inputs as well as arbitrary input/output aspect ratios.
 
+Use `--model_kwargs '{"base_channels": 16, "bottleneck_grid": 2}'` to override
+model-specific defaults, or set a YAML mapping:
+
+```yaml
+model: inversionnet_resize
+model_kwargs:
+  base_channels: 16
+  bottleneck_grid: 2
+  upsample_mode: nearest
+```
+
+This option works with other models too; accepted keys depend on the selected
+architecture. For InversionNet, the other options include `dropout_rate`, `norm`,
+and `output_activation`. Model overrides are saved in checkpoints and restored
+for inference and ONNX export. Use matching overrides to resume training.
+For HPO, `--model_kwargs` applies the same fixed overrides to every selected
+model, so each must accept the supplied keys.
+
 Accepted target layouts are:
 
 | Stored target layout | Meaning | Model layout |
@@ -663,6 +681,7 @@ print(f'\n✓ All {len(urls) + len(timm_models)} pretrained weight files cached!
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `--model` | `cnn` | Model architecture |
+| `--model_kwargs` | `{}` | Model-specific architecture overrides (CLI JSON object or YAML mapping) |
 | `--import` | - | Python file(s) to import for custom models (supports multiple) |
 | `--batch_size` | `128` | Per-GPU batch size |
 | `--lr` | `1e-3` | Learning rate |

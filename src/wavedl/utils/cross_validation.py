@@ -407,6 +407,8 @@ def run_cross_validation(
     milestones: list[int] | None = None,
     warmup_epochs: int = 5,
     precision: str = "no",
+    *,
+    model_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Run K-fold cross-validation.
@@ -415,6 +417,7 @@ def run_cross_validation(
         X: Input data
         y: Target data
         model_name: Model architecture name
+        model_kwargs: Optional model-specific architecture overrides
         in_shape: Input shape (excluding batch and channel)
         out_size: Number of vector targets or dense field channels
         out_shape: Canonical per-sample target shape, e.g. ``(C,H,W)``
@@ -552,7 +555,10 @@ def run_cross_validation(
 
     # Import factories
     from wavedl.models import build_model, get_model
+    from wavedl.models.registry import validate_model_kwargs
     from wavedl.utils import get_loss, get_optimizer, get_scheduler
+
+    model_kwargs = validate_model_kwargs(model_name, model_kwargs)
 
     # Run folds
     fold_results = []
@@ -622,17 +628,17 @@ def run_cross_validation(
             raise ValueError(
                 f"Model '{model_name}' requires dense field targets, got {out_shape}."
             )
-        model_kwargs: dict[str, Any] = {}
+        build_kwargs = dict(model_kwargs)
         if len(out_shape) > 1:
-            model_kwargs["out_shape"] = out_shape
+            build_kwargs["out_shape"] = out_shape
         if in_channels > 1:
-            model_kwargs["in_channels"] = in_channels
+            build_kwargs["in_channels"] = in_channels
         model = build_model(
             model_name,
             in_shape=in_shape,
             out_size=out_size,
             pretrained=pretrained,
-            **model_kwargs,
+            **build_kwargs,
         )
         model = model.to(device)
 
@@ -704,6 +710,7 @@ def run_cross_validation(
                     "epoch": results.get("best_epoch") or results["epochs_trained"],
                     "best_val_loss": results["best_val_loss"],
                     "model_name": model_name,
+                    "model_kwargs": model_kwargs,
                     "in_shape": in_shape,
                     "in_channels": in_channels,
                     "out_dim": out_size,

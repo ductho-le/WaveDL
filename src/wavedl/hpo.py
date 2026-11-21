@@ -47,7 +47,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+from wavedl.models.registry import validate_model_kwargs
 from wavedl.utils import setup_hpc_cache_dirs
+from wavedl.utils.config import parse_model_kwargs
 
 
 setup_hpc_cache_dirs()
@@ -291,7 +293,12 @@ def create_objective(args):
         args.models,
         quick=args.quick,
         medium=args.medium,
+        in_channels=vars(args).get("in_channels", 1),
     )
+    model_kwargs = vars(args).get("model_kwargs", {})
+    if model_kwargs:
+        for model in models:
+            validate_model_kwargs(model, model_kwargs)
 
     # Lease actual visible device IDs. Round-robin trial numbers can assign a
     # new trial to a GPU whose earlier (slower) trial is still running.
@@ -373,6 +380,8 @@ def create_objective(args):
             from wavedl.train import train_single_trial
 
             trial_kwargs = {}
+            if model_kwargs:
+                trial_kwargs["model_kwargs"] = model_kwargs
             if shared_cache_dir is not None:
                 trial_kwargs["cache_dir"] = shared_cache_dir
             hpo_prec = getattr(args, "precision", None)
@@ -465,6 +474,8 @@ def create_objective(args):
             "--workers",
             "0",
         ]
+        if model_kwargs:
+            cmd.extend(["--model_kwargs", json.dumps(model_kwargs)])
         precision = getattr(args, "precision", None)
         if isinstance(precision, str) and precision in {"bf16", "fp16", "no"}:
             cmd.extend(["--precision", precision])
@@ -685,6 +696,12 @@ Examples:
         ),
     )
     parser.add_argument(
+        "--model_kwargs",
+        type=parse_model_kwargs,
+        default={},
+        help="Fixed architecture overrides as a JSON object, valid for all selected models.",
+    )
+    parser.add_argument(
         "--optimizers",
         nargs="+",
         default=None,
@@ -793,6 +810,9 @@ Examples:
             medium=args.medium,
             in_channels=args.in_channels,
         )
+        if args.model_kwargs:
+            for model in args.models:
+                validate_model_kwargs(model, args.model_kwargs)
     except (KeyError, OSError, ValueError) as error:
         parser.error(str(error))
 
@@ -904,6 +924,8 @@ Examples:
             "inprocess": args.inprocess,
             "import_modules": args.import_modules,
         }
+        if args.model_kwargs:
+            signature["model_kwargs"] = args.model_kwargs
         prior_signature = study.user_attrs.get("wavedl_signature")
         if (prior_signature is not None and prior_signature != signature) or (
             study.trials and prior_signature is None
@@ -1019,6 +1041,8 @@ Examples:
         "study_name": args.study_name,
     }
 
+    if args.model_kwargs:
+        results["model_kwargs"] = args.model_kwargs
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
@@ -1040,6 +1064,8 @@ Examples:
         )
     if args.allow_pickle:
         cmd_parts.append("--allow_pickle")
+    if args.model_kwargs:
+        cmd_parts.append(f"--model_kwargs {shlex.quote(json.dumps(args.model_kwargs))}")
     for key, value in study.best_params.items():
         cmd_parts.append(f"--{key} {shlex.quote(str(value))}")
     if "patience" in study.best_params:

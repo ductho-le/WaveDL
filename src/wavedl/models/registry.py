@@ -8,7 +8,10 @@ This module has no dependencies on other model modules to prevent circular impor
 Author: Ductho Le (ductho.le@outlook.com)
 """
 
+from collections.abc import Mapping
+from inspect import Parameter, signature
 from numbers import Integral
+from typing import Any
 
 import torch.nn as nn
 
@@ -85,6 +88,53 @@ def list_models() -> list[str]:
         Sorted list of model names
     """
     return sorted(MODEL_REGISTRY.keys())
+
+
+# These are controlled by dataset geometry or by the dedicated --pretrained flag.
+_RESERVED_MODEL_KWARGS = {
+    "in_shape",
+    "out_size",
+    "out_shape",
+    "in_channels",
+    "pretrained",
+}
+
+
+def validate_model_kwargs(
+    name: str, overrides: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Validate architecture overrides separately from pipeline-owned arguments."""
+    if overrides is None:
+        return {}
+    if not isinstance(overrides, Mapping) or any(
+        not isinstance(key, str) for key in overrides
+    ):
+        raise ValueError("model_kwargs must be a mapping with string keys.")
+    if not overrides:
+        return {}
+
+    model_class = get_model(name)
+    get_defaults = getattr(model_class, "get_default_config", None)
+    defaults = get_defaults() if callable(get_defaults) else {}
+    allowed = (
+        set(defaults)
+        if defaults
+        else {
+            key
+            for key, param in signature(model_class).parameters.items()
+            if param.kind in (Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY)
+            and not key.startswith("_")
+        }
+    )
+    allowed -= _RESERVED_MODEL_KWARGS
+    unknown = sorted(overrides.keys() - allowed)
+    if unknown:
+        raise ValueError(
+            f"Unknown model_kwargs for model '{name}': {', '.join(unknown)}. "
+            f"Allowed keys: {', '.join(sorted(allowed)) or 'none'}. "
+            "Input/output shapes and channels are set from data; use --pretrained for weight initialization."
+        )
+    return dict(overrides)
 
 
 def build_model(
