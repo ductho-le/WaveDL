@@ -78,16 +78,18 @@ class TestGUIWorkspace(unittest.TestCase):
             ("/style.css", "text/css; charset=utf-8"),
             ("/app.js", "text/javascript; charset=utf-8"),
         ):
-            with self.subTest(path=path):
-                with urlopen(
+            with (
+                self.subTest(path=path),
+                urlopen(
                     f"http://127.0.0.1:{self.server.server_port}{path}", timeout=5
-                ) as response:
-                    content = response.read()
-                    self.assertEqual(response.status, 200)
-                    self.assertEqual(response.headers["Content-Type"], content_type)
-                    self.assertEqual(response.headers["Cache-Control"], "no-store")
-                    self.assertEqual(int(response.headers["Content-Length"]), len(content))
-                    self.assertTrue(content.strip())
+                ) as response,
+            ):
+                content = response.read()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.headers["Content-Type"], content_type)
+                self.assertEqual(response.headers["Cache-Control"], "no-store")
+                self.assertEqual(int(response.headers["Content-Length"]), len(content))
+                self.assertTrue(content.strip())
         with self.assertRaises(HTTPError) as raised:
             self.request("/secret.py")
         self.assertEqual(raised.exception.code, 404)

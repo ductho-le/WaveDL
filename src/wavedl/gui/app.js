@@ -996,7 +996,14 @@ function renderYamlPreview() {
 
 function syncFromForm() {
   document.querySelectorAll('input[inputmode="decimal"]').forEach(input => {
-    input.value = input.value.replace(/,/g, ".");
+    if (input.value.includes(",")) {
+      const start = input.selectionStart;
+      const end = input.selectionEnd;
+      input.value = input.value.replace(/,/g, ".");
+      if (start !== null && end !== null && document.activeElement === input) {
+        input.setSelectionRange(start, end);
+      }
+    }
   });
   readDOMToState();
   updateConditionalFields();

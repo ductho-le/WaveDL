@@ -38,8 +38,10 @@ def main():
     np.testing.assert_allclose(
         scaler.inverse_transform(scaler.transform(values)), values, atol=1e-5
     )
-    if not files("wavedl.gui").joinpath("index.html").is_file():
-        raise RuntimeError("Packaged wavedl.gui/index.html is missing")
+    gui_resources = files("wavedl.gui")
+    for asset_name in ("index.html", "style.css", "app.js"):
+        if not gui_resources.joinpath(asset_name).is_file():
+            raise RuntimeError(f"Packaged wavedl.gui/{asset_name} is missing")
     server = ThreadingHTTPServer(("127.0.0.1", 0), gui_app.WaveDLGUIHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -49,6 +51,19 @@ def main():
             html = resp.read().decode("utf-8")
         if "WaveDL" not in html:
             raise RuntimeError("GUI index page did not render expected HTML")
+        for asset_path, expected_ctype in (
+            ("/style.css", "text/css"),
+            ("/app.js", "text/javascript"),
+        ):
+            with urlopen(f"{base_url}{asset_path}", timeout=5) as resp:
+                body = resp.read()
+                if not body.strip():
+                    raise RuntimeError(f"GUI asset {asset_path} returned empty body")
+                ctype = resp.headers.get("Content-Type", "")
+                if expected_ctype not in ctype:
+                    raise RuntimeError(
+                        f"Unexpected Content-Type for {asset_path}: {ctype!r}"
+                    )
         token_match = re.search(r'<meta name="wavedl-token" content="([^"]+)"', html)
         if not token_match or token_match.group(1) != gui_app.SESSION_TOKEN:
             raise RuntimeError("GUI index page missing expected session token")
