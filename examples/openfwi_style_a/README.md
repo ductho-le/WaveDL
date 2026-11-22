@@ -106,9 +106,12 @@ prediction, and signed error (prediction minus ground truth) with sample MAE.
 | `plot_sample.py` | Plots shot gathers, ground truth, prediction, and signed error for a test sample |
 | `training_history.csv` | Per-epoch training and evaluation metrics from the 120-epoch reference run |
 | `training_curves.png` | Training loss, evaluation loss, and cosine learning-rate schedule across 120 epochs |
+| `sample_prediction.png` | Held-out Style-A test sample reconstruction (shot gathers, ground truth, U-Net prediction, and error map) |
 | `test_results/openfwi_scores.json` | Epoch-120 test metrics over all 7,000 held-out Style-A velocity maps |
 
 Checkpoint weights (~125 MB) are omitted from the repository.
+
+![Sample velocity reconstruction](sample_prediction.png)
 
 ![Training curves](training_curves.png)
 
