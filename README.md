@@ -36,9 +36,11 @@
 
 WaveDL is a **deep learning framework** built for **wave-based inverse problems** — from ultrasonic NDE and geophysics to biomedical tissue characterization. It provides a robust, scalable training pipeline for mapping multi-dimensional data (1D/2D/3D) to physical quantities or dense 2D property fields.
 
-<pre><code><samp><small>Input: Waveforms, spectrograms, B-scans, dispersion curves, ...
+```
+Input: Waveforms, spectrograms, B-scans, dispersion curves, ...
    ↓
-Output: Material properties, defect dimensions, elasticity/velocity maps, ...</small></samp></code></pre>
+Output: Material properties, defect dimensions, elasticity/velocity maps, ...
+```
 
 The framework handles the engineering challenges of large-scale deep learning — big datasets, distributed training, and HPC deployment — so you can focus on the science, not the infrastructure.
 
@@ -151,16 +153,20 @@ Deploy models anywhere:
 
 ### Installation
 
-<pre><code><samp><small>pip install --upgrade wavedl</small></samp></code></pre>
+```bash
+pip install --upgrade wavedl
+```
 
 Requires **Python 3.11+** (unreleased source requires PyTorch 2.13+, torchvision 0.28+, and ONNX 1.22+). Includes training, inference, HPO, WaveDL Studio, and ONNX export.
 
 <details>
 <summary><b>Install from Source (Development) &amp; Security Notes</b></summary>
 
-<pre><code><samp><small>git clone https://github.com/ductho-le/WaveDL.git
+```bash
+git clone https://github.com/ductho-le/WaveDL.git
 cd WaveDL
-pip install -e ".[dev]"</small></samp></code></pre>
+pip install -e ".[dev]"
+```
 
 - Contributor setup & pre-commit hooks: [CONTRIBUTING.md](https://github.com/ductho-le/WaveDL/blob/main/.github/CONTRIBUTING.md)
 - Vulnerability reporting & safe deserialization boundaries: [SECURITY.md](https://github.com/ductho-le/WaveDL/blob/main/.github/SECURITY.md)
@@ -171,14 +177,17 @@ pip install -e ".[dev]"</small></samp></code></pre>
 
 #### Configuration & Training GUI (WaveDL Studio)
 
-<pre><code><samp><small>cd /path/to/your/project
-wavedl-gui</small></samp></code></pre>
+```bash
+cd /path/to/your/project
+wavedl-gui
+```
 
 Opens a bundled, zero-dependency local web workspace at `http://127.0.0.1:7860` to edit `./config.yaml`, browse local files, run `wavedl-train` with live logs, and evaluate or export ONNX models via `wavedl-test`. Use `wavedl-gui --port 8080 --no-browser` for SSH tunneling (`python -m wavedl.gui` also works).
 
 #### Training
 
-<pre><code><samp><small># Vector or dense 2D field regression (auto-detects GPUs &amp; HPC)
+```bash
+# Vector or dense 2D field regression (auto-detects GPUs & HPC)
 wavedl-train --model cnn --data_path train_data.npz --output_dir results
 wavedl-train --model unet_field --data_path field_data.npz \
   --batch_size 4 --output_dir field_results
@@ -193,7 +202,8 @@ wavedl-train --model inversionnet_resize \
 wavedl-train --model cnn --data_path train.npz --output_dir results --fresh
 
 # List all 74 built-in models (shows vector vs. dense 2D field support)
-wavedl-train --list_models</small></samp></code></pre>
+wavedl-train --list_models
+```
 
 <details>
 <summary><b>Auto-Resume, HPC Environment &amp; Direct Accelerate Launch</b></summary>
@@ -203,20 +213,24 @@ wavedl-train --list_models</small></samp></code></pre>
 - **Isolation:** `--fresh` archives prior artifacts under `previous_runs/` and cannot be combined with `--resume`. Use separate output/cache directories for concurrent runs.
 - **Direct `accelerate launch`** (for custom multi-node setups):
 
-<pre><code><samp><small>accelerate launch -m wavedl.train --model cnn --data_path train.npz --output_dir results
-accelerate launch --num_machines 2 --main_process_ip &lt;ip&gt; -m wavedl.train --model cnn --data_path train.npz</small></samp></code></pre>
+```bash
+accelerate launch -m wavedl.train --model cnn --data_path train.npz --output_dir results
+accelerate launch --num_machines 2 --main_process_ip <ip> -m wavedl.train --model cnn --data_path train.npz
+```
 
 </details>
 
 #### Testing & Inference
 
-<pre><code><samp><small># Evaluate, plot, and save physical-unit predictions (CSV or predictions.npz)
+```bash
+# Evaluate, plot, and save physical-unit predictions (CSV or predictions.npz)
 wavedl-test --checkpoint results/best_checkpoint --data_path test_data.npz \
   --plot --plot_format png pdf --save_predictions --output_dir test_results
 
-# Export to ONNX with embedded preprocessing &amp; de-normalization
+# Export to ONNX with embedded preprocessing & de-normalization
 wavedl-test --checkpoint results/best_checkpoint --data_path test_data.npz \
-  --export onnx --export_path model.onnx</small></samp></code></pre>
+  --export onnx --export_path model.onnx
+```
 
 Model architecture, `model_kwargs`, and saved input/target preprocessing are restored automatically from checkpoint metadata. Console output reports physical-unit R², Pearson r, RMSE, and MAE (plus relative L2 error for dense 2D fields); `--data_path` also accepts `.txt` paired-shard manifests, `--param_names` customizes labels, `--no_tf32` enforces strict FP32, and `--input_channels 1` overrides detection for shallow 3D volumes (e.g., `8×128×128`).
 
@@ -234,15 +248,18 @@ Use `--model unet_field` (skip-connected, single-channel), `--model inversionnet
 
 **Model overrides (`--model_kwargs`):** Override model-specific defaults via JSON on the CLI or a YAML mapping (works with any registered model; e.g., `dropout_rate`, `norm`, `output_activation`, `base_channels`, `bottleneck_grid`, `upsample_mode` for InversionNet). Overrides are saved in checkpoints, restored for inference/ONNX export, verified on resume, and supported across CV and HPO:
 
-<pre><code><samp><small>model: inversionnet_resize
+```yaml
+model: inversionnet_resize
 model_kwargs:
   base_channels: 16
   bottleneck_grid: 2
-  upsample_mode: nearest</small></samp></code></pre>
+  upsample_mode: nearest
+```
 
 **Synthetic unequal-grid example:**
 
-<pre><code><samp><small>import numpy as np
+```python
+import numpy as np
 
 rng = np.random.default_rng(7)
 wave_images = rng.normal(size=(80, 64, 96)).astype(np.float32)
@@ -252,11 +269,14 @@ np.savez(
     "field_data.npz",
     input_train=wave_images[:64], output_train=property_maps[:64],
     input_test=wave_images[64:], output_test=property_maps[64:],
-)</small></samp></code></pre>
+)
+```
 
-<pre><code><samp><small>wavedl-train --model unet_field --data_path field_data.npz --batch_size 4 --epochs 5 --output_dir field_run
+```bash
+wavedl-train --model unet_field --data_path field_data.npz --batch_size 4 --epochs 5 --output_dir field_run
 wavedl-test --checkpoint field_run/best_checkpoint --data_path field_data.npz \
-  --param_names property --save_predictions --plot --output_dir field_results</small></samp></code></pre>
+  --param_names property --save_predictions --plot --output_dir field_results
+```
 
 - **Memory & storage:** Dense decoders require more GPU memory (start with `--batch_size 1–8`) and write `target_data_cache.dat` (`~N × C × H_out × W_out × 4` bytes) under `--output_dir` or `--cache_dir`.
 - **Scope:** Supervised dense inversion learns direct mappings from paired data (usable directly or as an initial model for iterative FWI; an iterative wave-equation solver is not part of WaveDL).
@@ -277,7 +297,8 @@ wavedl-test --checkpoint field_run/best_checkpoint --data_path field_data.npz \
 
 **Step 1: Create `my_model.py`**
 
-<pre><code><samp><small>import torch.nn as nn
+```python
+import torch.nn as nn
 import torch.nn.functional as F
 from wavedl.models import BaseModel, register_model
 
@@ -298,11 +319,14 @@ class MyModel(BaseModel):
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = x.mean(dim=[-2, -1])  # Global average pooling
-        return self.fc(x)  # Output shape: (batch, out_size)</small></samp></code></pre>
+        return self.fc(x)  # Output shape: (batch, out_size)
+```
 
 **Step 2: Train**
 
-<pre><code><samp><small>wavedl-train --import my_model.py --model my_model --data_path train.npz</small></samp></code></pre>
+```bash
+wavedl-train --import my_model.py --model my_model --data_path train.npz
+```
 
 WaveDL handles everything else: training loop, logging, checkpoints, multi-GPU, early stopping, etc.
 
@@ -317,12 +341,13 @@ For a custom dense 2D model, also accept the inferred `out_shape=(C, H_out, W_ou
 <details>
 <summary><b>View Project Structure</b></summary>
 
-<pre><code><samp><small>WaveDL/
+```
+WaveDL/
 ├── src/
 │   └── wavedl/                   # Main package (namespaced)
 │       ├── __init__.py           # Package init with __version__
 │       ├── train.py              # Training script
-│       ├── test.py               # Testing &amp; inference script
+│       ├── test.py               # Testing & inference script
 │       ├── hpo.py                # Hyperparameter optimization
 │       ├── launcher.py           # Training launcher (wavedl-train)
 │       ├── gui/                  # Local Web Studio (wavedl-gui)
@@ -349,7 +374,8 @@ For a custom dense 2D model, also accept the inferred `out_shape=(C, H_out, W_ou
 │
 ├── pyproject.toml                # Package config, dependencies
 ├── CHANGELOG.md                  # Version history
-└── CITATION.cff                  # Citation metadata</small></samp></code></pre>
+└── CITATION.cff                  # Citation metadata
+```
 
 </details>
 
@@ -497,7 +523,8 @@ table above when selecting a model.
 
 If compute nodes block internet, run once on a login node to pre-download all TorchVision and `timm` weights:
 
-<pre><code><samp><small># Run once on login node (with internet) — downloads ALL pretrained weights
+```bash
+# Run once on login node (with internet) — downloads ALL pretrained weights
 # Uses download-only approach (no model instantiation) to avoid CPU time limits
 python -c "
 import os, torch, warnings
@@ -559,7 +586,8 @@ for name in timm_models:
     print(f'  ✓ {name}')
 
 print(f'\n✓ All {len(urls) + len(timm_models)} pretrained weight files cached!')
-"</small></samp></code></pre>
+"
+```
 
 
 </details>
@@ -671,7 +699,8 @@ WaveDL automatically enables performance optimizations for modern GPUs:
 | `weighted_mse` | `--loss weighted_mse --loss_weights "2.0,1.0,1.0"` | Prioritize specific targets/properties | Per-vector-target or per-field-channel weighting |
 
 **Example:**
-<pre><code><samp><small># Use Huber loss for noisy NDE data
+```bash
+# Use Huber loss for noisy NDE data
 wavedl-train --model cnn --loss huber --huber_delta 0.5
 
 # Weighted MSE: prioritize thickness (first target)
@@ -679,7 +708,8 @@ wavedl-train --model cnn --loss weighted_mse --loss_weights "2.0,1.0,1.0"
 
 # Dense maps: weight the first property channel twice as strongly
 wavedl-train --model unet_field --loss weighted_mse --loss_weights "2.0,1.0" \
-    --data_path field_data.npz --batch_size 4</small></samp></code></pre>
+    --data_path field_data.npz --batch_size 4
+```
 
 </details>
 
@@ -696,11 +726,13 @@ wavedl-train --model unet_field --loss weighted_mse --loss_weights "2.0,1.0" \
 | `rmsprop` | `--optimizer rmsprop` | RNN/LSTM models | `--momentum 0.9` |
 
 **Example:**
-<pre><code><samp><small># SGD with Nesterov momentum (often better generalization)
+```bash
+# SGD with Nesterov momentum (often better generalization)
 wavedl-train --model cnn --optimizer sgd --lr 0.01 --momentum 0.9 --nesterov
 
 # RAdam for more stable training
-wavedl-train --model cnn --optimizer radam --lr 1e-3</small></samp></code></pre>
+wavedl-train --model cnn --optimizer radam --lr 1e-3
+```
 
 </details>
 
@@ -719,14 +751,16 @@ wavedl-train --model cnn --optimizer radam --lr 1e-3</small></samp></code></pre>
 | `linear_warmup` | `--scheduler linear_warmup` | Warmup phase | `--warmup_epochs 5` |
 
 **Example:**
-<pre><code><samp><small># Cosine annealing for 1000 epochs
+```bash
+# Cosine annealing for 1000 epochs
 wavedl-train --model cnn --scheduler cosine --epochs 1000 --min_lr 1e-7
 
 # OneCycleLR for super-convergence
 wavedl-train --model cnn --scheduler onecycle --lr 1e-2 --epochs 50
 
 # MultiStep with custom milestones
-wavedl-train --model cnn --scheduler multistep --milestones "100,200,300"</small></samp></code></pre>
+wavedl-train --model cnn --scheduler multistep --milestones "100,200,300"
+```
 
 </details>
 
@@ -735,7 +769,8 @@ wavedl-train --model cnn --scheduler multistep --milestones "100,200,300"</small
 
 For robust model evaluation, simply add the `--cv` flag:
 
-<pre><code><samp><small># 5-fold cross-validation
+```bash
+# 5-fold cross-validation
 wavedl-train --model cnn --cv 5 --data_path train_data.npz
 
 # Dense 2D field cross-validation (non-stratified)
@@ -748,7 +783,8 @@ wavedl-train --model cnn --cv 5 --cv_stratify --loss huber --epochs 100
 # Full configuration
 wavedl-train --model cnn --cv 5 --cv_stratify \
     --loss huber --optimizer adamw --scheduler cosine \
-    --output_dir ./cv_results</small></samp></code></pre>
+    --output_dir ./cv_results
+```
 
 | Argument | Default | Description |
 |----------|---------|-------------|
@@ -776,14 +812,17 @@ and currently selects folds using the configured loss (`--selection_metric loss`
 
 Use YAML files for reproducible experiments. CLI arguments can override any config value.
 
-<pre><code><samp><small># Use a config file
+```bash
+# Use a config file
 wavedl-train --config configs/config.yaml --data_path train.npz
 
 # Override specific values from config
-wavedl-train --config configs/config.yaml --lr 5e-4 --epochs 500</small></samp></code></pre>
+wavedl-train --config configs/config.yaml --lr 5e-4 --epochs 500
+```
 
 **Example config (`configs/config.yaml`):**
-<pre><code><samp><small># Model &amp; Training
+```yaml
+# Model & Training
 model: cnn
 batch_size: 128
 lr: 0.001
@@ -801,7 +840,8 @@ cv: 0
 # Performance
 precision: bf16
 compile: false
-seed: 2025</small></samp></code></pre>
+seed: 2025
+```
 
 > See [`configs/config.yaml`](https://github.com/ductho-le/WaveDL/blob/main/configs/config.yaml) for the complete template with all available options documented.
 
@@ -812,15 +852,18 @@ seed: 2025</small></samp></code></pre>
 
 Add penalty terms to the loss function to enforce physical laws:
 
-<pre><code><samp><small>Total Loss = Data Loss + weight × penalty(violation)</small></samp></code></pre>
+```
+Total Loss = Data Loss + weight × penalty(violation)
+```
 
 ### Expression Constraints
 
-<pre><code><samp><small># Positivity
---constraint "y0 &gt; 0"
+```bash
+# Positivity
+--constraint "y0 > 0"
 
 # Bounds
---constraint "y0 &gt;= 0" "y0 &lt;= 1"
+--constraint "y0 >= 0" "y0 <= 1"
 
 # Equations (penalize deviations from zero)
 --constraint "y2 - y0 * y1"
@@ -829,13 +872,15 @@ Add penalty terms to the loss function to enforce physical laws:
 --constraint "y0 - 2*x[0]"
 
 # Multiple constraints with different weights
---constraint "y0 &gt; 0" "y1 - y2" --constraint_weight 0.1 1.0</small></samp></code></pre>
+--constraint "y0 > 0" "y1 - y2" --constraint_weight 0.1 1.0
+```
 
 ### Custom Python Constraints
 
 For complex physics (matrix operations, implicit equations):
 
-<pre><code><samp><small># my_constraint.py
+```python
+# my_constraint.py
 import torch
 
 def constraint(pred, inputs=None):
@@ -866,9 +911,12 @@ def constraint(pred, inputs=None):
     # return y0 - 2 * inputs[:, 0]                           # Output = 2×input
     # return inputs[:, 0, 3, 5] * y0 + inputs[:, 0, 6, 7] * y1  # Mixed
 
-    return y0 - y1 * y2</small></samp></code></pre>
+    return y0 - y1 * y2
+```
 
-<pre><code><samp><small>--constraint_file my_constraint.py --constraint_weight 1.0</small></samp></code></pre>
+```bash
+--constraint_file my_constraint.py --constraint_weight 1.0
+```
 
 ---
 
@@ -903,7 +951,8 @@ Automatically find the best training configuration using [Optuna](https://optuna
 
 **Run HPO:**
 
-<pre><code><samp><small># Basic HPO (50 trials, auto-detects GPUs)
+```bash
+# Basic HPO (50 trials, auto-detects GPUs)
 wavedl-hpo --data_path train.npz --n_trials 50
 
 # Quick search (minimal search space, fastest)
@@ -919,7 +968,8 @@ wavedl-hpo --data_path train.npz --n_trials 100 --models cnn resnet18 efficientn
 wavedl-hpo --data_path field_data.npz --n_trials 30
 
 # In-process mode (enables pruning, faster, single-GPU)
-wavedl-hpo --data_path train.npz --n_trials 50 --inprocess</small></samp></code></pre>
+wavedl-hpo --data_path train.npz --n_trials 50 --inprocess
+```
 
 > [!TIP]
 > **GPU Detection**: HPO auto-detects GPUs and runs one trial per GPU in parallel. Use `--inprocess` for single-GPU with pruning support (early stopping of bad trials).
@@ -941,7 +991,9 @@ incompatible trials is rejected. Parallel trials lease distinct visible GPUs.
 **Train with best parameters**
 
 After HPO completes, it prints the optimal command:
-<pre><code><samp><small>wavedl-train --data_path train.npz --model cnn --lr 3.2e-4 --batch_size 128 ...</small></samp></code></pre>
+```bash
+wavedl-train --data_path train.npz --model cnn --lr 3.2e-4 --batch_size 128 ...
+```
 
 ---
 
@@ -1031,22 +1083,27 @@ WaveDL supports multiple data formats for training and inference:
 
 > [!IMPORTANT]
 > **MATLAB Users**: Save large MAT files with `-v7.3` for memory-efficient lazy HDF5 loading:
-> <pre><code><samp><small>save('data.mat', 'input_train', 'output_train', '-v7.3')</small></samp></code></pre>
+> ```matlab
+> save('data.mat', 'input_train', 'output_train', '-v7.3')
+> ```
 > Legacy MAT v5/v7 files are also supported automatically via `scipy.io.loadmat` (loaded into host memory).
 
 <details>
 <summary><b>Data Preparation &amp; Validation Examples</b></summary>
 
 **Basic NPZ Preparation**
-<pre><code><samp><small>import numpy as np
+```python
+import numpy as np
 
 X = np.array(images, dtype=np.float32)  # (N, H, W)
 y = np.array(labels, dtype=np.float32)  # (N, T)
 
-np.savez('train_data.npz', input_train=X, output_train=y)</small></samp></code></pre>
+np.savez('train_data.npz', input_train=X, output_train=y)
+```
 
 **From Image Files + CSV**
-<pre><code><samp><small>import numpy as np
+```python
+import numpy as np
 from PIL import Image
 from pathlib import Path
 import pandas as pd
@@ -1056,31 +1113,36 @@ images = [np.array(Image.open(f).convert('L'), dtype=np.float32)
 X = np.stack(images)
 y = pd.read_csv("labels.csv").values.astype(np.float32)
 
-np.savez('train_data.npz', input_train=X, output_train=y)</small></samp></code></pre>
+np.savez('train_data.npz', input_train=X, output_train=y)
+```
 
 **From MATLAB (`.mat`)**
-<pre><code><samp><small>import numpy as np
+```python
+import numpy as np
 from scipy.io import loadmat
 
 data = loadmat('simulation_data.mat')
 X = data['spectrograms'].astype(np.float32)
 y = data['parameters'].astype(np.float32)
-if X.ndim == 3 and X.shape[2] &lt; X.shape[0]:
+if X.ndim == 3 and X.shape[2] < X.shape[0]:
     X = np.transpose(X, (2, 0, 1))
 
-np.savez('train_data.npz', input_train=X, output_train=y)</small></samp></code></pre>
+np.savez('train_data.npz', input_train=X, output_train=y)
+```
 
 **Quick Validation Script**
-<pre><code><samp><small>import numpy as np
+```python
+import numpy as np
 
 data = np.load('train_data.npz')
-assert data['input_train'].ndim &gt;= 2, "Input must be at least 2D: (N, ...)"
+assert data['input_train'].ndim >= 2, "Input must be at least 2D: (N, ...)"
 assert data['output_train'].ndim in (1, 2, 3, 4), \
     "Output must be (N,), (N,T), (N,H,W), or (N,C,H,W)"
 assert len(data['input_train']) == len(data['output_train']), "Sample mismatch"
 
 print(f"✓ Input:  {data['input_train'].shape} {data['input_train'].dtype}")
-print(f"✓ Output: {data['output_train'].shape} {data['output_train'].dtype}")</small></samp></code></pre>
+print(f"✓ Output: {data['output_train'].shape} {data['output_train'].dtype}")
+```
 
 </details>
 
@@ -1109,7 +1171,8 @@ The `examples/` folder contains a **complete, ready-to-run example** for **mater
 
 **Try it yourself:**
 
-<pre><code><samp><small># Run inference on the example data
+```bash
+# Run inference on the example data
 wavedl-test --checkpoint ./examples/elasticity_prediction/best_checkpoint \
   --data_path ./examples/elasticity_prediction/Test_data_100.mat \
   --plot --save_predictions \
@@ -1118,7 +1181,8 @@ wavedl-test --checkpoint ./examples/elasticity_prediction/best_checkpoint \
 # Export to ONNX (already included as model.onnx)
 wavedl-test --checkpoint ./examples/elasticity_prediction/best_checkpoint \
   --data_path ./examples/elasticity_prediction/Test_data_100.mat \
-  --export onnx --export_path ./examples/elasticity_prediction/model.onnx</small></samp></code></pre>
+  --export onnx --export_path ./examples/elasticity_prediction/model.onnx
+```
 
 <details>
 <summary><b>View Included Files, Training Curve &amp; All 10 Diagnostic Plots</b></summary>
@@ -1263,7 +1327,8 @@ Beyond the material characterization example above, the WaveDL pipeline can be a
 
 If you use WaveDL in your research, please cite our published paper:
 
-<pre><code><samp><small>@article{le2026wavedl,
+```bibtex
+@article{le2026wavedl,
   author = {Le, Ductho and Phan, Haidang and Sacchi, Mauricio D. and Le, Lawrence H.},
   title = {{WaveDL}: A Scalable Deep Learning Framework for Wave-Based Inverse Problems},
   journal = {Computer Physics Communications},
@@ -1272,7 +1337,8 @@ If you use WaveDL in your research, please cite our published paper:
   year = {2026},
   doi = {10.1016/j.cpc.2026.110400},
   url = {https://doi.org/10.1016/j.cpc.2026.110400}
-}</small></samp></code></pre>
+}
+```
 
 Or in APA format:
 > Le, D., Phan, H., Sacchi, M. D., & Le, L. H. (2026). WaveDL: A scalable deep learning framework for wave-based inverse problems. *Computer Physics Communications*, 329, 110400. https://doi.org/10.1016/j.cpc.2026.110400
@@ -1280,7 +1346,8 @@ Or in APA format:
 <details>
 <summary><b>Related Paper (SPIE 2026 — Elasticity Prediction Example)</b></summary>
 
-<pre><code><samp><small>@inproceedings{le2026lightweight,
+```bibtex
+@inproceedings{le2026lightweight,
   author = {Le, Ductho and Sacchi, Mauricio D. and Zhang, Xu and Ta, Dean and Lou, Edmond and Le, Lawrence H.},
   title = {A lightweight deep learning model for ultrasonic assessment of plate thickness and elasticity},
   booktitle = {Health Monitoring of Structural and Biological Systems XX},
@@ -1290,7 +1357,8 @@ Or in APA format:
   publisher = {SPIE},
   doi = {10.1117/12.3090206},
   url = {https://doi.org/10.1117/12.3090206}
-}</small></samp></code></pre>
+}
+```
 
 Or in APA format:
 > Le, D., Sacchi, M. D., Zhang, X., Ta, D., Lou, E., & Le, L. H. (2026). A lightweight deep learning model for ultrasonic assessment of plate thickness and elasticity. *Proc. SPIE 13951, Health Monitoring of Structural and Biological Systems XX*, 1395106. https://doi.org/10.1117/12.3090206
