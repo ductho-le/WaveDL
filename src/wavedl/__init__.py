@@ -22,7 +22,7 @@ For inference:
 from typing import TYPE_CHECKING
 
 
-__version__ = "1.9.0"
+__version__ = "2.0.0"
 __author__ = "Ductho Le"
 __email__ = "ductho.le@outlook.com"
 

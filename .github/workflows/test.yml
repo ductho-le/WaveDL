@@ -54,14 +54,21 @@ jobs:
           PYTHONPATH: src
         run: python -m unittest discover -s unit_tests -p test_gui.py -v
 
-      - name: Install dependencies
+      - name: Install dependencies (latest)
+        if: matrix.runtime != 'minimum'
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Install minimum ML runtime
+      - name: Set up uv for full minimum-stack resolution
         if: matrix.runtime == 'minimum'
-        run: pip install torch==2.13.0 torchvision==0.28.0 onnx==1.22.0
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install clean minimum supported stack
+        if: matrix.runtime == 'minimum'
+        run: |
+          uv pip install --python "$(which python)" --resolution lowest-direct -e ".[dev]"
+          python -m pip list
 
       - name: Run unit tests (skip slow architecture tests)
         run: pytest unit_tests/ -v --tb=short -m "not slow"
@@ -94,10 +101,17 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
           cache-dependency-path: pyproject.toml
-      - run: pip install build twine
+      - run: |
+          python -m pip install --upgrade pip
+          pip install build twine pip-audit
       - run: python -m build
       - run: python -m twine check --strict dist/*
       - run: pip install dist/*.whl
+      - name: Audit installed dependencies against PyPI advisories
+        # The candidate itself has no PyPI record until this workflow publishes it.
+        run: |
+          python -m pip list --format=freeze --exclude wavedl > audit-requirements.txt
+          pip-audit --strict --no-deps --disable-pip -r audit-requirements.txt
       - name: Test installed wheel outside checkout
         working-directory: ${{ runner.temp }}
         run: python "$GITHUB_WORKSPACE/tools/smoke_installed.py"

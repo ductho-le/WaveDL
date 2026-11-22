@@ -93,10 +93,11 @@ def main():
     from wavedl.train import main as train
 
     train()
-    meta_file = args.work_dir / "run/epoch_2_checkpoint/training_meta.pkl"
-    if not meta_file.is_file():
+    meta_file = args.work_dir / "run/epoch_2_checkpoint/training_meta.json"
+    scaler_file = args.work_dir / "run/epoch_2_checkpoint/scaler.json"
+    if not meta_file.is_file() or not scaler_file.is_file():
         raise RuntimeError(
-            f"Expected distributed checkpoint metadata missing: {meta_file}"
+            f"Expected distributed checkpoint JSON metadata/scaler missing: {meta_file}, {scaler_file}"
         )
 
 

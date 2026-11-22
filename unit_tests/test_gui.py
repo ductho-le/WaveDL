@@ -734,6 +734,16 @@ class TestGUIWorkspace(unittest.TestCase):
         self.assertIn('"model_kwargs"', script)
         self.assertIn("fmtEntry(", script)
 
+    def test_non_loopback_bind_requires_allow_remote_flag(self):
+        with (
+            patch.object(
+                sys, "argv", ["wavedl-gui", "--host", "0.0.0.0", "--no-browser"]
+            ),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            app.main()
+        self.assertEqual(raised.exception.code, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

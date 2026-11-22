@@ -1687,12 +1687,30 @@ def main() -> int:
         action="store_true",
         help="Restrict file browsing and YAML reads/writes to the launch workspace directory",
     )
+    parser.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help=(
+            "Explicitly acknowledge binding to a non-loopback --host interface "
+            "(exposes YAML editing and job launching without network authentication; "
+            "prefer SSH port forwarding with default --host 127.0.0.1)"
+        ),
+    )
     args = parser.parse_args()
 
     WORKSPACE_ROOT = Path.cwd()
     DEFAULT_CONFIG_PATH = WORKSPACE_ROOT / "config.yaml"
     RESTRICT_WORKSPACE = bool(args.restrict_workspace)
     bind_host = args.host.strip("[]")
+    is_loopback = bind_host.lower() in ("127.0.0.1", "localhost", "::1")
+    if not is_loopback and not args.allow_remote:
+        parser.error(
+            f"Refusing to bind non-loopback host {args.host!r} without --allow-remote. "
+            "WaveDL Studio's session token protects against cross-site requests only; "
+            "any client that can reach a non-loopback listener can read/write YAML "
+            "configs and launch jobs. Prefer SSH port forwarding with default "
+            "--host 127.0.0.1, or pass --allow-remote to acknowledge."
+        )
     family = _socket_family_for_host(bind_host)
     port = _find_free_port(bind_host, args.port)
 

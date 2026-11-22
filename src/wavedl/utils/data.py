@@ -87,6 +87,43 @@ def _as_finite_float32(values: Any, name: str) -> np.ndarray:
     return result
 
 
+def _physical_target_dtype(dtype: np.dtype) -> np.dtype:
+    """Select a native-endian floating dtype for physical targets."""
+    if (dtype.kind == "f" and dtype.itemsize >= 8) or (
+        dtype.kind in "iu" and dtype.itemsize >= 4
+    ):
+        return np.dtype(np.float64)
+    return np.dtype(np.float32)
+
+
+def _as_finite_target_array(values: Any, name: str = "Targets") -> np.ndarray:
+    """Validate finite real physical targets while preserving high-precision dtypes.
+
+    Keeps ``float64`` targets in ``float64`` and promotes 32/64-bit integer
+    targets to ``float64`` so large-offset physical ground truth (e.g., GPa
+    elastic moduli or high-offset velocities) is never quantized by float32
+    before scoring or saving inference outputs, while still rejecting values
+    outside the finite float32 magnitude range (e.g. ``1e100``).
+    """
+    array = np.asarray(values)
+    if array.dtype.kind not in "biuf" or not np.isfinite(array).all():
+        raise ValueError(f"{name} must contain only finite real values.")
+    dtype = _physical_target_dtype(array.dtype)
+    if dtype == np.float64:
+        with np.errstate(over="ignore", invalid="ignore"):
+            result64 = array.astype(dtype, copy=False)
+        if result64.size and np.max(np.abs(result64)) > np.finfo(np.float32).max:
+            raise ValueError(
+                f"{name} contains values outside the finite float32 range."
+            )
+        return result64
+    with np.errstate(over="ignore", invalid="ignore"):
+        result = array.astype(np.float32, copy=False)
+    if not np.isfinite(result).all():
+        raise ValueError(f"{name} contains values outside the finite float32 range.")
+    return result
+
+
 def _bounded_batch_size(
     shape, dtype, max_items: int, max_bytes: int = 32 * 1024**2
 ) -> int:
@@ -136,6 +173,56 @@ def _compute_file_hash(
             while chunk := f.read(chunk_size):
                 hasher.update(chunk)
         return hasher.hexdigest()
+
+
+def _parse_manifest_shard_paths(path: str | Path) -> list[tuple[Path, Path]]:
+    """Parse ``<input.npy><TAB><target.npy>`` lines into resolved shard path pairs."""
+    manifest = Path(path).resolve()
+    pairs: list[tuple[Path, Path]] = []
+    for line_number, line in enumerate(
+        manifest.read_text(encoding="utf-8").splitlines(), 1
+    ):
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) != 2 or not all(part.strip() for part in parts):
+            raise ValueError(
+                f"{manifest}:{line_number}: expected input.npy<TAB>target.npy."
+            )
+        inp_shard = (manifest.parent / parts[0].strip()).resolve()
+        tgt_shard = (manifest.parent / parts[1].strip()).resolve()
+        pairs.append((inp_shard, tgt_shard))
+    if not pairs:
+        raise ValueError(f"Empty shard manifest: {manifest}")
+    return pairs
+
+
+def _compute_dataset_fingerprint(path: str | Path, mode: str = "sha256") -> str:
+    """Compute a portable content fingerprint for an array file or shard manifest.
+
+    For paired-shard ``.txt`` manifests, hashes the manifest shard count/order
+    together with the size and content hash of every referenced input and target
+    shard (excluding absolute directory paths so relocated datasets still match).
+    """
+    resolved = Path(path).resolve()
+    hasher = hashlib.sha256()
+    if resolved.suffix.lower() == ".txt":
+        pairs = _parse_manifest_shard_paths(resolved)
+        hasher.update(f"wavedl_manifest_v1:{mode}:{len(pairs)}\n".encode())
+        for inp_shard, tgt_shard in pairs:
+            inp_size = os.path.getsize(inp_shard)
+            tgt_size = os.path.getsize(tgt_shard)
+            inp_digest = _compute_file_hash(str(inp_shard), mode=mode)
+            tgt_digest = _compute_file_hash(str(tgt_shard), mode=mode)
+            hasher.update(
+                f"{inp_size}:{inp_digest}\t{tgt_size}:{tgt_digest}\n".encode()
+            )
+        return hasher.hexdigest()
+
+    file_size = os.path.getsize(resolved)
+    file_digest = _compute_file_hash(str(resolved), mode=mode)
+    hasher.update(f"wavedl_file_v1:{mode}:{file_size}:{file_digest}\n".encode())
+    return hasher.hexdigest()
 
 
 class LazyDataHandle:
@@ -1036,6 +1123,7 @@ def _load_npz_for_test(
     explicit_output_key: str | None,
     *,
     allow_pickle: bool = False,
+    load_targets: bool = True,
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """Load NPZ file for test/inference with key validation."""
     with np.load(path, allow_pickle=False) as probe:
@@ -1052,16 +1140,19 @@ def _load_npz_for_test(
         )
     if inp_key is None:
         raise KeyError(f"Input key not found. Tried: {input_keys}. Found: {keys}")
-    if explicit_output_key is not None and explicit_output_key not in keys:
+    if (
+        load_targets
+        and explicit_output_key is not None
+        and explicit_output_key not in keys
+    ):
         raise KeyError(
             f"Explicit --output_key '{explicit_output_key}' not found. Available: {keys}"
         )
 
-    data = NPZSource._load_and_copy(
-        path, [inp_key] + ([out_key] if out_key else []), allow_pickle=allow_pickle
-    )
+    read_keys = [inp_key] + ([out_key] if (load_targets and out_key) else [])
+    data = NPZSource._load_and_copy(path, read_keys, allow_pickle=allow_pickle)
     inp = _materialize_npz_array(data[inp_key])
-    outp = _materialize_npz_array(data[out_key]) if out_key else None
+    outp = _materialize_npz_array(data[out_key]) if (load_targets and out_key) else None
     return inp, outp
 
 
@@ -1071,6 +1162,9 @@ def _load_hdf5_for_test(
     output_keys: list[str],
     explicit_input_key: str | None,
     explicit_output_key: str | None,
+    *,
+    load_targets: bool = True,
+    max_samples: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """Load HDF5 file for test/inference with key validation and OOM guard."""
     with h5py.File(path, "r") as f:
@@ -1086,22 +1180,30 @@ def _load_hdf5_for_test(
             )
         if inp_key is None:
             raise KeyError(f"Input key not found. Tried: {input_keys}. Found: {keys}")
-        if explicit_output_key is not None and explicit_output_key not in keys:
+        if (
+            load_targets
+            and explicit_output_key is not None
+            and explicit_output_key not in keys
+        ):
             raise KeyError(
                 f"Explicit --output_key '{explicit_output_key}' not found. Available: {keys}"
             )
 
-        # OOM guard
+        # OOM guard (skipped when reading only a small slice, e.g., ONNX export)
         n_samples = f[inp_key].shape[0]
-        if n_samples > 100000:
+        if max_samples is None and n_samples > 100000:
             raise ValueError(
                 f"Dataset has {n_samples:,} samples. load_test_data() loads "
                 f"everything into RAM which may cause OOM. For large inference "
                 f"sets, use a DataLoader with HDF5Source.load_mmap() instead."
             )
 
-        inp = f[inp_key][:]
-        outp = f[out_key][:] if out_key else None
+        if max_samples is not None:
+            inp = f[inp_key][:max_samples]
+            outp = f[out_key][:max_samples] if (load_targets and out_key) else None
+        else:
+            inp = f[inp_key][:]
+            outp = f[out_key][:] if (load_targets and out_key) else None
     return inp, outp
 
 
@@ -1111,6 +1213,9 @@ def _load_mat_for_test(
     output_keys: list[str],
     explicit_input_key: str | None,
     explicit_output_key: str | None,
+    *,
+    load_targets: bool = True,
+    max_samples: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """Load MAT file (v7.3 HDF5 or legacy v5/v7) for test/inference with sparse support."""
     mat_source = MATSource()
@@ -1130,47 +1235,68 @@ def _load_mat_for_test(
                 raise KeyError(
                     f"Input key not found. Tried: {input_keys}. Found: {keys}"
                 )
-            if explicit_output_key is not None and explicit_output_key not in keys:
+            if (
+                load_targets
+                and explicit_output_key is not None
+                and explicit_output_key not in keys
+            ):
                 raise KeyError(
                     f"Explicit --output_key '{explicit_output_key}' not found. Available: {keys}"
                 )
 
             # OOM guard
             input_dataset = f[inp_key]
+            is_sparse_inp = mat_source._is_sparse_dataset(input_dataset)
             n_samples = (
                 len(input_dataset["jc"]) - 1
-                if mat_source._is_sparse_dataset(input_dataset)
+                if is_sparse_inp
                 else input_dataset.shape[-1]
             )  # MAT is transposed
-            if n_samples > 100000:
+            if max_samples is None and n_samples > 100000:
                 raise ValueError(
                     f"Dataset has {n_samples:,} samples. load_test_data() loads "
                     f"everything into RAM which may cause OOM. For large inference "
                     f"sets, use a DataLoader with MATSource.load_mmap() instead."
                 )
 
-            inp = mat_source._load_dataset(f, inp_key)
+            if max_samples is not None and not is_sparse_inp:
+                # MAT stores axis 0 along the last dimension in HDF5
+                inp = np.array(input_dataset[..., :max_samples]).T
+            else:
+                inp = mat_source._load_dataset(f, inp_key)
+                if max_samples is not None:
+                    inp = inp[:max_samples]
+
             outp = None
-            if out_key:
+            if load_targets and out_key:
                 outp = mat_source._load_dataset(f, out_key)
                 # Handle MATLAB transpose
-                num_samples = inp.shape[0]
+                num_samples = n_samples
                 if outp.ndim == 2:
                     if (outp.shape[0] == 1 and outp.shape[1] == num_samples) or (
                         outp.shape[1] == 1 and outp.shape[0] != num_samples
                     ):
                         outp = outp.T
+                if max_samples is not None:
+                    outp = outp[:max_samples]
     except FileNotFoundError:
         raise
     except OSError:
-        return MATSource._load_legacy_mat(
+        inp, outp = MATSource._load_legacy_mat(
             path,
             input_keys,
             output_keys,
             explicit_input_key=explicit_input_key,
-            explicit_output_key=explicit_output_key,
+            explicit_output_key=explicit_output_key if load_targets else None,
             require_outputs=False,
         )
+        if not load_targets:
+            outp = None
+        if max_samples is not None:
+            inp = inp[:max_samples]
+            if outp is not None:
+                outp = outp[:max_samples]
+        return inp, outp
     return inp, outp
 
 
@@ -1182,46 +1308,20 @@ def load_test_data(
     input_channels: int | None = None,
     *,
     allow_pickle: bool = False,
-) -> tuple[torch.Tensor | Dataset, torch.Tensor | None]:
+    load_targets: bool = True,
+    lazy_targets: bool = False,
+    max_samples: int | None = None,
+) -> tuple[torch.Tensor | Dataset, torch.Tensor | Any | None]:
     """
     Load test/inference data and return PyTorch tensors ready for model input.
 
     Paired-shard ``.txt`` manifests return a lazy input ``Dataset`` with
-    ``shape`` and slicing support; only the smaller targets are materialized.
-    Axis 1 in each shard is unconditionally channels. Other formats return
-    tensors.
-
-    This is the unified data loading function for inference. It:
-    - Auto-detects file format from extension
-    - Handles custom key names for non-standard datasets
-    - Adds channel dimension if missing (dimension-agnostic)
-    - Returns None for targets if not present in file
-
-    Supports any input dimensionality:
-        - 1D: (N, L) → (N, 1, L)
-        - 2D: (N, H, W) → (N, 1, H, W)
-        - 3D: (N, D, H, W) → (N, 1, D, H, W)
-        - Already has channel: (N, C, ...) → unchanged
-
-    Args:
-        path: Path to data file (NPZ, HDF5, or MAT v7.3)
-        format: Format hint ('npz', 'hdf5', 'mat', or 'auto' for detection)
-        input_key: Custom key for input data (overrides auto-detection)
-        output_key: Custom key for output data (overrides auto-detection)
-        input_channels: Explicit number of input channels. If provided, bypasses
-            the heuristic for 4D data. Use input_channels=1 for 3D volumes that
-            look like multi-channel 2D (e.g., depth ≤16).
-
-    Returns:
-        Tuple of:
-            - X: Input tensor with channel dimension (N, 1, *spatial_dims)
-            - y: Target tensor ``(N,T)`` or ``(N,C,H,W)``, or None if absent
-
-    Example:
-        >>> X, y = load_test_data("test_data.npz")
-        >>> X, y = load_test_data(
-        ...     "data.mat", input_key="waveforms", output_key="params"
-        ... )
+    ``shape`` and slicing support. Target ground truth preserves native
+    ``float64`` precision (and promotes 32/64-bit integers to ``float64``) so
+    large-offset physical quantities are scored without float32 quantization.
+    Pass ``load_targets=False`` (e.g., export-only) to skip reading targets, or
+    ``lazy_targets=True`` on manifests to return a streaming ``ManifestTargets``
+    view without materializing all targets in RAM.
     """
     if input_channels is not None and (
         isinstance(input_channels, bool)
@@ -1232,7 +1332,11 @@ def load_test_data(
             f"input_channels must be a positive integer >= 1, got {input_channels!r}."
         )
     if str(path).lower().endswith(".txt") or format == "manifest":
-        from .preprocessing import ManifestInputs, ShardManifestDataset
+        from .preprocessing import (
+            ManifestInputs,
+            ManifestTargets,
+            ShardManifestDataset,
+        )
 
         source = ShardManifestDataset(path)
         try:
@@ -1241,13 +1345,17 @@ def load_test_data(
                     f"Requested input_channels={input_channels}, "
                     f"but manifest has {source.in_channels} channels."
                 )
-            labels_np = _as_finite_float32(
+            if not load_targets:
+                return ManifestInputs(source), None
+            if lazy_targets:
+                return ManifestInputs(source), ManifestTargets(source.clone_with())
+            labels_np = _as_finite_target_array(
                 np.concatenate(list(source.target_batches()), axis=0), "Targets"
             )
             labels = torch.from_numpy(np.ascontiguousarray(labels_np))
         finally:
-            # Release target shard mmaps immediately; ManifestInputs lazily
-            # reopens input shards on demand.
+            # Release target shard mmaps immediately; ManifestInputs/ManifestTargets
+            # reopen shards lazily on demand.
             source.close()
         return ManifestInputs(source), labels
 
@@ -1283,23 +1391,46 @@ def load_test_data(
                 input_key,
                 output_key,
                 allow_pickle=allow_pickle,
+                load_targets=load_targets,
             )
+            if max_samples is not None:
+                inp = inp[:max_samples]
+                if outp is not None:
+                    outp = outp[:max_samples]
         elif format == "hdf5":
             inp, outp = _load_hdf5_for_test(
-                path, custom_input_keys, custom_output_keys, input_key, output_key
+                path,
+                custom_input_keys,
+                custom_output_keys,
+                input_key,
+                output_key,
+                load_targets=load_targets,
+                max_samples=max_samples,
             )
         elif format == "mat":
             inp, outp = _load_mat_for_test(
-                path, custom_input_keys, custom_output_keys, input_key, output_key
+                path,
+                custom_input_keys,
+                custom_output_keys,
+                input_key,
+                output_key,
+                load_targets=load_targets,
+                max_samples=max_samples,
             )
         else:
             # Fallback to default source.load() for unknown formats
             inp, outp = source.load(path)
+            if not load_targets:
+                outp = None
+            if max_samples is not None:
+                inp = inp[:max_samples]
+                if outp is not None:
+                    outp = outp[:max_samples]
     except KeyError as e:
         # IMPORTANT: Only fall back to inference-only mode if outputs are
         # genuinely missing (auto-detection failed). If user explicitly
         # provided --output_key, they expect it to exist - don't silently drop.
-        if output_key is not None:
+        if load_targets and output_key is not None:
             raise KeyError(
                 f"Explicit --output_key '{output_key}' not found in file. "
                 f"Available keys depend on file format. Original error: {e}"
@@ -1323,14 +1454,31 @@ def load_test_data(
                 None,
                 None,
                 allow_pickle=allow_pickle,
+                load_targets=load_targets,
             )
+            if max_samples is not None:
+                inp = inp[:max_samples]
+                if outp is not None:
+                    outp = outp[:max_samples]
         elif format == "hdf5":
             inp, outp = _load_hdf5_for_test(
-                path, custom_input_keys, custom_output_keys, None, None
+                path,
+                custom_input_keys,
+                custom_output_keys,
+                None,
+                None,
+                load_targets=load_targets,
+                max_samples=max_samples,
             )
         elif format == "mat":
             inp, outp = _load_mat_for_test(
-                path, custom_input_keys, custom_output_keys, None, None
+                path,
+                custom_input_keys,
+                custom_output_keys,
+                None,
+                None,
+                load_targets=load_targets,
+                max_samples=max_samples,
             )
         else:
             raise
@@ -1351,13 +1499,15 @@ def load_test_data(
 
     if outp is not None:
         # Vector targets stay (N,T); scalar and multi-property fields use the
-        # canonical channels-first layout (N,C,H,W).
+        # canonical channels-first layout (N,C,H,W). Preserve float64 precision.
         outp = canonicalize_targets(outp)
         if len(outp) != len(inp):
             raise ValueError(
                 f"Input/output sample mismatch: {len(inp)} inputs but {len(outp)} targets."
             )
-        y = torch.from_numpy(np.ascontiguousarray(_as_finite_float32(outp, "Targets")))
+        y = torch.from_numpy(
+            np.ascontiguousarray(_as_finite_target_array(outp, "Targets"))
+        )
     else:
         y = None
 
@@ -1449,6 +1599,8 @@ def memmap_worker_init_fn(worker_id: int):
                 ds.data = None
             if hasattr(ds, "target_data"):
                 ds.target_data = None
+            if hasattr(ds, "_handle"):
+                ds._handle = None
             if isinstance(ds, Dataset):
                 if isinstance(getattr(ds, "_maps", None), dict):
                     ds._maps = type(ds._maps)()
@@ -1689,7 +1841,7 @@ def prepare_data(
     Cache Files Created:
         - train_data_cache.dat: Memory-mapped input data
         - target_data_cache.dat: Memory-mapped scaled dense targets (field mode)
-        - scaler.pkl: Fitted target scaler
+        - scaler.json: Fitted target scaler
         - data_metadata.pkl: Shape and dimension metadata
     """
     from .preprocessing import (
@@ -1711,9 +1863,18 @@ def prepare_data(
             expected_scaler,
         )
 
+    from .checkpoint_io import (
+        SCALER_JSON,
+        SCALER_PKL,
+        find_scaler_path,
+        load_scaler,
+        save_scaler,
+    )
+
     CACHE_FILE = os.path.join(cache_dir, "train_data_cache.dat")
     TARGET_CACHE_FILE = os.path.join(cache_dir, "target_data_cache.dat")
-    SCALER_FILE = os.path.join(cache_dir, "scaler.pkl")
+    SCALER_JSON_FILE = os.path.join(cache_dir, SCALER_JSON)
+    SCALER_PKL_FILE = os.path.join(cache_dir, SCALER_PKL)
     META_FILE = os.path.join(cache_dir, "data_metadata.pkl")
     ERROR_FILE = os.path.join(cache_dir, ".cache_error")
     os.makedirs(cache_dir, exist_ok=True)
@@ -1727,7 +1888,7 @@ def prepare_data(
     if accelerator.is_main_process:
         cache_exists = (
             os.path.exists(CACHE_FILE)
-            and os.path.exists(SCALER_FILE)
+            and find_scaler_path(cache_dir) is not None
             and os.path.exists(META_FILE)
         )
 
@@ -1742,7 +1903,7 @@ def prepare_data(
                 meta = pickle.load(f)
             cached_prep = meta.get("preprocessing") or {}
             if (
-                meta.get("source") in ("manifest", "preprocessed")
+                meta.get("source") in ("manifest", "preprocessed", "lazy_preprocessed")
                 or cached_prep.get("input_transform", "none") != "none"
                 or cached_prep.get("target_scaling", "standard") != "standard"
                 or meta.get("val_data_path") is not None
@@ -1830,10 +1991,10 @@ def prepare_data(
             # Validate scaler file integrity early (cheap) before hashing
             if cache_exists:
                 try:
-                    with open(SCALER_FILE, "rb") as f:
-                        _test_scaler = pickle.load(f)
+                    _test_scaler, _ = load_scaler(cache_dir)
                     if (
-                        not hasattr(_test_scaler, "scale_")
+                        _test_scaler is None
+                        or not hasattr(_test_scaler, "scale_")
                         or _test_scaler.scale_ is None
                     ):
                         raise ValueError("Scaler not fitted")
@@ -1883,8 +2044,8 @@ def prepare_data(
         if accelerator.is_main_process:
             try:
                 if cache_exists:
-                    with open(SCALER_FILE, "rb") as f:
-                        _validate_scaler_compatibility(pickle.load(f), expected_scaler)
+                    cached_scaler, _ = load_scaler(cache_dir)
+                    _validate_scaler_compatibility(cached_scaler, expected_scaler)
                 else:
                     # This extra streaming pass is restricted to a resume that
                     # needs a cache rebuild. Validate before invalidation, so a
@@ -1923,7 +2084,8 @@ def prepare_data(
                     META_FILE,
                     CACHE_FILE,
                     TARGET_CACHE_FILE,
-                    SCALER_FILE,
+                    SCALER_JSON_FILE,
+                    SCALER_PKL_FILE,
                     ERROR_FILE,
                 ]:
                     if os.path.exists(stale_file):
@@ -1939,7 +2101,13 @@ def prepare_data(
                 # This prevents silent reuse of outdated data
                 remaining_stale = [
                     f
-                    for f in [META_FILE, CACHE_FILE, TARGET_CACHE_FILE, SCALER_FILE]
+                    for f in [
+                        META_FILE,
+                        CACHE_FILE,
+                        TARGET_CACHE_FILE,
+                        SCALER_JSON_FILE,
+                        SCALER_PKL_FILE,
+                    ]
                     if os.path.exists(f)
                 ]
                 if remaining_stale:
@@ -2172,7 +2340,7 @@ def prepare_data(
                         indices, test_size=val_split, random_state=args.seed
                     )
 
-                    if not os.path.exists(SCALER_FILE):
+                    if find_scaler_path(cache_dir) is None:
                         logger.info("   Fitting target scaler (training set only)...")
 
                         if output_kind == "field":
@@ -2198,10 +2366,7 @@ def prepare_data(
                             scaler = create_target_scaler(
                                 canonicalize_targets(outp_train)
                             )
-                        scaler_tmp = f"{SCALER_FILE}.tmp"
-                        with open(scaler_tmp, "wb") as f:
-                            pickle.dump(scaler, f)
-                        os.replace(scaler_tmp, SCALER_FILE)
+                        save_scaler(scaler, cache_dir)
 
                     if output_kind == "field" and not os.path.exists(TARGET_CACHE_FILE):
                         from .preprocessing import _close_memmap
@@ -2275,7 +2440,7 @@ def prepare_data(
             last_log_min = 0
             while not (
                 os.path.exists(CACHE_FILE)
-                and os.path.exists(SCALER_FILE)
+                and find_scaler_path(cache_dir) is not None
                 and os.path.exists(META_FILE)
             ):
                 if os.path.exists(ERROR_FILE):
@@ -2345,10 +2510,8 @@ def prepare_data(
             )
 
     # Load and validate scaler
-    with open(SCALER_FILE, "rb") as f:
-        scaler = pickle.load(f)
-
-    if not hasattr(scaler, "scale_") or scaler.scale_ is None:
+    scaler, _ = load_scaler(cache_dir)
+    if scaler is None or not hasattr(scaler, "scale_") or scaler.scale_ is None:
         raise RuntimeError("CRITICAL: Scaler is not properly fitted (scale_ is None)")
 
     y_tensor = None

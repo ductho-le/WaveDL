@@ -59,25 +59,25 @@ dependencies = [
     # Security baseline; pair torchvision with the installed torch build.
     "torch>=2.13.0",
     "torchvision>=0.28.0",
-    "timm>=0.9.0",  # Pretrained models (MaxViT, FastViT, CAFormer)
-    "accelerate>=0.20.0",
+    "timm>=1.0.24",  # Pretrained models (MaxViT, FastViT, CAFormer)
+    "accelerate>=1.15.0",
     "numpy>=1.24.0",
     "scipy>=1.10.0",
-    "scikit-learn>=1.2.0",
+    "scikit-learn>=1.5.0",
     "pandas>=2.0.0",
     "matplotlib>=3.7.0",
-    "tqdm>=4.65.0",
+    "tqdm>=4.66.3",
     "pyyaml>=6.0.0",
     # Data formats
     "h5py>=3.8.0",
-    "safetensors>=0.3.0",
+    "safetensors>=0.4.3",
     # Logging
-    "wandb>=0.15.0",
+    "wandb>=0.23.1",
     # HPO
-    "optuna>=3.0.0",
+    "optuna>=3.1.0",
     # ONNX export
     "onnx>=1.22.0",
-    "onnxruntime>=1.15.0",
+    "onnxruntime>=1.17.0",
     "onnxscript>=0.1.0",
     # PyTorch's platform-specific wheel selects its compatible Triton backend.
 ]

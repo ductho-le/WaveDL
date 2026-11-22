@@ -18,7 +18,6 @@ import json
 import logging
 import math
 import os
-import pickle
 from datetime import datetime
 from typing import Any
 
@@ -698,27 +697,27 @@ def run_cross_validation(
             f"    Fold {fold + 1} Results: R²={results['r2']:.4f}, MAE={results['mae_physical']:.4f}"
         )
 
-        # Save fold model
+        # Save fold model (safe JSON metadata + scaler for pickle-free inference)
+        from .checkpoint_io import save_scaler, save_training_meta
+
         fold_dir = os.path.join(output_dir, f"fold_{fold + 1}")
         os.makedirs(fold_dir, exist_ok=True)
         torch.save(model.state_dict(), os.path.join(fold_dir, "model.pth"))
-        with open(os.path.join(fold_dir, "scaler.pkl"), "wb") as f:
-            pickle.dump(scaler, f)
-        with open(os.path.join(fold_dir, "training_meta.pkl"), "wb") as f:
-            pickle.dump(
-                {
-                    "epoch": results.get("best_epoch") or results["epochs_trained"],
-                    "best_val_loss": results["best_val_loss"],
-                    "model_name": model_name,
-                    "model_kwargs": model_kwargs,
-                    "in_shape": in_shape,
-                    "in_channels": in_channels,
-                    "out_dim": out_size,
-                    "target_shape": out_shape,
-                    "cv_fold": fold + 1,
-                },
-                f,
-            )
+        save_scaler(scaler, fold_dir)
+        save_training_meta(
+            {
+                "epoch": results.get("best_epoch") or results["epochs_trained"],
+                "best_val_loss": results["best_val_loss"],
+                "model_name": model_name,
+                "model_kwargs": model_kwargs,
+                "in_shape": in_shape,
+                "in_channels": in_channels,
+                "out_dim": out_size,
+                "target_shape": out_shape,
+                "cv_fold": fold + 1,
+            },
+            fold_dir,
+        )
 
         # Explicit cleanup to prevent OOM across folds
         del model, optimizer, scheduler, criterion

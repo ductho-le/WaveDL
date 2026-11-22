@@ -928,3 +928,546 @@ def test_launcher_detects_wandb_from_yaml_config(tmp_path, monkeypatch):
     )
     assert launcher.main() == 0
     assert summary_calls == [(0, True)]
+
+
+class _TinyTrainVectorModel(torch.nn.Module):
+    supports_spatial_output = False
+    requires_spatial_output = False
+    supported_input_channels = None
+
+    def __init__(self, in_shape=(4,), out_size=1, in_channels=1, **kwargs):
+        super().__init__()
+        self.in_shape = in_shape
+        self.out_size = out_size
+        self.net = torch.nn.Sequential(
+            torch.nn.Flatten(),
+            torch.nn.Linear(in_channels * in_shape[0], out_size),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+    def get_optimizer_groups(self, lr: float, weight_decay: float):
+        return [
+            {"params": list(self.parameters()), "lr": lr, "weight_decay": weight_decay}
+        ]
+
+    def parameter_summary(self) -> dict[str, float]:
+        n_params = sum(p.numel() for p in self.parameters())
+        return {"trainable_parameters": n_params, "total_mb": n_params * 4 / (1024**2)}
+
+
+def test_resume_rejects_in_place_validation_change_and_objective_mismatch(
+    tmp_path, monkeypatch
+):
+    """Changing fixed validation targets in place or changing selection objective must fail resume."""
+    from wavedl import train
+    from wavedl.models.registry import MODEL_REGISTRY
+    from wavedl.utils.checkpoint_io import load_training_meta
+
+    monkeypatch.setitem(MODEL_REGISTRY, "tiny_resume_reg", _TinyTrainVectorModel)
+    monkeypatch.setenv("ACCELERATE_USE_CPU", "true")
+
+    train_npz = tmp_path / "train.npz"
+    val_npz = tmp_path / "val.npz"
+    rng = np.random.default_rng(7)
+    x_tr = rng.normal(size=(8, 4)).astype(np.float32)
+    y_tr = rng.normal(size=(8, 1)).astype(np.float32)
+    x_va = rng.normal(size=(4, 4)).astype(np.float32)
+    y_va = rng.normal(size=(4, 1)).astype(np.float32)
+    np.savez(train_npz, input_train=x_tr, output_train=y_tr)
+    np.savez(val_npz, input_train=x_va, output_train=y_va)
+
+    out_dir = tmp_path / "run"
+
+    def _run_train(*extra_args: str):
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "wavedl-train",
+                "--model",
+                "tiny_resume_reg",
+                "--data_path",
+                str(train_npz),
+                "--val_data_path",
+                str(val_npz),
+                "--output_dir",
+                str(out_dir),
+                "--epochs",
+                "1",
+                "--batch_size",
+                "4",
+                "--workers",
+                "0",
+                "--precision",
+                "no",
+                "--save_every",
+                "1",
+                *extra_args,
+            ],
+        )
+        train.main()
+
+    _run_train()
+    ckpt = out_dir / "best_checkpoint"
+    assert ckpt.is_dir()
+    meta = load_training_meta(ckpt)
+    assert meta is not None
+    assert meta["data_fingerprint"] is not None
+    assert meta["val_data_fingerprint"] is not None
+    assert meta["selection_objective"] == {"selection_metric": "loss", "loss": "mse"}
+
+    # Matching data & selection objective succeeds
+    _run_train("--resume", str(ckpt), "--epochs", "2")
+
+    # Mutate validation targets in place (unchanged filename, training data, and scaler)
+    np.savez(val_npz, input_train=x_va, output_train=y_va + 500.0)
+    with pytest.raises(ValueError, match="validation dataset changed"):
+        _run_train("--resume", str(ckpt), "--epochs", "3")
+
+    # Restore validation data, then change selection objective
+    np.savez(val_npz, input_train=x_va, output_train=y_va)
+    with pytest.raises(ValueError, match="selection_objective"):
+        _run_train("--resume", str(ckpt), "--epochs", "3", "--selection_metric", "mse")
+    with pytest.raises(ValueError, match="selection_objective"):
+        _run_train("--resume", str(ckpt), "--epochs", "3", "--loss", "mae")
+
+
+def test_startup_recovers_backup_checkpoint_after_crash_between_renames(
+    tmp_path, monkeypatch
+):
+    """Auto-resume must recover .best_checkpoint.prev if killed between the two renames."""
+    import csv
+    import os
+
+    from wavedl import train
+    from wavedl.models.registry import MODEL_REGISTRY
+    from wavedl.utils.checkpoint_io import load_training_meta
+
+    monkeypatch.setitem(MODEL_REGISTRY, "tiny_recover_reg", _TinyTrainVectorModel)
+    monkeypatch.setenv("ACCELERATE_USE_CPU", "true")
+
+    data_npz = tmp_path / "data.npz"
+    rng = np.random.default_rng(11)
+    np.savez(
+        data_npz,
+        input_train=rng.normal(size=(8, 4)).astype(np.float32),
+        output_train=rng.normal(size=(8, 1)).astype(np.float32),
+    )
+
+    out_dir = tmp_path / "run"
+
+    def _run_train(*extra_args: str):
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "wavedl-train",
+                "--model",
+                "tiny_recover_reg",
+                "--data_path",
+                str(data_npz),
+                "--output_dir",
+                str(out_dir),
+                "--epochs",
+                "2",
+                "--batch_size",
+                "4",
+                "--workers",
+                "0",
+                "--precision",
+                "no",
+                "--save_every",
+                "0",
+                *extra_args,
+            ],
+        )
+        train.main()
+
+    _run_train()
+    (out_dir / "training_complete.flag").unlink(missing_ok=True)
+    ckpt = out_dir / "best_checkpoint"
+    saved_meta = load_training_meta(ckpt)
+    assert saved_meta is not None
+    saved_epoch = saved_meta["epoch"]
+    assert saved_epoch >= 1
+
+    # Recreate state between os.replace(ckpt_dir, backup_dir) and os.replace(staging_dir, ckpt_dir)
+    backup = out_dir / ".best_checkpoint.prev"
+    staging = out_dir / ".best_checkpoint.staging"
+    os.replace(ckpt, backup)
+    staging.mkdir()
+    (staging / "partial.tmp").write_text("incomplete", encoding="utf-8")
+    assert not ckpt.exists()
+
+    _run_train("--epochs", str(saved_epoch + 1))
+
+    assert ckpt.is_dir()
+    assert not backup.exists()
+    assert not staging.exists()
+    history_rows = list(
+        csv.DictReader((out_dir / "training_history.csv").open("r", encoding="utf-8"))
+    )
+    assert int(history_rows[-1]["epoch"]) == saved_epoch + 1
+
+
+def test_recover_staged_checkpoint_handles_all_interruption_points(tmp_path):
+    """Startup recovery must handle crashes at each checkpoint replacement step."""
+    from pathlib import Path
+
+    from wavedl.train import _archive_previous_run, _recover_staged_checkpoint
+    from wavedl.utils.checkpoint_io import load_training_meta, save_training_meta
+
+    def _make_valid_ckpt(path: Path, epoch: int):
+        path.mkdir(parents=True, exist_ok=True)
+        torch.save({"w": torch.tensor([float(epoch)])}, path / "model.bin")
+        save_training_meta({"epoch": epoch, "best_val_loss": 0.1}, path)
+
+    # Crash during staging before first rename (best intact, partial staging)
+    d1 = tmp_path / "step_a"
+    _make_valid_ckpt(d1 / "best_checkpoint", epoch=5)
+    (d1 / ".best_checkpoint.staging").mkdir()
+    assert _recover_staged_checkpoint(str(d1), "best_checkpoint") is False
+    assert load_training_meta(d1 / "best_checkpoint")["epoch"] == 5
+    assert not (d1 / ".best_checkpoint.staging").exists()
+
+    # Crash between backup rename and staging promotion
+    d2 = tmp_path / "step_b"
+    _make_valid_ckpt(d2 / ".best_checkpoint.prev", epoch=7)
+    (d2 / ".best_checkpoint.staging").mkdir()
+    assert _recover_staged_checkpoint(str(d2), "best_checkpoint") is True
+    assert load_training_meta(d2 / "best_checkpoint")["epoch"] == 7
+    assert not (d2 / ".best_checkpoint.prev").exists()
+    assert not (d2 / ".best_checkpoint.staging").exists()
+
+    # Crash after staging promotion, before backup deletion
+    d3 = tmp_path / "step_c"
+    _make_valid_ckpt(d3 / "best_checkpoint", epoch=9)
+    _make_valid_ckpt(d3 / ".best_checkpoint.prev", epoch=8)
+    assert _recover_staged_checkpoint(str(d3), "best_checkpoint") is False
+    assert load_training_meta(d3 / "best_checkpoint")["epoch"] == 9
+    assert not (d3 / ".best_checkpoint.prev").exists()
+
+    # --fresh archives the recovered backup instead of discarding it
+    d4 = tmp_path / "step_d"
+    _make_valid_ckpt(d4 / ".best_checkpoint.prev", epoch=11)
+    assert _recover_staged_checkpoint(str(d4), "best_checkpoint") is True
+    archive = _archive_previous_run(str(d4))
+    assert archive is not None
+    assert load_training_meta(archive / "best_checkpoint")["epoch"] == 11
+
+
+@pytest.mark.parametrize("name", ["best_checkpoint", "interrupted_checkpoint"])
+def test_failed_checkpoint_publish_and_rollback_preserve_backup(
+    tmp_path, monkeypatch, name
+):
+    import os
+    from pathlib import Path
+
+    from wavedl.train import _publish_staged_checkpoint, _recover_staged_checkpoint
+    from wavedl.utils.checkpoint_io import load_training_meta, save_training_meta
+
+    checkpoint = tmp_path / name
+    staging = tmp_path / f".{name}.staging"
+    backup = tmp_path / f".{name}.prev"
+    for directory, epoch in ((checkpoint, 1), (staging, 2)):
+        directory.mkdir()
+        torch.save({"w": torch.tensor([epoch])}, directory / "model.bin")
+        save_training_meta({"epoch": epoch}, directory)
+
+    replace = os.replace
+
+    def fail_publish_and_rollback(src, dst):
+        if Path(dst) == checkpoint and Path(src) in (staging, backup):
+            raise OSError("simulated storage error")
+        return replace(src, dst)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", fail_publish_and_rollback)
+        with pytest.raises(OSError, match="simulated storage error"):
+            _publish_staged_checkpoint(str(staging), str(checkpoint), str(backup))
+
+    assert load_training_meta(backup)["epoch"] == 1
+    assert _recover_staged_checkpoint(str(tmp_path), name)
+    assert load_training_meta(checkpoint)["epoch"] == 1
+
+
+def test_hpo_persistent_study_rejects_edited_manifest_shard(tmp_path, monkeypatch):
+    """Edits outside the fast-hash windows must still reject study reuse."""
+    import shutil
+
+    optuna = pytest.importorskip("optuna")
+    from wavedl import hpo
+    from wavedl.utils.data import _compute_dataset_fingerprint
+
+    shard_dir = tmp_path / "shards"
+    shard_dir.mkdir()
+    x_path = shard_dir / "x0.npy"
+    y_path = shard_dir / "y0.npy"
+    np.save(x_path, np.ones((12, 1, 8, 8), dtype=np.float32))
+    np.save(y_path, np.ones((12, 1, 256, 256), dtype=np.float32))
+    manifest = shard_dir / "train.txt"
+    manifest.write_text("x0.npy\ty0.npy\n", encoding="utf-8")
+
+    fp_before = _compute_dataset_fingerprint(manifest)
+    fast_before = _compute_dataset_fingerprint(manifest, mode="fast")
+    manifest_text_before = manifest.read_text(encoding="utf-8")
+
+    # Relocating identical manifest + shards preserves portable fingerprint
+    relocated = tmp_path / "moved"
+    shutil.copytree(shard_dir, relocated)
+    assert _compute_dataset_fingerprint(relocated / "train.txt") == fp_before
+
+    db_file = tmp_path / "study.db"
+    storage_url = f"sqlite:///{db_file.as_posix()}"
+    monkeypatch.setattr(hpo, "create_objective", lambda args: (lambda trial: 0.25))
+
+    def _run_hpo():
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "wavedl-hpo",
+                "--data_path",
+                str(manifest),
+                "--models",
+                "unet_field",
+                "--n_trials",
+                "1",
+                "--n_jobs",
+                "1",
+                "--quick",
+                "--study_name",
+                "shard_regression",
+                "--storage",
+                storage_url,
+                "--output",
+                str(tmp_path / "out.json"),
+            ],
+        )
+        hpo.main()
+
+    _run_hpo()
+
+    shard = np.load(y_path, mmap_mode="r+")
+    shard[6] = 99.0
+    shard.flush()
+    del shard
+    assert manifest.read_text(encoding="utf-8") == manifest_text_before
+    assert _compute_dataset_fingerprint(manifest, mode="fast") == fast_before
+    assert _compute_dataset_fingerprint(manifest) != fp_before
+
+    with pytest.raises(SystemExit) as exc:
+        _run_hpo()
+    assert exc.value.code == 2
+
+    study = optuna.load_study(study_name="shard_regression", storage=storage_url)
+    assert len(study.trials) == 1
+
+
+def test_wandb_watch_runs_after_tracker_init_offline(tmp_path, monkeypatch, caplog):
+    """--wandb --wandb_watch must initialize trackers before calling wandb.watch()."""
+    pytest.importorskip("wandb")
+    from wavedl import train
+    from wavedl.models.registry import MODEL_REGISTRY
+
+    monkeypatch.setitem(MODEL_REGISTRY, "tiny_wandb_reg", _TinyTrainVectorModel)
+    monkeypatch.setenv("ACCELERATE_USE_CPU", "true")
+    monkeypatch.setenv("WANDB_MODE", "offline")
+    monkeypatch.setenv("WANDB_DIR", str(tmp_path / "wandb_logs"))
+    monkeypatch.setenv("WANDB_SILENT", "true")
+
+    data_npz = tmp_path / "data.npz"
+    rng = np.random.default_rng(19)
+    np.savez(
+        data_npz,
+        input_train=rng.normal(size=(8, 4)).astype(np.float32),
+        output_train=rng.normal(size=(8, 1)).astype(np.float32),
+    )
+
+    events: list[str] = []
+    orig_init_trackers = train.Accelerator.init_trackers
+
+    def _recording_init_trackers(self, *args, **kwargs):
+        events.append("init_trackers")
+        result = orig_init_trackers(self, *args, **kwargs)
+        active_watch = train.wandb.watch
+
+        def _recording_watch(*w_args, **w_kwargs):
+            events.append("watch")
+            assert train.wandb.run is not None
+            return active_watch(*w_args, **w_kwargs)
+
+        monkeypatch.setattr(train.wandb, "watch", _recording_watch)
+        return result
+
+    monkeypatch.setattr(train.Accelerator, "init_trackers", _recording_init_trackers)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "wavedl-train",
+            "--model",
+            "tiny_wandb_reg",
+            "--data_path",
+            str(data_npz),
+            "--output_dir",
+            str(tmp_path / "run"),
+            "--epochs",
+            "1",
+            "--batch_size",
+            "4",
+            "--workers",
+            "0",
+            "--precision",
+            "no",
+            "--save_every",
+            "0",
+            "--wandb",
+            "--wandb_watch",
+            "--project_name",
+            "wavedl_offline_test",
+        ],
+    )
+    with caplog.at_level(logging.INFO):
+        train.main()
+    assert events == ["init_trackers", "watch"]
+    assert "WandB gradient watching enabled" in caplog.text
+
+
+def test_hpo_detects_five_channel_npz_and_forwards_input_channels(
+    tmp_path, monkeypatch, capsys
+):
+    """A five-channel dataset keeps the same channel count in trials and retraining."""
+    import shlex
+
+    from wavedl import hpo, train
+    from wavedl.hpo import _detect_input_channels, _resolve_models_for_target
+
+    path = tmp_path / "five_ch.npz"
+    np.savez(
+        path,
+        input_train=np.zeros((4, 5, 32, 32), dtype=np.float32),
+        output_train=np.zeros((4, 1, 16, 16), dtype=np.float32),
+    )
+    assert _detect_input_channels(str(path)) == 5
+
+    models = _resolve_models_for_target((1, 16, 16), in_channels=5)
+    assert "unet_field" not in models
+    assert "inversionnet" in models
+
+    assert _detect_input_channels(str(path), single_channel=True) == 1
+
+    trial_settings = {}
+
+    def train_trial(**kwargs):
+        trial_settings.update(kwargs)
+        return {"best_val_loss": 0.25, "epochs_trained": 1, "pruned": False}
+
+    monkeypatch.setattr(train, "train_single_trial", train_trial)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "wavedl-hpo",
+            "--data_path",
+            str(path),
+            "--models",
+            "inversionnet",
+            "--n_trials",
+            "1",
+            "--n_jobs",
+            "1",
+            "--inprocess",
+            "--storage",
+            "none",
+            "--precision",
+            "no",
+            "--output",
+            str(tmp_path / "result.json"),
+        ],
+    )
+    hpo.main()
+    assert trial_settings["input_channels"] == 5
+    command = capsys.readouterr().out.partition("wavedl-train \\\n")[2]
+    flags = shlex.split(command.replace("\\\n", ""))
+    assert flags[flags.index("--input_channels") + 1] == "5"
+    assert flags[flags.index("--precision") + 1] == trial_settings["precision"]
+
+
+def test_hpo_gpu_queue_enforces_exclusive_leasing_when_n_jobs_exceeds_gpus(
+    tmp_path, monkeypatch
+):
+    """Even when n_jobs > visible GPU count, concurrent trials must never share a GPU."""
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from pathlib import Path
+    from threading import Lock
+    from types import SimpleNamespace
+
+    optuna = pytest.importorskip("optuna")
+    from wavedl import hpo
+
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3,7")
+    active: set[str] = set()
+    lock = Lock()
+    max_concurrent_seen = 0
+
+    def fake_run(command, **kwargs):
+        nonlocal max_concurrent_seen
+        gpu = kwargs["env"]["CUDA_VISIBLE_DEVICES"]
+        with lock:
+            assert gpu in {"3", "7"}
+            assert gpu not in active, f"GPU {gpu} leased to two concurrent trials!"
+            active.add(gpu)
+            max_concurrent_seen = max(max_concurrent_seen, len(active))
+        try:
+            time.sleep(0.02)
+            out = Path(command[command.index("--output_dir") + 1])
+            with (out / "training_history.csv").open("w", encoding="utf-8") as f:
+                f.write("val_loss\n0.42\n")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        finally:
+            with lock:
+                active.remove(gpu)
+
+    monkeypatch.setattr(hpo.subprocess, "run", fake_run)
+    args = SimpleNamespace(
+        target_shape=(1,),
+        models=["cnn"],
+        quick=True,
+        medium=False,
+        optimizers=None,
+        schedulers=None,
+        losses=None,
+        batch_sizes=[1],
+        data_path="unused.npz",
+        inprocess=False,
+        n_jobs=6,
+        n_gpus=2,
+        max_epochs=1,
+        seed=1,
+        timeout=5,
+        allow_pickle=False,
+    )
+    objective = hpo.create_objective(args)
+    params = {
+        "model": "cnn",
+        "lr": 0.001,
+        "batch_size": 1,
+        "optimizer": "adamw",
+        "scheduler": "plateau",
+        "loss": "mse",
+        "weight_decay": 0.0001,
+        "patience": 10,
+    }
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(
+            pool.map(
+                lambda i: objective(optuna.trial.FixedTrial(params, number=i)),
+                range(6),
+            )
+        )
+    assert results == [0.42] * 6
+    assert max_concurrent_seen <= 2

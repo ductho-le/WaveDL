@@ -40,12 +40,16 @@ from wavedl.utils import setup_hpc_cache_dirs
 setup_hpc_cache_dirs()
 
 import argparse  # noqa: E402
+import csv  # noqa: E402
 import inspect  # noqa: E402
 import json  # noqa: E402
 import logging  # noqa: E402
-import pickle  # noqa: E402
+import shutil  # noqa: E402
+from contextlib import ExitStack, contextmanager  # noqa: E402
 from pathlib import Path  # noqa: E402
+from tempfile import TemporaryDirectory, TemporaryFile  # noqa: E402
 from typing import Any  # noqa: E402
+from zipfile import ZIP_DEFLATED, ZipFile  # noqa: E402
 
 # Force Agg backend before pyplot import (headless HPC nodes have no display)
 import matplotlib  # noqa: E402
@@ -84,7 +88,13 @@ from wavedl.utils import (  # noqa: E402
     plot_scientific_scatter,
     scaler_target_shape,
 )
+from wavedl.utils.checkpoint_io import (  # noqa: E402
+    load_scaler,
+    load_training_meta,
+)
 from wavedl.utils.preprocessing import (  # noqa: E402
+    ManifestInputs,
+    ManifestTargets,
     configure_tf32,
     transform_inputs,
     validate_input_channels,
@@ -244,7 +254,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Override vector target count or field channel count "
-            "(inferred from scaler.pkl if targets are missing)"
+            "(inferred from checkpoint scaler if targets are missing)"
         ),
     )
     parser.add_argument(
@@ -276,7 +286,12 @@ def load_data_for_inference(
     input_channels: int | None = None,
     *,
     allow_pickle: bool = False,
-) -> tuple[torch.Tensor | torch.utils.data.Dataset, torch.Tensor | None]:
+    load_targets: bool = True,
+    lazy_targets: bool = False,
+    max_samples: int | None = None,
+) -> tuple[
+    torch.Tensor | torch.utils.data.Dataset, torch.Tensor | ManifestTargets | None
+]:
     """
     Load test data for inference using the unified data loading pipeline.
 
@@ -288,11 +303,14 @@ def load_data_for_inference(
         input_key: Custom key for input data (overrides auto-detection)
         output_key: Custom key for output data (overrides auto-detection)
         input_channels: Explicit input channel count for ambiguous 4D inputs
+        load_targets: If False, skip loading ground-truth targets (e.g. export-only)
+        lazy_targets: If True on manifests, return a streaming ManifestTargets view
+        max_samples: Optional sample limit (e.g. 1 sample for ONNX export tracing)
 
     Returns:
         Tuple of:
             - X: Input tensor (N, C, *spatial_dims), or lazy Dataset for .txt manifests
-            - y: Target tensor ``(N,T)`` or ``(N,C,H,W)``, or None if absent
+            - y: Target tensor ``(N,T)`` or ``(N,C,H,W)``, ManifestTargets, or None
     """
     from pathlib import Path
 
@@ -316,10 +334,17 @@ def load_data_for_inference(
     logging.info(f"Loading test data from: {file_path} (format: {format_name})")
     if input_key:
         logging.info(f"   Using custom input key: '{input_key}'")
-    if output_key:
+    if output_key and load_targets:
         logging.info(f"   Using custom output key: '{output_key}'")
 
     # Use the unified loader from utils.data
+    extra_kwargs: dict[str, Any] = {}
+    if not load_targets:
+        extra_kwargs["load_targets"] = False
+    if lazy_targets:
+        extra_kwargs["lazy_targets"] = True
+    if max_samples is not None:
+        extra_kwargs["max_samples"] = max_samples
     X, y = load_test_data(
         file_path,
         format=format,
@@ -327,12 +352,14 @@ def load_data_for_inference(
         output_key=output_key,
         input_channels=input_channels,
         allow_pickle=allow_pickle,
+        **extra_kwargs,
     )
 
     # Log results
     if y is not None:
+        lazy_note = " (streaming)" if isinstance(y, ManifestTargets) else ""
         logging.info(
-            f"   ✔ Loaded {len(X)} samples | Input: {X.shape} | Target: {y.shape}"
+            f"   ✔ Loaded {len(X)} samples | Input: {X.shape} | Target: {y.shape}{lazy_note}"
         )
     else:
         logging.info(
@@ -376,12 +403,9 @@ def load_checkpoint(
             f"Expected a checkpoint directory (e.g., 'best_checkpoint/'), got file: {checkpoint_dir}"
         )
 
-    # Load training metadata
-    meta_path = checkpoint_dir / "training_meta.pkl"
-    meta = None
-    if meta_path.exists():
-        with open(meta_path, "rb") as f:
-            meta = pickle.load(f)
+    # Load training metadata (prefers safe training_meta.json, falls back to legacy .pkl)
+    meta = load_training_meta(checkpoint_dir)
+    if meta is not None:
         best_val = meta.get("best_val_loss")
         val_str = f"{best_val:.6f}" if isinstance(best_val, (int, float)) else "N/A"
         logging.info(
@@ -402,7 +426,7 @@ def load_checkpoint(
 
     # Auto-detect model architecture if not specified
     if model_name is None:
-        # First, try to read from training_meta.pkl (most reliable)
+        # First, try to read from training_meta.json (or legacy training_meta.pkl)
         if meta is not None and meta.get("model_name"):
             model_name = meta["model_name"]
             logging.info(f"   Auto-detected model from checkpoint: {model_name}")
@@ -433,7 +457,7 @@ def load_checkpoint(
             else:
                 raise ValueError(
                     f"Could not auto-detect model architecture.\\n"
-                    f"Checkpoint missing 'model_name' in training_meta.pkl and folder '{parent_dir}' "
+                    f"Checkpoint missing 'model_name' in training_meta.json/training_meta.pkl and folder '{parent_dir}' "
                     f"doesn't start with a known model name.\\n"
                     f"Please specify --model explicitly. Available models: {list_models()}"
                 )
@@ -466,7 +490,7 @@ def load_checkpoint(
         raise ValueError(
             f"Model '{model_name}' requires dense targets, but this checkpoint/data "
             "describes vector output. Dense checkpoints created by this version "
-            "store target_shape in training_meta.pkl."
+            "store target_shape in training_meta.json (or legacy training_meta.pkl)."
         )
 
     # Use pretrained=False: checkpoint weights will overwrite any pretrained weights,
@@ -567,22 +591,13 @@ def load_checkpoint(
 
     logging.info(f"   ✔ Loaded weights from: {weight_path.name}")
 
-    # Load scaler
-    # Prefer the checkpoint-local scaler so copied/moved checkpoints remain
-    # self-contained even when their new parent has an unrelated scaler.
-    local_scaler_path = checkpoint_dir / "scaler.pkl"
-    parent_scaler_path = checkpoint_dir.parent / "scaler.pkl"
-    scaler_path = (
-        local_scaler_path if local_scaler_path.exists() else parent_scaler_path
-    )
-
-    if not scaler_path.exists():
+    # Load scaler (prefers checkpoint-local scaler.json, falls back to legacy scaler.pkl)
+    scaler, scaler_path = load_scaler(checkpoint_dir, fallback_parent=True)
+    if scaler is None or scaler_path is None:
         raise FileNotFoundError(
-            f"Scaler not found. Checked: {local_scaler_path} and {parent_scaler_path}"
+            f"Scaler not found in {checkpoint_dir} or {checkpoint_dir.parent} "
+            "(expected scaler.json or legacy scaler.pkl)"
         )
-
-    with open(scaler_path, "rb") as f:
-        scaler = pickle.load(f)
 
     if (
         isinstance(scaler, SpatialTargetScaler)
@@ -1144,22 +1159,358 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
     return metrics
 
 
+def _needs_float64_physical(scaler: Any, y_true: np.ndarray | None = None) -> bool:
+    """Return True when float32 physical outputs would lose precision on large offsets."""
+    if y_true is not None and np.asarray(y_true).dtype == np.float64:
+        return True
+    mean = getattr(scaler, "mean_", None)
+    scale = getattr(scaler, "scale_", None)
+    if mean is None or scale is None:
+        return False
+    mean_arr = np.asarray(mean, dtype=np.float64)
+    scale_arr = np.maximum(np.abs(np.asarray(scale, dtype=np.float64)), 1e-12)
+    f32_eps = float(np.finfo(np.float32).eps)
+    return bool(np.any(np.abs(mean_arr) * f32_eps > 1e-4 * scale_arr))
+
+
+def _denormalize_predictions(
+    scaler: Any,
+    y_pred_scaled: np.ndarray,
+    y_true: np.ndarray | None = None,
+) -> np.ndarray:
+    """Inverse-transform normalized model predictions, preserving float64 precision when needed."""
+    arr = np.asarray(y_pred_scaled)
+    # Vector targets are compact so float64 is essentially free; dense fields
+    # promote when ground truth is float64 or the physical offset exceeds float32 resolution.
+    if arr.ndim <= 2 or _needs_float64_physical(scaler, y_true):
+        arr = arr.astype(np.float64, copy=False)
+    return scaler.inverse_transform(arr)
+
+
+def _metrics_from_streaming_tracker(
+    tracker: StreamingFieldMetrics, *, is_field: bool
+) -> dict[str, float]:
+    """Format a ``StreamingFieldMetrics`` accumulator into the standard metrics dict."""
+    channels = tracker.channels
+    r2_values, correlation_values = tracker.per_channel()
+    count = tracker.count
+    with np.errstate(invalid="ignore", divide="ignore"):
+        mae_per_channel = tracker.sum_absolute_physical_error / count
+        mse_per_channel = tracker.sum_squared_error / count
+        if is_field:
+            relative_l2_per_channel = tracker.sum_relative_l2 / tracker.sample_count
+
+    metrics: dict[str, float] = {
+        "r2_score": float(np.mean(r2_values)) if count >= 2 else float("nan"),
+        "pearson_corr": (
+            float(np.mean(correlation_values)) if count >= 3 else float("nan")
+        ),
+        "mae_avg": float(np.mean(mae_per_channel)),
+        "rmse": float(np.sqrt(np.mean(mse_per_channel))),
+    }
+    if is_field:
+        metrics["relative_l2"] = float(np.mean(relative_l2_per_channel))
+    for i in range(channels):
+        metrics[f"mae_p{i}"] = float(mae_per_channel[i])
+        if is_field:
+            metrics[f"rmse_p{i}"] = float(np.sqrt(mse_per_channel[i]))
+            metrics[f"relative_l2_p{i}"] = float(relative_l2_per_channel[i])
+    return metrics
+
+
+@contextmanager
+def _dense_prediction_archive(
+    path: Path,
+    shape: tuple[int, ...],
+    channel_names: list[str],
+    target_dtype: np.dtype,
+    prediction_dtype: np.dtype,
+):
+    """Write dense NPZ members incrementally and publish the completed archive."""
+    with (
+        TemporaryDirectory(prefix=".wavedl-predictions-", dir=path.parent) as scratch,
+        TemporaryFile(dir=scratch) as prediction_file,
+        TemporaryFile(dir=scratch) as error_file,
+    ):
+        staged = Path(scratch) / path.name
+        with ZipFile(staged, "w", compression=ZIP_DEFLATED) as archive:
+            # A zip archive can write one member at a time. Stream the targets
+            # directly into it and spool predictions and errors on disk.
+            with archive.open("target.npy", "w", force_zip64=True) as target_file:
+                for file, dtype in (
+                    (target_file, target_dtype),
+                    (prediction_file, prediction_dtype),
+                    (error_file, np.result_type(target_dtype, prediction_dtype)),
+                ):
+                    np.lib.format.write_array_header_2_0(
+                        file,
+                        {
+                            "descr": np.lib.format.dtype_to_descr(dtype),
+                            "fortran_order": False,
+                            "shape": shape,
+                        },
+                    )
+                yield target_file, prediction_file, error_file
+            for file, name in (
+                (prediction_file, "prediction.npy"),
+                (error_file, "error.npy"),
+            ):
+                file.seek(0)
+                with archive.open(name, "w", force_zip64=True) as member:
+                    shutil.copyfileobj(file, member)
+            with archive.open("channel_names.npy", "w") as member:
+                np.save(
+                    member, np.asarray(channel_names, dtype=str), allow_pickle=False
+                )
+        staged.replace(path)
+
+
+@torch.inference_mode()
+def _run_streaming_manifest_evaluation(
+    model: nn.Module,
+    scaler: Any,
+    X_test: ManifestInputs,
+    y_test: ManifestTargets,
+    *,
+    batch_size: int,
+    device: torch.device,
+    num_workers: int,
+    target_shape: tuple[int, ...],
+    output_dir: Path,
+    param_names: list[str] | None,
+    save_predictions_flag: bool,
+    plot_flag: bool,
+    verbose_flag: bool,
+) -> tuple[dict[str, float], float, np.ndarray | None, np.ndarray | None, Path | None]:
+    """Stream manifest inference and scoring in bounded O(batch_size) memory.
+
+    Denormalizes every batch in float64 so large-offset physical quantities never
+    suffer float32 quantization, accumulates exact metrics via
+    ``StreamingFieldMetrics``, streams prediction outputs to disk, and
+    keeps only bounded previews for console display and dense field plots.
+    """
+    import time
+
+    model = model.to(device)
+    model.eval()
+
+    resolved_workers = num_workers
+    if resolved_workers < 0:
+        if len(X_test) <= batch_size:
+            resolved_workers = 0
+        else:
+            try:
+                from multiprocessing.shared_memory import SharedMemory
+
+                _probe = SharedMemory(create=True, size=64)
+                _probe.close()
+                _probe.unlink()
+                resolved_workers = min(4, max(1, (os.cpu_count() or 2) // 2))
+            except Exception:
+                resolved_workers = 0
+
+    loader = DataLoader(
+        X_test,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=resolved_workers,
+        pin_memory=device.type == "cuda",
+        worker_init_fn=memmap_worker_init_fn if resolved_workers > 0 else None,
+    )
+
+    is_field = len(target_shape) > 1
+    channels = target_shape[0]
+    if param_names is None or len(param_names) != channels:
+        prefix = "C" if is_field else "P"
+        resolved_names = [f"{prefix}{i}" for i in range(channels)]
+    else:
+        resolved_names = list(param_names)
+
+    if hasattr(scaler, "scale_") and len(scaler.scale_) != channels:
+        raise ValueError(
+            f"Scaler output dimension ({len(scaler.scale_)}) doesn't match "
+            f"target channel dimension ({channels}). "
+            "This may indicate a mismatched checkpoint or scaler."
+        )
+
+    preprocessing = getattr(model, "_wavedl_preprocessing", None) or {}
+    has_input_transform = preprocessing.get("input_transform", "none") != "none"
+
+    tracker = StreamingFieldMetrics(channels, track_relative_l2=is_field)
+
+    # Preview buffers for --verbose (<= 20 samples) and --plot (<= 3 for dense fields)
+    if plot_flag and not is_field:
+        preview_limit: int | None = (
+            None  # Retain vector points for scatter/diagnostic plots
+        )
+    else:
+        preview_limit = max(20 if verbose_flag else 0, 3 if plot_flag else 0)
+    preview_true_chunks: list[np.ndarray] = []
+    preview_pred_chunks: list[np.ndarray] = []
+    preview_collected = 0
+
+    saved_path: Path | None = None
+    csv_writer = None
+    dense_files = None
+
+    inference_start = time.time()
+    with ExitStack() as outputs:
+        if save_predictions_flag and is_field:
+            saved_path = output_dir / "predictions.npz"
+            target_dtype = y_test.dtype
+            prediction_dtype = (
+                np.dtype(np.float64)
+                if target_dtype == np.float64 or _needs_float64_physical(scaler)
+                else np.dtype(np.float32)
+            )
+            dense_files = outputs.enter_context(
+                _dense_prediction_archive(
+                    saved_path,
+                    y_test.shape,
+                    resolved_names,
+                    target_dtype,
+                    prediction_dtype,
+                )
+            )
+        elif save_predictions_flag:
+            saved_path = output_dir / "predictions.csv"
+            csv_file = outputs.enter_context(
+                saved_path.open("w", encoding="utf-8", newline="")
+            )
+            csv_writer = csv.writer(csv_file)
+            header = (
+                [f"True_{name}" for name in resolved_names]
+                + [f"Pred_{name}" for name in resolved_names]
+                + [
+                    col
+                    for name in resolved_names
+                    for col in (f"Error_{name}", f"AbsError_{name}")
+                ]
+            )
+            csv_writer.writerow(header)
+
+        target_iter = iter(y_test.iter_batches(batch_size=batch_size))
+        for batch in tqdm(loader, desc="Inference", leave=False):
+            batch_x = batch[0] if isinstance(batch, (list, tuple)) else batch
+            batch_x = batch_x.to(device, non_blocking=True)
+            if has_input_transform:
+                batch_x = transform_inputs(batch_x, preprocessing)
+            output = model(batch_x)
+            if (
+                not isinstance(output, torch.Tensor)
+                or output.ndim not in (2, 4)
+                or len(output) != len(batch_x)
+            ):
+                raise ValueError(
+                    "Model must return a tensor of vectors (N,T) or fields (N,C,H,W), preserving batch size."
+                )
+            preds_scaled = output.detach().float().cpu().numpy()
+            if not np.isfinite(preds_scaled).all():
+                raise FloatingPointError("Model produced non-finite predictions.")
+            if tuple(preds_scaled.shape[1:]) != tuple(target_shape):
+                raise ValueError(
+                    f"Model produced target shape {tuple(preds_scaled.shape[1:])}, "
+                    f"expected {tuple(target_shape)} from checkpoint/data metadata."
+                )
+
+            try:
+                batch_true = next(target_iter)
+            except StopIteration as exc:
+                raise ValueError(
+                    "Manifest target stream ended before input batches completed."
+                ) from exc
+            if len(batch_true) != len(preds_scaled):
+                raise ValueError(
+                    f"Manifest input/target batch mismatch: {len(preds_scaled)} vs {len(batch_true)}."
+                )
+
+            batch_pred = scaler.inverse_transform(preds_scaled.astype(np.float64))
+            if not np.isfinite(batch_pred).all():
+                raise FloatingPointError(
+                    "De-normalization produced non-finite predictions."
+                )
+
+            batch_true64 = np.asarray(batch_true, dtype=np.float64)
+            batch_pred64 = np.asarray(batch_pred, dtype=np.float64)
+            tracker.update(batch_true64, batch_pred64)
+
+            if csv_writer is not None:
+                errors = batch_pred64 - batch_true64
+                abs_errors = np.abs(errors)
+                for row_idx in range(len(batch_true64)):
+                    row = (
+                        batch_true64[row_idx].tolist()
+                        + batch_pred64[row_idx].tolist()
+                        + [
+                            val
+                            for col_idx in range(channels)
+                            for val in (
+                                float(errors[row_idx, col_idx]),
+                                float(abs_errors[row_idx, col_idx]),
+                            )
+                        ]
+                    )
+                    csv_writer.writerow(row)
+            elif dense_files is not None:
+                target = np.ascontiguousarray(batch_true, dtype=target_dtype)
+                prediction = np.ascontiguousarray(batch_pred, dtype=prediction_dtype)
+                target_file, prediction_file, error_file = dense_files
+                target_file.write(target)
+                prediction_file.write(prediction)
+                error_file.write(prediction - target)
+
+            if preview_limit is None:
+                preview_true_chunks.append(batch_true64)
+                preview_pred_chunks.append(batch_pred64)
+            elif preview_collected < preview_limit:
+                take = min(len(batch_true64), preview_limit - preview_collected)
+                preview_true_chunks.append(batch_true64[:take])
+                preview_pred_chunks.append(batch_pred64[:take])
+                preview_collected += take
+    inference_time = time.time() - inference_start
+
+    if saved_path is not None:
+        logging.info(f"   ✔ Predictions saved to: {saved_path}")
+
+    metrics = _metrics_from_streaming_tracker(tracker, is_field=is_field)
+    preview_true = (
+        np.concatenate(preview_true_chunks, axis=0) if preview_true_chunks else None
+    )
+    preview_pred = (
+        np.concatenate(preview_pred_chunks, axis=0) if preview_pred_chunks else None
+    )
+    return metrics, inference_time, preview_true, preview_pred, saved_path
+
+
 def print_results(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
+    y_true: np.ndarray | None,
+    y_pred: np.ndarray | None,
     metrics: dict[str, float],
     param_names: list | None = None,
     verbose: bool = False,
+    *,
+    total_samples: int | None = None,
+    target_shape: tuple[int, ...] | None = None,
 ):
     """Print formatted test results."""
-    y_true = canonicalize_targets(y_true)
-    y_pred = canonicalize_targets(y_pred)
-    if y_true.shape != y_pred.shape:
-        raise ValueError(
-            f"Prediction shape {y_pred.shape} does not match target shape {y_true.shape}."
-        )
-    n_params = y_true.shape[1]
-    is_field = y_true.ndim > 2
+    if y_true is not None and y_pred is not None:
+        y_true = canonicalize_targets(y_true)
+        y_pred = canonicalize_targets(y_pred)
+        if y_true.shape != y_pred.shape:
+            raise ValueError(
+                f"Prediction shape {y_pred.shape} does not match target shape {y_true.shape}."
+            )
+        n_params = y_true.shape[1]
+        is_field = y_true.ndim > 2
+        n_samples = total_samples if total_samples is not None else len(y_true)
+    else:
+        if target_shape is None:
+            raise ValueError(
+                "target_shape must be provided when y_true/y_pred are omitted."
+            )
+        n_params = target_shape[0]
+        is_field = len(target_shape) > 1
+        n_samples = total_samples or 0
 
     if param_names is None or len(param_names) != n_params:
         param_names = [f"P{i}" for i in range(n_params)]
@@ -1168,7 +1519,7 @@ def print_results(
     print("\n" + "=" * 80)
     print("OVERALL FIELD TEST RESULTS" if is_field else "OVERALL TEST RESULTS")
     print("=" * 80)
-    print(f"Samples:          {len(y_true)}")
+    print(f"Samples:          {n_samples}")
     print(f"R² Score:         {metrics['r2_score']:.6f}")
     print(f"Pearson Corr:     {metrics['pearson_corr']:.6f}")
     print(f"RMSE:             {metrics['rmse']:.6f}")
@@ -1185,7 +1536,7 @@ def print_results(
     print("-" * 80)
 
     # Sample-wise predictions (if verbose)
-    if verbose and is_field:
+    if verbose and y_true is not None and y_pred is not None and is_field:
         print("\nSAMPLE-WISE FIELD SUMMARY:")
         print("-" * 80)
         for sample_idx in range(min(len(y_true), 20)):
@@ -1200,7 +1551,7 @@ def print_results(
                     f"mae={mae:.4g}"
                 )
         print("-" * 80)
-    elif verbose:
+    elif verbose and y_true is not None and y_pred is not None:
         print("\nSAMPLE-WISE PREDICTIONS:")
         print("=" * 80)
         header = "ID   | " + " | ".join([f"{name:>8s}" for name in param_names])
@@ -1214,8 +1565,8 @@ def print_results(
             print(f"PRED | {pred_str}")
             print("-" * 80)
 
-        if len(y_true) > 20:
-            print(f"... ({len(y_true) - 20} more samples)")
+        if n_samples > 20:
+            print(f"... ({n_samples - 20} more samples)")
 
 
 def save_predictions(
@@ -1498,25 +1849,23 @@ def main():
         device = torch.device("cpu")
     logger.info(f"Using device: {device}")
 
-    # Peek training_meta.pkl before loading data so shallow 3D volumes (D <= 16
-    # or W <= 4) automatically receive input_channels=1 instead of being
-    # misclassified as multi-channel 2D or channels-last 2D.
+    # Peek training metadata (prefers safe training_meta.json, falls back to legacy .pkl)
+    # before loading data so shallow 3D volumes (D <= 16 or W <= 4) automatically
+    # receive input_channels=1 instead of being misclassified as multi-channel 2D.
     meta_in_shape = None
     meta_target_shape = None
     meta_model_name = None
     meta_in_channels = None
-    meta_path = Path(args.checkpoint) / "training_meta.pkl"
-    if meta_path.is_file():
-        try:
-            with open(meta_path, "rb") as f:
-                _meta = pickle.load(f)
+    try:
+        _meta = load_training_meta(args.checkpoint)
+        if isinstance(_meta, dict):
             meta_in_shape = _meta.get("in_shape")
             meta_in_channels = _meta.get("in_channels")
             meta_model_name = _meta.get("model_name")
             if _meta.get("target_shape") is not None:
                 meta_target_shape = tuple(_meta["target_shape"])
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     if args.input_channels is not None:
         effective_input_channels = args.input_channels
@@ -1527,15 +1876,32 @@ def main():
     else:
         effective_input_channels = None
 
-    # Load test data
-    X_test, y_test = load_data_for_inference(
-        args.data_path,
-        format=args.format,
-        input_key=args.input_key,
-        output_key=args.output_key,
-        input_channels=effective_input_channels,
-        allow_pickle=args.allow_pickle,
+    export_only = (
+        args.export == "onnx"
+        and not args.save_predictions
+        and not args.plot
+        and not args.verbose
     )
+    is_manifest_input = (
+        str(args.data_path).lower().endswith(".txt") or args.format == "manifest"
+    )
+
+    # Load test data: skip target loading in export-only mode and keep manifest
+    # targets lazy so large-scale evaluations stream in bounded memory.
+    load_kwargs: dict[str, Any] = {
+        "format": args.format,
+        "input_key": args.input_key,
+        "output_key": args.output_key,
+        "input_channels": effective_input_channels,
+        "allow_pickle": args.allow_pickle,
+    }
+    if export_only:
+        load_kwargs["load_targets"] = False
+        load_kwargs["max_samples"] = 1
+    elif is_manifest_input:
+        load_kwargs["lazy_targets"] = True
+
+    X_test, y_test = load_data_for_inference(args.data_path, **load_kwargs)
 
     data_in_shape = tuple(X_test.shape[2:])
 
@@ -1597,31 +1963,25 @@ def main():
     elif has_targets:
         out_size = y_test.shape[1]
     else:
-        # Infer from scaler.pkl
-        scaler_path = Path(args.checkpoint) / "scaler.pkl"
-        if not scaler_path.exists():
-            scaler_path = Path(args.checkpoint).parent / "scaler.pkl"
-        if scaler_path.exists():
-            with open(scaler_path, "rb") as f:
-                temp_scaler = pickle.load(f)
+        # Infer from checkpoint scaler (prefers safe scaler.json, falls back to legacy .pkl)
+        temp_scaler, temp_scaler_path = load_scaler(
+            args.checkpoint, fallback_parent=True
+        )
+        if temp_scaler is not None and temp_scaler_path is not None:
             out_size = len(temp_scaler.scale_)
             target_shape = target_shape or scaler_target_shape(temp_scaler, out_size)
-            logger.info(f"   Inferred out_size={out_size} from scaler.pkl")
+            logger.info(f"   Inferred out_size={out_size} from {temp_scaler_path.name}")
         else:
             raise ValueError(
                 "Cannot determine output size. Provide targets, --out_size, "
-                "or ensure scaler.pkl exists in checkpoint directory."
+                "or ensure scaler.json/scaler.pkl exists in checkpoint directory."
             )
 
     # Load model and scaler
     logger.info(f"Loading checkpoint from: {args.checkpoint}")
     if target_shape is None:
-        scaler_path = Path(args.checkpoint) / "scaler.pkl"
-        if not scaler_path.exists():
-            scaler_path = Path(args.checkpoint).parent / "scaler.pkl"
-        if scaler_path.exists():
-            with open(scaler_path, "rb") as f:
-                shape_scaler = pickle.load(f)
+        shape_scaler, _ = load_scaler(args.checkpoint, fallback_parent=True)
+        if shape_scaler is not None:
             target_shape = scaler_target_shape(shape_scaler, out_size)
     target_shape = target_shape or (out_size,)
     if args.input_channels is not None and int(X_test.shape[1]) != args.input_channels:
@@ -1629,6 +1989,10 @@ def main():
             f"Requested --input_channels={args.input_channels}, "
             f"but test data has {int(X_test.shape[1])} channels."
         )
+    streaming_manifest = isinstance(X_test, ManifestInputs) and isinstance(
+        y_test, ManifestTargets
+    )
+    streaming_result = None
     try:
         model, scaler = load_checkpoint(
             args.checkpoint,
@@ -1696,24 +2060,56 @@ def main():
                 )
 
             # If only export was requested (no other outputs), exit early
-            if not args.save_predictions and not args.plot and not args.verbose:
+            if export_only:
                 logger.info(
                     "Export-only mode. Use --save_predictions or --plot for inference."
                 )
                 return
 
-        # Run inference with timing
-        logger.info(f"Running inference on {len(X_test)} samples...")
-        import time
+        # Validate param_names length up front
+        if args.param_names and len(args.param_names) != target_shape[0]:
+            logger.warning(
+                f"--param_names has {len(args.param_names)} names but model outputs "
+                f"{target_shape[0]} parameters/channels. Using default names."
+            )
+            args.param_names = None  # Fall back to default
 
-        inference_start = time.time()
-        y_pred_scaled = run_inference(
-            model, X_test, args.batch_size, device, num_workers=args.workers
-        )
-        inference_time = time.time() - inference_start
+        # Run inference with timing (stream manifests in bounded memory)
+        logger.info(f"Running inference on {len(X_test)} samples...")
+        if streaming_manifest and len(X_test) > 0:
+            assert isinstance(X_test, ManifestInputs) and isinstance(
+                y_test, ManifestTargets
+            )
+            streaming_result = _run_streaming_manifest_evaluation(
+                model,
+                scaler,
+                X_test,
+                y_test,
+                batch_size=args.batch_size,
+                device=device,
+                num_workers=args.workers,
+                target_shape=tuple(target_shape),
+                output_dir=output_dir,
+                param_names=args.param_names,
+                save_predictions_flag=args.save_predictions,
+                plot_flag=args.plot,
+                verbose_flag=args.verbose,
+            )
+            inference_time = streaming_result[1]
+            y_pred_scaled = None
+        else:
+            import time
+
+            inference_start = time.time()
+            y_pred_scaled = run_inference(
+                model, X_test, args.batch_size, device, num_workers=args.workers
+            )
+            inference_time = time.time() - inference_start
     finally:
         if hasattr(X_test, "close"):
             X_test.close()
+        if y_test is not None and hasattr(y_test, "close"):
+            y_test.close()
 
     # Calculate timing metrics
     n_samples = len(X_test)
@@ -1732,6 +2128,30 @@ def main():
         logger.warning("No samples in test set — skipping evaluation.")
         return
 
+    if streaming_result is not None:
+        metrics, _, preview_true, preview_pred, _ = streaming_result
+        print_results(
+            preview_true,
+            preview_pred,
+            metrics,
+            args.param_names,
+            args.verbose,
+            total_samples=n_samples,
+            target_shape=tuple(target_shape),
+        )
+        if args.plot and preview_true is not None and preview_pred is not None:
+            logger.info(f"Generating plots (formats: {', '.join(args.plot_format)})...")
+            plot_results(
+                preview_true,
+                preview_pred,
+                str(output_dir),
+                args.param_names,
+                formats=args.plot_format,
+            )
+        logger.info("✅ Testing completed successfully!")
+        return
+
+    assert y_pred_scaled is not None
     if tuple(y_pred_scaled.shape[1:]) != tuple(target_shape):
         raise ValueError(
             f"Model produced target shape {tuple(y_pred_scaled.shape[1:])}, "
@@ -1743,26 +2163,28 @@ def main():
         raise ValueError(
             f"Scaler output dimension ({len(scaler.scale_)}) doesn't match "
             f"model output dimension ({y_pred_scaled.shape[1]}). "
-            f"This may indicate a mismatched checkpoint or scaler.pkl."
+            f"This may indicate a mismatched checkpoint or scaler."
         )
 
-    # Inverse transform predictions and free scaled array to bound peak RAM
-    y_pred = scaler.inverse_transform(y_pred_scaled)
+    y_true_np = (
+        y_test.materialize()
+        if isinstance(y_test, ManifestTargets)
+        else y_test.numpy()
+        if has_targets
+        else None
+    )
+
+    # Inverse transform predictions (preserving float64 precision when needed)
+    # and free scaled array to bound peak RAM.
+    y_pred = _denormalize_predictions(scaler, y_pred_scaled, y_true=y_true_np)
     del y_pred_scaled
     if not np.isfinite(y_pred).all():
         raise FloatingPointError("De-normalization produced non-finite predictions.")
 
-    # Validate param_names length if provided
-    if args.param_names and len(args.param_names) != y_pred.shape[1]:
-        logger.warning(
-            f"--param_names has {len(args.param_names)} names but model outputs "
-            f"{y_pred.shape[1]} parameters/channels. Using default names."
-        )
-        args.param_names = None  # Fall back to default
-
     if has_targets:
+        assert y_true_np is not None
         # === MODE: With ground truth ===
-        y_true = y_test.numpy()
+        y_true = y_true_np
 
         # Compute metrics
         metrics = compute_metrics(y_true, y_pred)

@@ -748,6 +748,7 @@ class TestHPOObjective:
             ),
             patch("pathlib.Path.exists", return_value=True),
             patch("wavedl.hpo._detect_target_shape", return_value=(3,)),
+            patch("wavedl.hpo._detect_input_channels", return_value=1),
             patch("optuna.create_study") as mock_study,
             patch("builtins.open", MagicMock()),  # suppress file output
         ):

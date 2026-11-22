@@ -157,7 +157,7 @@ Deploy models anywhere:
 pip install --upgrade wavedl
 ```
 
-Requires **Python 3.11+** (unreleased source requires PyTorch 2.13+, torchvision 0.28+, and ONNX 1.22+). Includes training, inference, HPO, WaveDL Studio, and ONNX export.
+Requires **Python 3.11+**, PyTorch 2.13+, torchvision 0.28+, and ONNX 1.22+. Includes training, inference, HPO, WaveDL Studio, and ONNX export.
 
 <details>
 <summary><b>Install from Source (Development) &amp; Security Notes</b></summary>
@@ -182,7 +182,7 @@ cd /path/to/your/project
 wavedl-gui
 ```
 
-Opens a bundled, zero-dependency local web workspace at `http://127.0.0.1:7860` to edit `./config.yaml`, browse local files, run `wavedl-train` with live logs, and evaluate or export ONNX models via `wavedl-test`. Use `wavedl-gui --port 8080 --no-browser` for SSH tunneling (`python -m wavedl.gui` also works).
+Opens a bundled, zero-dependency local web workspace at `http://127.0.0.1:7860` (loopback-only by default; pass `--allow-remote` if intentionally binding a non-loopback `--host`) to edit `./config.yaml`, browse local files, run `wavedl-train` with live logs, and evaluate or export ONNX models via `wavedl-test`. Use `wavedl-gui --port 8080 --no-browser` with SSH port forwarding for remote servers (`python -m wavedl.gui` also works).
 
 #### Training
 
@@ -359,6 +359,10 @@ WaveDL/
 │       │
 │       └── utils/                # Utilities
 │           ├── data.py           # Memory-mapped data pipeline
+│           ├── preprocessing.py  # Shard manifests, transforms & lazy loaders
+│           ├── targets.py        # Vector & spatial target scaling
+│           ├── checkpoint_io.py  # Safe JSON checkpoint metadata & scalers
+│           ├── cross_validation.py # K-fold cross-validation
 │           ├── metrics.py        # R², Pearson, visualization
 │           ├── constraints.py    # Physical constraints for training
 │           ├── distributed.py    # DDP synchronization
@@ -537,29 +541,29 @@ from torchvision.models import video as v
 
 # === TorchVision + Video Models — download only, no model instantiation ===
 urls = [
-    ('ResNet18',         m.ResNet18_Weights.IMAGENET1K_V1.url),
-    ('ResNet50',         m.ResNet50_Weights.IMAGENET1K_V1.url),
-    ('EfficientNet_B0',  m.EfficientNet_B0_Weights.IMAGENET1K_V1.url),
-    ('EfficientNet_B2',  m.EfficientNet_B2_Weights.IMAGENET1K_V1.url),
-    ('EfficientNet_B4',  m.EfficientNet_B4_Weights.IMAGENET1K_V1.url),
-    ('EfficientNet_B7',  m.EfficientNet_B7_Weights.IMAGENET1K_V1.url),
-    ('EfficientNetV2_S', m.EfficientNet_V2_S_Weights.IMAGENET1K_V1.url),
-    ('EfficientNetV2_M', m.EfficientNet_V2_M_Weights.IMAGENET1K_V1.url),
-    ('EfficientNetV2_L', m.EfficientNet_V2_L_Weights.IMAGENET1K_V1.url),
-    ('MobileNetV3_S',    m.MobileNet_V3_Small_Weights.IMAGENET1K_V1.url),
-    ('MobileNetV3_L',    m.MobileNet_V3_Large_Weights.IMAGENET1K_V1.url),
-    ('RegNet_Y_400MF',   m.RegNet_Y_400MF_Weights.IMAGENET1K_V1.url),
-    ('RegNet_Y_800MF',   m.RegNet_Y_800MF_Weights.IMAGENET1K_V1.url),
-    ('RegNet_Y_1_6GF',   m.RegNet_Y_1_6GF_Weights.IMAGENET1K_V1.url),
-    ('RegNet_Y_3_2GF',   m.RegNet_Y_3_2GF_Weights.IMAGENET1K_V1.url),
-    ('RegNet_Y_8GF',     m.RegNet_Y_8GF_Weights.IMAGENET1K_V1.url),
-    ('Swin_T',           m.Swin_T_Weights.IMAGENET1K_V1.url),
-    ('Swin_S',           m.Swin_S_Weights.IMAGENET1K_V1.url),
-    ('Swin_B',           m.Swin_B_Weights.IMAGENET1K_V1.url),
-    ('ConvNeXt_Tiny',    m.ConvNeXt_Tiny_Weights.IMAGENET1K_V1.url),
-    ('DenseNet121',      m.DenseNet121_Weights.IMAGENET1K_V1.url),
-    ('R3D_18',           v.R3D_18_Weights.KINETICS400_V1.url),
-    ('MC3_18',           v.MC3_18_Weights.KINETICS400_V1.url),
+    ('ResNet18',         m.ResNet18_Weights.DEFAULT.url),
+    ('ResNet50',         m.ResNet50_Weights.DEFAULT.url),
+    ('EfficientNet_B0',  m.EfficientNet_B0_Weights.DEFAULT.url),
+    ('EfficientNet_B2',  m.EfficientNet_B2_Weights.DEFAULT.url),
+    ('EfficientNet_B4',  m.EfficientNet_B4_Weights.DEFAULT.url),
+    ('EfficientNet_B7',  m.EfficientNet_B7_Weights.DEFAULT.url),
+    ('EfficientNetV2_S', m.EfficientNet_V2_S_Weights.DEFAULT.url),
+    ('EfficientNetV2_M', m.EfficientNet_V2_M_Weights.DEFAULT.url),
+    ('EfficientNetV2_L', m.EfficientNet_V2_L_Weights.DEFAULT.url),
+    ('MobileNetV3_S',    m.MobileNet_V3_Small_Weights.DEFAULT.url),
+    ('MobileNetV3_L',    m.MobileNet_V3_Large_Weights.DEFAULT.url),
+    ('RegNet_Y_400MF',   m.RegNet_Y_400MF_Weights.DEFAULT.url),
+    ('RegNet_Y_800MF',   m.RegNet_Y_800MF_Weights.DEFAULT.url),
+    ('RegNet_Y_1_6GF',   m.RegNet_Y_1_6GF_Weights.DEFAULT.url),
+    ('RegNet_Y_3_2GF',   m.RegNet_Y_3_2GF_Weights.DEFAULT.url),
+    ('RegNet_Y_8GF',     m.RegNet_Y_8GF_Weights.DEFAULT.url),
+    ('Swin_T',           m.Swin_T_Weights.DEFAULT.url),
+    ('Swin_S',           m.Swin_S_Weights.DEFAULT.url),
+    ('Swin_B',           m.Swin_B_Weights.DEFAULT.url),
+    ('ConvNeXt_Tiny',    m.ConvNeXt_Tiny_Weights.DEFAULT.url),
+    ('DenseNet121',      m.DenseNet121_Weights.DEFAULT.url),
+    ('R3D_18',           v.R3D_18_Weights.DEFAULT.url),
+    ('MC3_18',           v.MC3_18_Weights.DEFAULT.url),
 ]
 cache = os.path.join(os.environ['TORCH_HOME'], 'hub', 'checkpoints')
 os.makedirs(cache, exist_ok=True)
@@ -1032,7 +1036,9 @@ wavedl-train --data_path train.npz --model cnn --lr 3.2e-4 --batch_size 128 ...
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--data_path` | (required) | Training data file |
+| `--data_path` | (required) | Training data file or shard manifest |
+| `--input_channels` | `None` | Explicit input channel count for multi-channel arrays |
+| `--single_channel` | `False` | Confirm 4D array data is a single-channel 3D volume `(N, D, H, W)` |
 | `--models` | Target-aware | Compatible models to search (specify any number) |
 | `--n_trials` | `50` | Number of trials to run |
 | `--quick` | `False` | Quick mode: minimal search space |
@@ -1042,7 +1048,8 @@ wavedl-train --data_path train.npz --model cnn --lr 3.2e-4 --batch_size 128 ...
 | `--schedulers` | all 8 | Schedulers to search |
 | `--losses` | 5 unweighted | Losses to search (pass `--losses` to include `weighted_mse`) |
 | `--batch_sizes` | Target-aware | Batch sizes to search |
-| `--n_jobs` | `-1` | Parallel trials (-1 = auto-detect GPUs) |
+| `--precision` | auto | Mixed precision mode (`bf16`, `fp16`, `no`) |
+| `--n_jobs` | `-1` | Parallel trials (`-1` = auto-detect GPUs; capped to visible GPUs) |
 | `--max_epochs` | `50` | Max epochs per trial |
 | `--output` | `hpo_results.json` | Output file |
 

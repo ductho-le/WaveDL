@@ -299,6 +299,7 @@ class ShardManifestDataset(Dataset):
             list[int],
             tuple[int, ...],
             tuple[int, ...],
+            np.dtype,
         ]
         | None = None,
     ) -> None:
@@ -309,18 +310,23 @@ class ShardManifestDataset(Dataset):
         self._maps: OrderedDict[tuple[int, bool], np.ndarray] = OrderedDict()
 
         if _validated_spec is not None:
-            paths_list, ends_list, in_shape, tgt_shape = _validated_spec
+            paths_list, ends_list, in_shape, tgt_shape, self.target_dtype = (
+                _validated_spec
+            )
             self.paths = list(paths_list)
             self.ends = list(ends_list)
             self.input_shape: tuple[int, ...] | None = in_shape
             self.target_shape: tuple[int, ...] | None = tgt_shape
             total = self.ends[-1]
         else:
+            from .data import _physical_target_dtype
+
             self.paths = []
             self.ends = []
             total = 0
             self.input_shape = None
             self.target_shape = None
+            self.target_dtype = np.dtype(np.float32)
 
             for line_number, line in enumerate(
                 self.path.read_text(encoding="utf-8").splitlines(), 1
@@ -366,6 +372,9 @@ class ShardManifestDataset(Dataset):
                         )
                     self.input_shape = tuple(x.shape[1:])
                     self.target_shape = shape
+                    self.target_dtype = np.result_type(
+                        self.target_dtype, _physical_target_dtype(y.dtype)
+                    )
                     total += len(x)
                     self.paths.append(paths)
                     self.ends.append(total)
@@ -399,6 +408,7 @@ class ShardManifestDataset(Dataset):
                 self.ends,
                 self.input_shape,
                 self.target_shape,
+                self.target_dtype,
             ),
         )
 
@@ -517,6 +527,80 @@ class ManifestInputs(Dataset):
         return torch.from_numpy(self.source._sample(index))
 
 
+class ManifestTargets:
+    """Lazy target view for paired-shard manifests, preserving native precision."""
+
+    def __init__(self, source: ShardManifestDataset) -> None:
+        assert source.target_shape is not None
+        self.source = source
+        self.shape = (len(source), *source.target_shape)
+        self.ndim = len(self.shape)
+        self.dtype = source.target_dtype
+
+    def close(self) -> None:
+        """Close all cached read-only shard memmaps owned by the underlying source."""
+        self.source.close()
+
+    def __enter__(self) -> ManifestTargets:
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
+        self.close()
+        return False
+
+    def __len__(self) -> int:
+        return len(self.source)
+
+    def iter_batches(self, batch_size: int = 64):
+        """Yield finite canonicalized target batches preserving float64 precision."""
+        from .data import _as_finite_target_array
+
+        for batch in self.source.target_batches(batch_size=batch_size):
+            yield _as_finite_target_array(batch, "Targets")
+
+    def materialize(self) -> np.ndarray:
+        """Load all targets into memory with native precision preserved."""
+        from .data import _as_finite_target_array
+
+        return _as_finite_target_array(
+            np.concatenate(list(self.source.target_batches()), axis=0), "Targets"
+        )
+
+
+def _resolve_array_channel_layout(
+    raw_shape: tuple[int, ...],
+    input_channels: int | None = None,
+    single_channel: bool = False,
+) -> tuple[bool, int, tuple[int, ...]]:
+    """Determine ``(add_channel, in_channels, input_shape)`` for an array dataset."""
+    ndim = len(raw_shape)
+    channels_first = (
+        ndim >= 5
+        or (
+            ndim == 4
+            and not single_channel
+            and input_channels != 1
+            and (
+                (input_channels is not None and input_channels > 1)
+                or raw_shape[1] <= 16
+            )
+        )
+        or (
+            ndim == 3
+            and not single_channel
+            and input_channels is not None
+            and input_channels > 1
+        )
+    )
+    add_channel = not channels_first
+    in_channels = int(raw_shape[1]) if channels_first else 1
+    input_shape = (
+        in_channels,
+        *(raw_shape[2:] if channels_first else raw_shape[1:]),
+    )
+    return add_channel, in_channels, input_shape
+
+
 class _ArrayDataset(Dataset):
     """Opt-in preprocessing and fixed-validation adapter for array file formats."""
 
@@ -538,29 +622,12 @@ class _ArrayDataset(Dataset):
         if self.x.dtype.kind not in "biuf":
             raise ValueError("Inputs must contain finite real values.")
         self.indices, self.preprocessing, self.scaler = indices, preprocessing, scaler
-        channels_first = (
-            x.ndim >= 5
-            or (
-                x.ndim == 4
-                and not single_channel
-                and input_channels != 1
-                and (
-                    (input_channels is not None and input_channels > 1)
-                    or x.shape[1] <= 16
-                )
+        self.add_channel, self.in_channels, self.input_shape = (
+            _resolve_array_channel_layout(
+                tuple(x.shape),
+                input_channels=input_channels,
+                single_channel=single_channel,
             )
-            or (
-                x.ndim == 3
-                and not single_channel
-                and input_channels is not None
-                and input_channels > 1
-            )
-        )
-        self.add_channel = not channels_first
-        self.in_channels = x.shape[1] if channels_first else 1
-        self.input_shape = (
-            self.in_channels,
-            *(x.shape[2:] if channels_first else x.shape[1:]),
         )
         self.target_shape = tuple(self.y.shape[1:])
 
@@ -580,6 +647,146 @@ class _ArrayDataset(Dataset):
         ), torch.from_numpy(np.asarray(y, dtype=np.float32))
 
 
+class _LazyH5MatDataset(Dataset):
+    """Lazy on-disk dataset for HDF5 and dense MAT v7.3 under preprocessed pipelines.
+
+    Avoids loading multi-GB HDF5/MAT inputs eagerly into host RAM (and duplicating
+    across DDP ranks) when using ``--val_data_path``, custom ``--input_transform``,
+    ``--target_scaling minmax``, or multi-channel ``--input_channels``.
+    """
+
+    def __init__(
+        self,
+        path: str,
+        data_format: str,
+        indices: np.ndarray,
+        preprocessing: dict[str, Any],
+        scaler: Any,
+        raw_input_shape: tuple[int, ...],
+        target_shape: tuple[int, ...],
+        *,
+        transpose_2d_outputs: bool = False,
+        input_channels: int | None = None,
+        single_channel: bool = False,
+    ) -> None:
+        self.path = str(path)
+        self.data_format = data_format
+        self.indices = np.asarray(indices, dtype=np.int64)
+        self.preprocessing = preprocessing
+        self.scaler = scaler
+        self.raw_input_shape = tuple(raw_input_shape)
+        self.target_shape = tuple(target_shape)
+        self.transpose_2d_outputs = transpose_2d_outputs
+        self.add_channel, self.in_channels, self.input_shape = (
+            _resolve_array_channel_layout(
+                self.raw_input_shape,
+                input_channels=input_channels,
+                single_channel=single_channel,
+            )
+        )
+        self._handle: Any = None
+
+    def _ensure_handle(self) -> Any:
+        if self._handle is None:
+            from .data import get_data_source
+
+            self._handle = get_data_source(self.data_format).load_mmap(self.path)
+        return self._handle
+
+    def close(self) -> None:
+        if self._handle is not None:
+            with contextlib.suppress(Exception):
+                self._handle.close()
+            self._handle = None
+
+    def __del__(self) -> None:
+        with contextlib.suppress(Exception):
+            self.close()
+
+    def __getstate__(self) -> dict[str, Any]:
+        return {**self.__dict__, "_handle": None}
+
+    def __len__(self) -> int:
+        return len(self.indices)
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
+        handle = self._ensure_handle()
+        i = int(self.indices[index])
+        x = np.array(handle.inputs[i], dtype=np.float32, copy=True)
+        if not np.isfinite(x).all():
+            raise ValueError("Inputs must contain finite real values.")
+        if self.add_channel:
+            x = x[None]
+
+        outputs = handle.outputs
+        if self.transpose_2d_outputs:
+            if outputs.shape[0] == 1:
+                raw_y = np.array([[outputs[0, i]]], copy=True)
+            else:
+                raw_y = np.array(outputs[:, i], copy=True)[None]
+        else:
+            raw_y = np.array(outputs[i], copy=True)
+            if raw_y.ndim == 0:
+                raw_y = raw_y.reshape(1, 1)
+            else:
+                raw_y = canonicalize_targets(raw_y[None])
+
+        y = self.scaler.transform(raw_y)[0]
+        return torch.from_numpy(
+            transform_inputs(x, self.preprocessing, copy=False)
+        ), torch.from_numpy(np.asarray(y, dtype=np.float32))
+
+
+def _try_open_lazy_h5_mat(
+    path: str,
+) -> tuple[str, Any, tuple[int, ...], tuple[int, ...], bool] | None:
+    """Open an HDF5 or dense MAT v7.3 file lazily if supported; return None otherwise."""
+    import h5py
+    from scipy.sparse import issparse
+
+    from .data import DataSource, _TransposedH5Dataset, get_data_source
+
+    data_format = DataSource.detect_format(path)
+    if data_format not in ("hdf5", "mat"):
+        return None
+    handle = get_data_source(data_format).load_mmap(path)
+    is_lazy = (
+        handle._file is not None
+        and not issparse(handle.inputs)
+        and not issparse(handle.outputs)
+        and isinstance(handle.inputs, (h5py.Dataset, _TransposedH5Dataset))
+        and isinstance(handle.outputs, (h5py.Dataset, _TransposedH5Dataset))
+    )
+    if not is_lazy:
+        handle.close()
+        return None
+
+    try:
+        raw_in_shape = tuple(handle.inputs.shape)
+        raw_out_shape = tuple(handle.outputs.shape)
+        if handle.inputs.dtype.kind not in "biuf":
+            raise ValueError("Inputs must contain finite real values.")
+        if handle.outputs.dtype.kind not in "biuf":
+            raise ValueError("Targets must contain finite real values.")
+        num_samples = raw_in_shape[0]
+        transpose_2d = False
+        if data_format == "mat" and len(raw_out_shape) == 2:
+            if (raw_out_shape[0] == 1 and raw_out_shape[1] == num_samples) or (
+                raw_out_shape[1] == 1 and raw_out_shape[0] != num_samples
+            ):
+                transpose_2d = True
+                raw_out_shape = (raw_out_shape[1], raw_out_shape[0])
+        if raw_out_shape[0] != num_samples:
+            raise ValueError(
+                f"Input/output sample mismatch: {num_samples} inputs and {raw_out_shape[0]} targets."
+            )
+        target_shape = canonical_target_shape(raw_out_shape)
+        return data_format, handle, raw_in_shape, target_shape, transpose_2d
+    except Exception:
+        handle.close()
+        raise
+
+
 def prepare_preprocessed_data(
     args: Any,
     config: dict[str, Any],
@@ -593,8 +800,10 @@ def prepare_preprocessed_data(
 
     ``config`` is the resolved :func:`preprocessing_from_args` contract. The
     legacy cached path stays unchanged for default single-channel workflows.
-    Statistics are always fitted on training targets only.
+    Statistics are always fitted on training targets only. HDF5 and dense
+    MAT v7.3 sources stream lazily from disk rather than loading eagerly.
     """
+    from .checkpoint_io import load_scaler, save_scaler
     from .data import (
         _iter_target_batches,
         _validate_scaler_compatibility,
@@ -605,18 +814,26 @@ def prepare_preprocessed_data(
     val_path = getattr(args, "val_data_path", None)
     manifest = str(args.data_path).lower().endswith(".txt")
     source: ShardManifestDataset | None = None
+    lazy_train: tuple[str, Any, tuple[int, ...], tuple[int, ...], bool] | None = None
+    x = None
+    targets = None
+
     if manifest:
         source = ShardManifestDataset(args.data_path)
         n = len(source)
-        targets = None
     else:
-        x, targets = load_training_data(
-            args.data_path, allow_pickle=getattr(args, "allow_pickle", False)
-        )
-        targets = canonicalize_targets(targets)
-        n = len(x)
-        if n != len(targets):
-            raise ValueError("Input/output sample mismatch.")
+        lazy_train = _try_open_lazy_h5_mat(args.data_path)
+        if lazy_train is not None:
+            _, _, raw_train_shape, _, _ = lazy_train
+            n = raw_train_shape[0]
+        else:
+            x, targets = load_training_data(
+                args.data_path, allow_pickle=getattr(args, "allow_pickle", False)
+            )
+            targets = canonicalize_targets(targets)
+            n = len(x)
+            if n != len(targets):
+                raise ValueError("Input/output sample mismatch.")
     try:
         if n == 0:
             raise ValueError("Training dataset is empty.")
@@ -630,7 +847,14 @@ def prepare_preprocessed_data(
                 np.arange(n), test_size=val_split, random_state=args.seed
             )
         )
-        shape = source.target_shape if manifest else tuple(targets.shape[1:])
+        if manifest:
+            assert source is not None
+            shape = source.target_shape
+        elif lazy_train is not None:
+            shape = lazy_train[3]
+        else:
+            assert targets is not None
+            shape = tuple(targets.shape[1:])
         assert shape is not None
 
         def _fit_scaler() -> Any:
@@ -645,6 +869,20 @@ def prepare_preprocessed_data(
                 return create_target_scaler(
                     np.concatenate(list(source.target_batches(tr_idx)), axis=0)
                 )
+            if lazy_train is not None:
+                _, handle, _, _, transpose_2d = lazy_train
+                out_view = handle.outputs
+                if transpose_2d:
+                    out_arr = np.asarray(out_view[:]).T
+                    return create_target_scaler(out_arr[tr_idx])
+                if len(shape) == 3:
+                    return SpatialTargetScaler().fit_batches(
+                        _iter_target_batches(out_view, tr_idx)
+                    )
+                return create_target_scaler(
+                    np.concatenate(list(_iter_target_batches(out_view, tr_idx)), axis=0)
+                )
+            assert targets is not None
             if len(shape) == 3:
                 return SpatialTargetScaler().fit_batches(
                     _iter_target_batches(targets, tr_idx)
@@ -656,7 +894,6 @@ def prepare_preprocessed_data(
             and torch.distributed.is_available()
             and torch.distributed.is_initialized()
         )
-        scaler_path = Path(cache_dir) / "scaler.pkl"
         if is_distributed:
             fit_error: Exception | None = None
             scaler = None
@@ -665,11 +902,7 @@ def prepare_preprocessed_data(
                     scaler = _fit_scaler()
                     if expected_scaler is not None:
                         _validate_scaler_compatibility(scaler, expected_scaler)
-                    os.makedirs(cache_dir, exist_ok=True)
-                    tmp_scaler = scaler_path.with_suffix(".pkl.tmp")
-                    with tmp_scaler.open("wb") as file:
-                        pickle.dump(scaler, file)
-                    tmp_scaler.replace(scaler_path)
+                    save_scaler(scaler, cache_dir)
                 except Exception as exc:
                     fit_error = exc
             err_msg = [str(fit_error) if fit_error is not None else None]
@@ -679,12 +912,56 @@ def prepare_preprocessed_data(
                     raise fit_error
                 raise ValueError(err_msg[0])
             if not accelerator.is_main_process:
-                with scaler_path.open("rb") as file:
-                    scaler = pickle.load(file)
+                scaler, _ = load_scaler(cache_dir)
+                if scaler is None:
+                    raise RuntimeError(f"Scaler missing from cache_dir: {cache_dir}")
         else:
             scaler = _fit_scaler()
             if expected_scaler is not None:
                 _validate_scaler_compatibility(scaler, expected_scaler)
+
+        def _build_val_dataset(
+            path: str,
+            *,
+            input_channels: int | None,
+            single_channel: bool,
+        ) -> Dataset:
+            if str(path).lower().endswith(".txt"):
+                return ShardManifestDataset(path, config, scaler)
+            lazy_val = _try_open_lazy_h5_mat(path)
+            if lazy_val is not None:
+                v_fmt, v_handle, v_in_shape, v_tgt_shape, v_t2d = lazy_val
+                try:
+                    if v_in_shape[0] == 0:
+                        raise ValueError("Validation dataset is empty.")
+                finally:
+                    v_handle.close()
+                return _LazyH5MatDataset(
+                    path,
+                    v_fmt,
+                    np.arange(v_in_shape[0]),
+                    config,
+                    scaler,
+                    v_in_shape,
+                    v_tgt_shape,
+                    transpose_2d_outputs=v_t2d,
+                    input_channels=input_channels,
+                    single_channel=single_channel,
+                )
+            vx, vy = load_training_data(
+                path, allow_pickle=getattr(args, "allow_pickle", False)
+            )
+            if len(vx) == 0:
+                raise ValueError("Validation dataset is empty.")
+            return _ArrayDataset(
+                vx,
+                vy,
+                np.arange(len(vx)),
+                config,
+                scaler,
+                input_channels=input_channels,
+                single_channel=single_channel,
+            )
 
         if manifest:
             assert source is not None
@@ -692,20 +969,11 @@ def prepare_preprocessed_data(
                 preprocessing=config, scaler=scaler, indices=tr_idx
             )
             if val_path and not str(val_path).lower().endswith(".txt"):
-                vx, vy = load_training_data(
-                    val_path, allow_pickle=getattr(args, "allow_pickle", False)
-                )
-                if len(vx) == 0:
-                    raise ValueError("Validation dataset is empty.")
                 is_single_ch_3d = (
                     train_ds.in_channels == 1 and len(train_ds.input_shape) == 4
                 )
-                val_ds: Dataset = _ArrayDataset(
-                    vx,
-                    vy,
-                    np.arange(len(vx)),
-                    config,
-                    scaler,
+                val_ds: Dataset = _build_val_dataset(
+                    val_path,
                     input_channels=(
                         train_ds.in_channels
                         if train_ds.in_channels > 1
@@ -721,7 +989,31 @@ def prepare_preprocessed_data(
                 val_ds = source.clone_with(
                     preprocessing=config, scaler=scaler, indices=val_idx
                 )
+        elif lazy_train is not None:
+            t_fmt, _, t_in_shape, t_tgt_shape, t_t2d = lazy_train
+            lazy_kwargs = {
+                "preprocessing": config,
+                "scaler": scaler,
+                "raw_input_shape": t_in_shape,
+                "target_shape": t_tgt_shape,
+                "transpose_2d_outputs": t_t2d,
+                "input_channels": getattr(args, "input_channels", None),
+                "single_channel": getattr(args, "single_channel", False),
+            }
+            train_ds = _LazyH5MatDataset(args.data_path, t_fmt, tr_idx, **lazy_kwargs)
+            if val_path:
+                val_ds = _build_val_dataset(
+                    val_path,
+                    input_channels=getattr(args, "input_channels", None),
+                    single_channel=getattr(args, "single_channel", False),
+                )
+            else:
+                assert val_idx is not None
+                val_ds = _LazyH5MatDataset(
+                    args.data_path, t_fmt, val_idx, **lazy_kwargs
+                )
         else:
+            assert x is not None and targets is not None
             kwargs = {
                 "preprocessing": config,
                 "scaler": scaler,
@@ -730,20 +1022,19 @@ def prepare_preprocessed_data(
             }
             train_ds = _ArrayDataset(x, targets, tr_idx, **kwargs)
             if val_path:
-                if str(val_path).lower().endswith(".txt"):
-                    val_ds = ShardManifestDataset(val_path, config, scaler)
-                else:
-                    vx, vy = load_training_data(
-                        val_path, allow_pickle=getattr(args, "allow_pickle", False)
-                    )
-                    if len(vx) == 0:
-                        raise ValueError("Validation dataset is empty.")
-                    val_ds = _ArrayDataset(vx, vy, np.arange(len(vx)), **kwargs)
+                val_ds = _build_val_dataset(
+                    val_path,
+                    input_channels=getattr(args, "input_channels", None),
+                    single_channel=getattr(args, "single_channel", False),
+                )
             else:
+                assert val_idx is not None
                 val_ds = _ArrayDataset(x, targets, val_idx, **kwargs)
     finally:
         if source is not None:
             source.close()
+        if lazy_train is not None:
+            lazy_train[1].close()
 
     if (
         train_ds.input_shape != val_ds.input_shape
@@ -760,12 +1051,17 @@ def prepare_preprocessed_data(
 
     if accelerator.is_main_process:
         os.makedirs(cache_dir, exist_ok=True)
-        for filename, value in (
-            ("scaler.pkl", scaler),
-            (
-                "data_metadata.pkl",
+        save_scaler(scaler, cache_dir)
+        meta_path = Path(cache_dir) / "data_metadata.pkl"
+        meta_tmp = meta_path.with_suffix(".pkl.tmp")
+        with meta_tmp.open("wb") as file:
+            pickle.dump(
                 {
-                    "source": "manifest" if manifest else "preprocessed",
+                    "source": "manifest"
+                    if manifest
+                    else "lazy_preprocessed"
+                    if lazy_train is not None
+                    else "preprocessed",
                     "shape": (n, *train_ds.input_shape),
                     "in_channels": args.in_channels,
                     "target_shape": shape,
@@ -774,19 +1070,16 @@ def prepare_preprocessed_data(
                     "val_data_path": val_path,
                     "cache_complete": True,
                 },
-            ),
-        ):
-            path = Path(cache_dir) / filename
-            temporary = path.with_suffix(path.suffix + ".tmp")
-            with temporary.open("wb") as file:
-                pickle.dump(value, file)
-            temporary.replace(path)
+                file,
+            )
+        meta_tmp.replace(meta_path)
         logger.info(
-            "Preprocessing: %s; train=%d validation=%d (fixed=%s); no shard data cache",
+            "Preprocessing: %s; train=%d validation=%d (fixed=%s, lazy=%s); no shard data cache",
             config,
             len(train_ds),
             len(val_ds),
             bool(val_path),
+            bool(manifest or lazy_train is not None),
         )
     wait_for_everyone(accelerator)
     options = {

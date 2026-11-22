@@ -1005,7 +1005,6 @@ class TestLeakageDetection:
 
     def test_run_cross_validation_persists_model_kwargs(self, tmp_path):
         """run_cross_validation applies model_kwargs and saves them for wavedl-test."""
-        import pickle
 
         from wavedl.test import load_checkpoint
         from wavedl.utils.cross_validation import run_cross_validation
@@ -1030,10 +1029,14 @@ class TestLeakageDetection:
             model_kwargs={"base_channels": 8},
         )
 
+        import json
+
         fold_dir = tmp_path / "fold_1"
-        with (fold_dir / "training_meta.pkl").open("rb") as f:
-            meta = pickle.load(f)
+        with (fold_dir / "training_meta.json").open("r", encoding="utf-8") as f:
+            meta = json.load(f)
         assert meta["model_kwargs"] == {"base_channels": 8}
+        assert not (fold_dir / "training_meta.pkl").exists()
+        assert (fold_dir / "scaler.json").is_file()
 
         rebuilt, _ = load_checkpoint(fold_dir, (32, 32), 2)
         assert rebuilt.base_channels == 8

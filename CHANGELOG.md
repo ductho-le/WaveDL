@@ -5,28 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.0] - 2026-11-22
 
 ### Added
 
 - **Dense 2D encoder-decoder models**: Add `inversionnet` (transposed-convolution decoder) and `inversionnet_resize` (resize-convolution decoder) for multi-channel 2D field regression across arbitrary input/output grids
 - **Preprocessing & shard manifests**: Add lazy paired-shard `.txt` manifests (`<input.npy><TAB><target.npy>`), fixed validation datasets (`--val_data_path`), multi-channel contracts (`--input_channels` / `BaseModel.supported_input_channels`), persisted transforms (`--input_transform signed_log_minmax`, `--target_scaling minmax`) with automatic inference restoration and ONNX embedding, and `--no_tf32`
-- **WaveDL Studio**: Bundle a zero-dependency local browser workspace (`wavedl-gui` / `python -m wavedl.gui`) with live YAML sync and integrated training, testing, and ONNX export console
+- **WaveDL Studio**: Bundle a zero-dependency local browser workspace (`wavedl-gui` / `python -m wavedl.gui`) with live YAML sync, integrated training/testing/ONNX export console, and explicit `--allow-remote` guard for non-loopback binds
 - **Dataset caching & MATLAB**: Add `--cache_dir` (reused across DDP ranks and HPO trials) and legacy MATLAB v5/v7 `.mat` loading alongside v7.3
+- **Safe checkpoint metadata**: Persist new checkpoint metadata and built-in target scalers in strict JSON (`training_meta.json`, `scaler.json`) for pickle-free `wavedl-test` inference and ONNX export while retaining read compatibility with legacy v1.x `.pkl` checkpoints
 
 ### Changed
 
-- **Production defaults**: Promote package classifier to `Production/Stable`, upgrade torchvision pretrained backbones to `DEFAULT` weights, use sum-projection for single-channel input adaptation (matching `timm`), and auto-enable `drop_last` on singleton training tail batches (`N % B == 1`)
+- **Production defaults & dependency floors**: Promote package classifier to `Production/Stable`, upgrade torchvision pretrained backbones to `DEFAULT` weights, use sum-projection for single-channel input adaptation (matching `timm`), auto-enable `drop_last` on singleton training tail batches (`N % B == 1`), and raise minimum floors to `accelerate>=1.15.0`, `timm>=1.0.24`, `wandb>=0.23.1`, `scikit-learn>=1.5.0`, `tqdm>=4.66.3`, `safetensors>=0.4.3`, `optuna>=3.1.0`, and `onnxruntime>=1.17.0` (opset 20 support)
 
 ### Fixed
 
 - **Models & numerics**: Fix EfficientViT/FastViT feature-width inference and single-channel `FastViT.reparameterize()`; preserve GRN dtype and low-precision `DropPath` stability; add gradient checkpointing and stability clamps to S4D and Mamba; make `InversionNet` norms singleton-safe on tiny grids; validate Swin sizes, `nn.Module` registration, `in_channels`, and submodule `no_weight_decay()`
-- **Training, DDP & recovery**: Fix FP16 partial-accumulation unscaling, collective non-finite step skipping, cross-rank scalar broadcast dtype mismatches, NCCL `min`/`max` device placement, and auto-resume rank sync; add `SIGTERM` handling, CUDA `bf16` fallback, MPS-safe accumulation, and atomic best-checkpoint/CSV/portable-weight writes
-- **Schedulers, CV & HPO**: Preserve differential group LRs and resume budgets in `OneCycleLR` and restore LRs on warmup error; apply CV target scaling once for physical MAE; forward `--precision` through CV and HPO, filter HPO models by `in_channels`, and preserve `train_single_trial()` positional compatibility and pruned best-loss logging
-- **Data, caching & constraints**: Support 1D multi-channel `(N, C, L)` arrays, preserve `float64` shard target precision until post-scaling, chunk `SpatialTargetScaler.fit()` with scale-relative constant tolerances, rebuild caches on stronger validation modes with pre-hash checks, close HDF5/MAT/shard handles reliably, and harden physics-constraint power/exp numerics and AST validation
+- **Training, DDP & recovery**: Fix FP16 partial-accumulation unscaling, collective non-finite step skipping, cross-rank scalar broadcast dtype mismatches, NCCL `min`/`max` device placement, auto-resume rank sync, and W&B `--wandb_watch` initialization order; verify training/validation data fingerprints and selection objectives before restoring resume state; recover interrupted checkpoint replacements from `.best_checkpoint.prev`/`.interrupted_checkpoint.prev` on startup (preserving backups if rollback fails); add `SIGTERM` handling, CUDA `bf16` fallback, MPS-safe accumulation, and atomic best-checkpoint/CSV/portable-weight writes
+- **Schedulers, CV & HPO**: Preserve differential group LRs and resume budgets in `OneCycleLR` and restore LRs on warmup error; apply CV target scaling once for physical MAE; forward `--precision` through CV and HPO and preserve channel/precision flags in generated retraining commands; hash full dataset and manifest shard contents in persistent HPO signatures (start a new study for the updated fingerprint format); detect and forward multi-channel array inputs (`--input_channels` / `--single_channel`) in HPO; strictly enforce exclusive per-GPU leasing when `--n_jobs` exceeds visible GPUs; filter HPO models by `in_channels` and preserve `train_single_trial()` positional compatibility and pruned best-loss logging
+- **Data, inference, caching & constraints**: Support 1D multi-channel `(N, C, L)` arrays; preserve `float64` and big-endian physical target and denormalized prediction precision through inference loading, scoring, and saved outputs; stream manifest evaluation and dense manifest prediction archive writing in bounded RAM (using temporary disk space for uncompressed arrays alongside the compressed archive) and skip target loading during ONNX export-only runs; keep HDF5 and dense MAT v7.3 loading lazy under preprocessed/fixed-validation pipelines; chunk `SpatialTargetScaler.fit()` with scale-relative constant tolerances; rebuild caches on stronger validation modes with pre-hash checks; close HDF5/MAT/shard handles reliably; harden physics-constraint power/exp numerics and AST validation
 - **Configuration, ONNX & plotting**: Unify YAML flat-over-nested precedence, key aliases (`mixed_precision`, `import`), and scalar/scientific-notation parsing; fix dense ONNX denormalization broadcasting, physical tolerances, and opset 11–20 checks; guard metric/plotting edge cases, dense-field plots, large-dataset plot memory, and `dvipng`-free LaTeX fallback
-- **WaveDL Studio**: Eliminate DOM XSS in dynamic model rendering; validate session tokens, origins, malformed port headers, YAML paths, and empty-YAML launches; lock lazy model discovery; align stdlib YAML fallback with PyYAML; support IPv6, launch retry, browser error recovery, and non-HTTPS clipboard copy
-- **Launcher, API & CI**: Export all built-in model classes, terminate child processes gracefully on interrupt, detect YAML-configured W&B runs in the launcher, isolate reusable lint/test workflow concurrency groups, verify stdlib-only GUI tests pre-install in CI, and pin static IPv4 rendezvous in the distributed smoke check
+- **WaveDL Studio**: Eliminate DOM XSS in dynamic model rendering; validate session tokens, origins, malformed port headers, YAML paths, and empty-YAML launches; require `--allow-remote` for non-loopback binds; lock lazy model discovery; align stdlib YAML fallback with PyYAML; support IPv6, launch retry, browser error recovery, and non-HTTPS clipboard copy
+- **Launcher, API & CI**: Export all built-in model classes, terminate child processes gracefully on interrupt, detect YAML-configured W&B runs in the launcher, isolate reusable lint/test workflow concurrency groups, verify stdlib-only GUI tests pre-install in CI, resolve the full minimum supported dependency stack and audit PyPI advisories in CI, and pin static IPv4 rendezvous in the distributed smoke check
 
 ## [1.9.0] - 2026-10-11
 
@@ -543,7 +544,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Example configurations and training scripts
 - MIT License and citation file
 
-[Unreleased]: https://github.com/ductho-le/WaveDL/compare/v1.9.0...HEAD
+[Unreleased]: https://github.com/ductho-le/WaveDL/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/ductho-le/WaveDL/compare/v1.9.0...v2.0.0
 [1.9.0]: https://github.com/ductho-le/WaveDL/compare/v1.8.1...v1.9.0
 [1.8.1]: https://github.com/ductho-le/WaveDL/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/ductho-le/WaveDL/compare/v1.7.1...v1.8.0

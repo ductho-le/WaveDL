@@ -88,6 +88,7 @@ def _setup_per_rank_compile_cache() -> None:
 import argparse
 import contextlib
 import inspect
+import json
 import logging
 import math
 import pickle
@@ -267,6 +268,52 @@ def _build_model_for_targets(
     return model, target_shape
 
 
+def _build_selection_objective(
+    args: Any, loss_weights: list[float] | None = None
+) -> dict[str, Any]:
+    """Return a canonical descriptor of the validation selection objective."""
+    selection_metric = getattr(args, "selection_metric", "loss") or "loss"
+    objective: dict[str, Any] = {"selection_metric": selection_metric}
+    if selection_metric == "loss":
+        loss_name = getattr(args, "loss", "mse")
+        objective["loss"] = loss_name
+        if loss_name == "huber":
+            objective["huber_delta"] = float(getattr(args, "huber_delta", 1.0))
+        if loss_name == "weighted_mse":
+            objective["loss_weights"] = (
+                [float(w) for w in loss_weights] if loss_weights else None
+            )
+    return objective
+
+
+def _compute_run_data_fingerprints(
+    args: Any, mode: str | None = None
+) -> dict[str, Any]:
+    """Compute portable content fingerprints for training and validation datasets."""
+    from wavedl.utils.data import _compute_dataset_fingerprint
+
+    hash_mode = mode or getattr(args, "cache_validate", "sha256") or "sha256"
+    data_path = getattr(args, "data_path", None)
+    data_fp = (
+        _compute_dataset_fingerprint(data_path, mode=hash_mode)
+        if data_path and os.path.exists(data_path)
+        else None
+    )
+    val_path = getattr(args, "val_data_path", None)
+    val_fp = (
+        _compute_dataset_fingerprint(val_path, mode=hash_mode)
+        if val_path and os.path.exists(val_path)
+        else None
+    )
+    return {
+        "data_fingerprint_mode": hash_mode,
+        "data_fingerprint": data_fp,
+        "val_data_fingerprint": val_fp,
+        "val_split": None if val_path else 0.2,
+        "seed": getattr(args, "seed", None),
+    }
+
+
 def _validate_resume_metadata(
     metadata: dict[str, Any],
     model_name: str,
@@ -278,8 +325,14 @@ def _validate_resume_metadata(
     scheduler_name: str | None = None,
     optimizer_name: str | None = None,
     model_kwargs: dict[str, Any] | None = None,
+    data_fingerprint: str | None = None,
+    val_data_fingerprint: str | None = None,
+    uses_fixed_val: bool | None = None,
+    val_split: float | None = None,
+    seed: int | None = None,
+    selection_objective: dict[str, Any] | None = None,
 ) -> None:
-    """Reject checkpoints that describe a different model, target, or schedule contract."""
+    """Reject checkpoints that describe a different model, data, or selection contract."""
 
     mismatches = []
     if metadata.get("model_name") not in (None, model_name):
@@ -350,6 +403,53 @@ def _validate_resume_metadata(
         mismatches.append(
             f"optimizer={metadata['optimizer']!r} (current {optimizer_name!r})"
         )
+    if data_fingerprint is not None and metadata.get("data_fingerprint") not in (
+        None,
+        data_fingerprint,
+    ):
+        mismatches.append("training dataset changed")
+    if "val_data_fingerprint" in metadata:
+        saved_val_fp = metadata.get("val_data_fingerprint")
+        if uses_fixed_val is not None:
+            if (saved_val_fp is not None) != bool(uses_fixed_val):
+                mismatches.append(
+                    "validation split changed (fixed --val_data_path vs random split)"
+                )
+            elif (
+                saved_val_fp is not None
+                and val_data_fingerprint is not None
+                and saved_val_fp != val_data_fingerprint
+            ):
+                mismatches.append("validation dataset changed")
+            elif saved_val_fp is None:
+                if val_split is not None and metadata.get("val_split") not in (
+                    None,
+                    val_split,
+                ):
+                    mismatches.append(
+                        f"val_split={metadata['val_split']} (current {val_split})"
+                    )
+                if seed is not None and metadata.get("seed") not in (None, seed):
+                    mismatches.append(f"seed={metadata['seed']} (current {seed})")
+        elif val_data_fingerprint is not None and saved_val_fp not in (
+            None,
+            val_data_fingerprint,
+        ):
+            mismatches.append("validation dataset changed")
+    if selection_objective is not None:
+        saved_obj = metadata.get("selection_objective")
+        if saved_obj is not None and saved_obj != selection_objective:
+            mismatches.append(
+                f"selection_objective={saved_obj!r} (current {selection_objective!r})"
+            )
+        elif saved_obj is None and metadata.get("selection_metric") not in (
+            None,
+            selection_objective.get("selection_metric"),
+        ):
+            mismatches.append(
+                f"selection_metric={metadata['selection_metric']!r} "
+                f"(current {selection_objective.get('selection_metric')!r})"
+            )
 
     if mismatches:
         raise ValueError(
@@ -477,6 +577,8 @@ def _archive_previous_run(output_dir):
     archive.mkdir(parents=True)
     for path in artifacts:
         path.rename(archive / path.name)
+    if (output / "scaler.json").is_file():
+        shutil.copy2(output / "scaler.json", archive / "scaler.json")
     if (output / "scaler.pkl").is_file():
         shutil.copy2(output / "scaler.pkl", archive / "scaler.pkl")
     return archive
@@ -949,6 +1051,110 @@ def _parse_training_lists(
     return betas, loss_weights, milestones
 
 
+_CHECKPOINT_WEIGHT_FILES = (
+    "model.safetensors",
+    "model.bin",
+    "pytorch_model.bin",
+    "model.pth",
+    "model_weights.pth",
+)
+
+
+def _is_valid_checkpoint_dir(path: str | Path) -> bool:
+    """Return True if ``path`` looks like a complete, readable checkpoint directory."""
+    from wavedl.utils.checkpoint_io import (
+        TRAINING_META_JSON,
+        TRAINING_META_PKL,
+        load_training_meta,
+    )
+
+    target = Path(path)
+    if not target.is_dir():
+        return False
+    if not any((target / fname).is_file() for fname in _CHECKPOINT_WEIGHT_FILES):
+        return False
+    if (target / TRAINING_META_JSON).is_file() or (
+        target / TRAINING_META_PKL
+    ).is_file():
+        try:
+            meta = load_training_meta(target)
+            return isinstance(meta, dict)
+        except Exception:
+            return False
+    return True
+
+
+def _recover_staged_checkpoint(
+    output_dir: str,
+    name: str = "best_checkpoint",
+    logger: logging.Logger | None = None,
+) -> bool:
+    """Recover a checkpoint interrupted mid-replacement between backup and swap.
+
+    If a crash occurred after moving ``<name>`` to ``.<name>.prev`` and before
+    promoting ``.<name>.staging``, restore ``.<name>.prev`` back to ``<name>``
+    and discard the interrupted staging directory. When ``<name>`` is already
+    valid, clean up any leftover ``.<name>.prev`` / ``.<name>.staging`` folders.
+    """
+    ckpt_dir = os.path.join(output_dir, name)
+    staging_dir = os.path.join(output_dir, f".{name}.staging")
+    backup_dir = os.path.join(output_dir, f".{name}.prev")
+
+    if not os.path.exists(ckpt_dir):
+        if _is_valid_checkpoint_dir(backup_dir):
+            os.replace(backup_dir, ckpt_dir)
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            if logger is not None:
+                logger.warning(
+                    f"⚠️  Recovered {name} from backup after interrupted checkpoint replacement."
+                )
+            return True
+        if os.path.exists(staging_dir):
+            shutil.rmtree(staging_dir, ignore_errors=True)
+        return False
+
+    if _is_valid_checkpoint_dir(ckpt_dir):
+        if os.path.exists(backup_dir):
+            shutil.rmtree(backup_dir, ignore_errors=True)
+        if os.path.exists(staging_dir):
+            shutil.rmtree(staging_dir, ignore_errors=True)
+    elif _is_valid_checkpoint_dir(backup_dir):
+        # Corrupt/empty primary directory while a valid backup exists
+        shutil.rmtree(ckpt_dir, ignore_errors=True)
+        os.replace(backup_dir, ckpt_dir)
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        if logger is not None:
+            logger.warning(
+                f"⚠️  Replaced incomplete {name} with valid backup checkpoint."
+            )
+        return True
+    return False
+
+
+def _publish_staged_checkpoint(
+    staging_dir: str, checkpoint_dir: str, backup_dir: str
+) -> None:
+    """Publish a staged checkpoint, retaining the backup if rollback fails."""
+    had_existing = os.path.exists(checkpoint_dir)
+    if had_existing:
+        os.replace(checkpoint_dir, backup_dir)
+
+    try:
+        os.replace(staging_dir, checkpoint_dir)
+    except BaseException as error:
+        if had_existing and not os.path.exists(checkpoint_dir):
+            try:
+                os.replace(backup_dir, checkpoint_dir)
+            except OSError as rollback_error:
+                error.add_note(
+                    f"Checkpoint rollback failed: {rollback_error}. "
+                    f"The previous checkpoint is preserved at {backup_dir}."
+                )
+        raise
+    if had_existing:
+        shutil.rmtree(backup_dir, ignore_errors=True)
+
+
 def _save_best_checkpoint(
     accelerator,
     model,
@@ -960,13 +1166,18 @@ def _save_best_checkpoint(
     scaler,
     logger,
     target_shape: tuple | None = None,
+    extra_meta: dict[str, Any] | None = None,
 ) -> None:
-    """Save best checkpoint with metadata atomically via a staging directory."""
+    """Save best checkpoint with safe JSON metadata atomically via a staging directory."""
+    from wavedl.utils.checkpoint_io import copy_or_save_scaler, save_training_meta
+
     ckpt_dir = os.path.join(args.output_dir, "best_checkpoint")
     staging_dir = os.path.join(args.output_dir, ".best_checkpoint.staging")
     backup_dir = os.path.join(args.output_dir, ".best_checkpoint.prev")
 
     if accelerator.is_main_process:
+        # Never discard a recoverable backup if best_checkpoint went missing mid-swap.
+        _recover_staged_checkpoint(args.output_dir, "best_checkpoint", logger)
         shutil.rmtree(staging_dir, ignore_errors=True)
         shutil.rmtree(backup_dir, ignore_errors=True)
     wait_for_everyone(accelerator)
@@ -984,50 +1195,28 @@ def _save_best_checkpoint(
                 if target_shape is not None
                 else scaler_target_shape(scaler, out_dim)
             )
-            _atomic_pickle_dump(
-                {
-                    "epoch": epoch + 1,
-                    "best_val_loss": best_val_loss,
-                    "patience_ctr": 0,
-                    "model_name": args.model,
-                    "in_shape": in_shape,
-                    "in_channels": vars(args).get("in_channels", 1),
-                    "preprocessing": vars(args).get("preprocessing", {}),
-                    "model_kwargs": vars(args).get("model_kwargs", {}),
-                    "scheduler": vars(args).get("scheduler"),
-                    "optimizer": vars(args).get("optimizer"),
-                    "out_dim": out_dim,
-                    "target_shape": resolved_target_shape,
-                },
-                os.path.join(staging_dir, "training_meta.pkl"),
-            )
+            meta_payload: dict[str, Any] = {
+                "epoch": epoch + 1,
+                "best_val_loss": best_val_loss,
+                "patience_ctr": 0,
+                "model_name": args.model,
+                "in_shape": in_shape,
+                "in_channels": vars(args).get("in_channels", 1),
+                "preprocessing": vars(args).get("preprocessing", {}),
+                "model_kwargs": vars(args).get("model_kwargs", {}),
+                "scheduler": vars(args).get("scheduler"),
+                "optimizer": vars(args).get("optimizer"),
+                "out_dim": out_dim,
+                "target_shape": resolved_target_shape,
+            }
+            if extra_meta:
+                meta_payload.update(extra_meta)
+            save_training_meta(meta_payload, staging_dir)
 
-            # Copy scaler for checkpoint portability
-            scaler_src = os.path.join(args.output_dir, "scaler.pkl")
-            scaler_dst = os.path.join(staging_dir, "scaler.pkl")
-            if os.path.exists(scaler_src):
-                tmp_scaler = f"{scaler_dst}.tmp.{os.getpid()}"
-                shutil.copy2(scaler_src, tmp_scaler)
-                os.replace(tmp_scaler, scaler_dst)
-            elif scaler is not None:
-                _atomic_pickle_dump(scaler, scaler_dst)
+            # Save/copy scaler for checkpoint portability (safe JSON for built-ins)
+            copy_or_save_scaler(args.output_dir, staging_dir, scaler)
 
-            had_existing = os.path.exists(ckpt_dir)
-            if had_existing:
-                os.replace(ckpt_dir, backup_dir)
-            try:
-                os.replace(staging_dir, ckpt_dir)
-            except BaseException:
-                if (
-                    had_existing
-                    and os.path.exists(backup_dir)
-                    and not os.path.exists(ckpt_dir)
-                ):
-                    with contextlib.suppress(OSError):
-                        os.replace(backup_dir, ckpt_dir)
-                raise
-            finally:
-                shutil.rmtree(backup_dir, ignore_errors=True)
+            _publish_staged_checkpoint(staging_dir, ckpt_dir, backup_dir)
 
             # Save standalone weights (clean of DDP / torch.compile prefixes)
             unwrapped = _unwrap_compiled_model(accelerator, model)
@@ -1073,6 +1262,8 @@ def train_single_trial(
     grad_clip: float = 1.0,
     cache_dir: str | None = None,
     model_kwargs: dict[str, Any] | None = None,
+    input_channels: int | None = None,
+    single_channel: bool = False,
 ) -> dict:
     """
     Single-trial training function for in-process HPO.
@@ -1171,7 +1362,8 @@ def train_single_trial(
             batch_size=batch_size,
             workers=workers,
             cache_validate="fast",
-            single_channel=False,
+            single_channel=single_channel,
+            input_channels=input_channels,
             seed=seed,
             allow_pickle=allow_pickle,
         )
@@ -1795,6 +1987,22 @@ def _run_training(args, accelerator):
     interrupted_ckpt_path = os.path.join(args.output_dir, "interrupted_checkpoint")
     complete_flag_path = os.path.join(args.output_dir, "training_complete.flag")
 
+    # Recover any checkpoint interrupted mid-replacement before --fresh archiving
+    # or auto-resume discovery so a valid backup is never ignored or deleted.
+    if accelerator.is_main_process:
+        _recover_staged_checkpoint(args.output_dir, "best_checkpoint", logger)
+        _recover_staged_checkpoint(args.output_dir, "interrupted_checkpoint", logger)
+        if args.resume and not os.path.isdir(args.resume):
+            resume_norm = os.path.normpath(args.resume)
+            resume_base = os.path.basename(resume_norm)
+            if resume_base in ("best_checkpoint", "interrupted_checkpoint"):
+                _recover_staged_checkpoint(
+                    os.path.dirname(os.path.abspath(resume_norm)),
+                    resume_base,
+                    logger,
+                )
+    wait_for_everyone(accelerator)
+
     if args.fresh:
         if accelerator.is_main_process:
             archived = _archive_previous_run(args.output_dir)
@@ -1803,23 +2011,31 @@ def _run_training(args, accelerator):
         wait_for_everyone(accelerator)
 
     def _safe_read_ckpt_epoch(ckpt_path: str) -> int | None:
-        meta_file = os.path.join(ckpt_path, "training_meta.pkl")
-        if not os.path.isfile(meta_file):
+        from wavedl.utils.checkpoint_io import (
+            TRAINING_META_JSON,
+            TRAINING_META_PKL,
+            load_training_meta,
+        )
+
+        has_meta = os.path.isfile(
+            os.path.join(ckpt_path, TRAINING_META_JSON)
+        ) or os.path.isfile(os.path.join(ckpt_path, TRAINING_META_PKL))
+        if not has_meta:
             return 0 if os.path.isdir(ckpt_path) else None
         try:
-            with open(meta_file, "rb") as f:
-                meta_obj = pickle.load(f)
+            meta_obj = load_training_meta(ckpt_path)
             if isinstance(meta_obj, dict):
                 return int(meta_obj.get("epoch", 0))
         except (
             OSError,
             EOFError,
+            json.JSONDecodeError,
             pickle.UnpicklingError,
             TypeError,
             ValueError,
         ) as exc:
             logger.warning(
-                f"⚠️  Skipping corrupt checkpoint metadata {meta_file}: {exc}"
+                f"⚠️  Skipping corrupt checkpoint metadata in {ckpt_path}: {exc}"
             )
         return None
 
@@ -1894,8 +2110,15 @@ def _run_training(args, accelerator):
         except OSError:
             _cleanup_interrupted_pending = args.resume == interrupted_ckpt_path
 
-    # Capture checkpoint normalization before prepare_data can invalidate a cache.
+    # Capture checkpoint normalization and metadata before prepare_data can invalidate a cache.
     # Legacy periodic/emergency checkpoints kept their scaler in the run folder.
+    from wavedl.utils.checkpoint_io import (
+        load_scaler,
+        load_training_meta,
+        save_scaler,
+        save_training_meta,
+    )
+
     resume_scaler = None
     if args.resume:
         if not os.path.isdir(args.resume):
@@ -1907,15 +2130,7 @@ def _run_training(args, accelerator):
                 "partial gradients, RNG state, and AMP scaler state are not restored. "
                 "Use an epoch-boundary checkpoint for reproducible continuation."
             )
-        scaler_candidates = [
-            os.path.join(args.resume, "scaler.pkl"),
-            os.path.join(os.path.dirname(os.path.abspath(args.resume)), "scaler.pkl"),
-        ]
-        for scaler_path in scaler_candidates:
-            if os.path.isfile(scaler_path):
-                with open(scaler_path, "rb") as f:
-                    resume_scaler = pickle.load(f)
-                break
+        resume_scaler, _ = load_scaler(args.resume, fallback_parent=True)
         if resume_scaler is None:
             logger.warning(
                 "Checkpoint scaler not found; normalization compatibility cannot "
@@ -1938,7 +2153,17 @@ def _run_training(args, accelerator):
         and scaler is not None
         and os.path.abspath(effective_cache_dir) != os.path.abspath(args.output_dir)
     ):
-        _atomic_pickle_dump(scaler, os.path.join(args.output_dir, "scaler.pkl"))
+        save_scaler(scaler, args.output_dir)
+
+    # Compute dataset content fingerprints on rank 0 and broadcast so checkpoint
+    # saves and resume validation guard both training and validation datasets.
+    run_fingerprints: dict[str, Any] = {}
+    if accelerator.is_main_process:
+        run_fingerprints = _compute_run_data_fingerprints(args)
+    if accelerator.num_processes > 1 and dist.is_available() and dist.is_initialized():
+        fp_sync = [run_fingerprints]
+        dist.broadcast_object_list(fp_sync, src=0)
+        run_fingerprints = fp_sync[0]
 
     # Build model using registry
     model, target_shape = _build_model_for_targets(
@@ -1957,6 +2182,17 @@ def _run_training(args, accelerator):
             f"   Model Parameters: {param_info['trainable_parameters']:,} trainable"
         )
         logger.info(f"   Model Size: {param_info['total_mb']:.2f} MB")
+
+    # Initialize WandB after auto-resume completion check & data loading (so
+    # completed runs don't spawn empty trackers and in_channels is recorded),
+    # and BEFORE wandb.watch() / torch.compile().
+    if accelerator.is_main_process and args.wandb and WANDB_AVAILABLE:
+        wandb_cfg = {k: v for k, v in vars(args).items() if not k.startswith("_")}
+        accelerator.init_trackers(
+            project_name=args.project_name,
+            config=wandb_cfg,
+            init_kwargs={"wandb": {"name": args.run_name or f"{args.model}_run"}},
+        )
 
     # Optional WandB model watching (opt-in due to overhead on large models)
     if (
@@ -1996,16 +2232,6 @@ def _run_training(args, accelerator):
                     f"   ⚠ torch.compile failed: {e}. Continuing without compilation."
                 )
 
-    # Initialize WandB after auto-resume completion check & data loading (so
-    # completed runs don't spawn empty trackers and in_channels is recorded).
-    if accelerator.is_main_process and args.wandb and WANDB_AVAILABLE:
-        wandb_cfg = {k: v for k, v in vars(args).items() if not k.startswith("_")}
-        accelerator.init_trackers(
-            project_name=args.project_name,
-            config=wandb_cfg,
-            init_kwargs={"wandb": {"name": args.run_name or f"{args.model}_run"}},
-        )
-
     # ==========================================================================
     # OPTIMIZER, SCHEDULER & LOSS CONFIGURATION
     # ==========================================================================
@@ -2015,6 +2241,13 @@ def _run_training(args, accelerator):
         milestones = args._parsed_milestones
     else:
         betas, loss_weights, milestones = _parse_training_lists(args)
+
+    selection_objective = _build_selection_objective(args, loss_weights)
+    checkpoint_extra_meta: dict[str, Any] = {
+        **run_fingerprints,
+        "selection_metric": args.selection_metric,
+        "selection_objective": selection_objective,
+    }
 
     # Create optimizer using factory
     optimizer = get_optimizer(
@@ -2154,11 +2387,27 @@ def _run_training(args, accelerator):
         if os.path.exists(args.resume):
             logger.info(f"🔄 Loading checkpoint from: {args.resume}")
 
-            meta_path = os.path.join(args.resume, "training_meta.pkl")
-            resume_meta = None
-            if os.path.exists(meta_path):
-                with open(meta_path, "rb") as f:
-                    resume_meta = pickle.load(f)
+            resume_meta = load_training_meta(args.resume)
+            if resume_meta is not None:
+                # Recompute fingerprints under the checkpoint's hash mode if
+                # different from current --cache_validate so comparison is apples-to-apples.
+                saved_fp_mode = resume_meta.get("data_fingerprint_mode")
+                compare_fps = run_fingerprints
+                if saved_fp_mode is not None and saved_fp_mode != run_fingerprints.get(
+                    "data_fingerprint_mode"
+                ):
+                    if accelerator.is_main_process:
+                        compare_fps = _compute_run_data_fingerprints(
+                            args, mode=saved_fp_mode
+                        )
+                    if (
+                        accelerator.num_processes > 1
+                        and dist.is_available()
+                        and dist.is_initialized()
+                    ):
+                        cfp_sync = [compare_fps]
+                        dist.broadcast_object_list(cfp_sync, src=0)
+                        compare_fps = cfp_sync[0]
                 _validate_resume_metadata(
                     resume_meta,
                     args.model,
@@ -2170,6 +2419,12 @@ def _run_training(args, accelerator):
                     scheduler_name=args.scheduler,
                     optimizer_name=args.optimizer,
                     model_kwargs=getattr(args, "model_kwargs", {}),
+                    data_fingerprint=compare_fps.get("data_fingerprint"),
+                    val_data_fingerprint=compare_fps.get("val_data_fingerprint"),
+                    uses_fixed_val=bool(getattr(args, "val_data_path", None)),
+                    val_split=compare_fps.get("val_split"),
+                    seed=compare_fps.get("seed"),
+                    selection_objective=selection_objective,
                 )
 
             # Detect checkpoint format: standalone (from KeyboardInterrupt)
@@ -2280,7 +2535,7 @@ def _run_training(args, accelerator):
                 )
             else:
                 logger.warning(
-                    "   ⚠️ training_meta.pkl not found, starting from epoch 0"
+                    "   ⚠️ checkpoint training metadata not found, starting from epoch 0"
                 )
 
             # OneCycle is a fixed-budget schedule. Preserve its saved phases;
@@ -2737,6 +2992,7 @@ def _run_training(args, accelerator):
                     scaler=scaler,
                     logger=logger,
                     target_shape=target_shape,
+                    extra_meta=checkpoint_extra_meta,
                 )
                 if accelerator.is_main_process:
                     # Also save CSV atomically on best model (ensures progress is saved)
@@ -2767,7 +3023,7 @@ def _run_training(args, accelerator):
 
                 if accelerator.is_main_process:
                     _remove_stale_safetensors(ckpt_dir)
-                    _atomic_pickle_dump(
+                    save_training_meta(
                         {
                             "epoch": epoch + 1,
                             "best_val_loss": best_val_loss,
@@ -2782,10 +3038,11 @@ def _run_training(args, accelerator):
                             "optimizer": args.optimizer,
                             "out_dim": out_dim,
                             "target_shape": target_shape,
+                            **checkpoint_extra_meta,
                         },
-                        os.path.join(ckpt_dir, "training_meta.pkl"),
+                        ckpt_dir,
                     )
-                    _atomic_pickle_dump(scaler, os.path.join(ckpt_dir, "scaler.pkl"))
+                    save_scaler(scaler, ckpt_dir)
                     logger.info(f"   📁 Periodic checkpoint: {ckpt_name}")
 
                     # Deferred cleanup (same as best checkpoint path above)
@@ -2823,9 +3080,16 @@ def _run_training(args, accelerator):
         # is collective and hangs if ranks receive the signal at different times.
         if accelerator.is_main_process:
             logger.warning("Training interrupted. Saving emergency checkpoint...")
-            staging_ckpt = f"{interrupted_ckpt_path}.tmp.{os.getpid()}"
+            staging_ckpt = os.path.join(
+                args.output_dir, ".interrupted_checkpoint.staging"
+            )
+            backup_ckpt = os.path.join(args.output_dir, ".interrupted_checkpoint.prev")
             try:
+                _recover_staged_checkpoint(
+                    args.output_dir, "interrupted_checkpoint", logger
+                )
                 shutil.rmtree(staging_ckpt, ignore_errors=True)
+                shutil.rmtree(backup_ckpt, ignore_errors=True)
                 os.makedirs(staging_ckpt, exist_ok=True)
                 unwrapped = _unwrap_compiled_model(accelerator, model)
                 _atomic_torch_save(
@@ -2840,7 +3104,7 @@ def _run_training(args, accelerator):
                     scheduler.state_dict(),
                     os.path.join(staging_ckpt, "scheduler.pt"),
                 )
-                _atomic_pickle_dump(
+                save_training_meta(
                     {
                         "epoch": epoch,
                         "best_val_loss": best_val_loss,
@@ -2854,12 +3118,14 @@ def _run_training(args, accelerator):
                         "optimizer": args.optimizer,
                         "out_dim": out_dim,
                         "target_shape": target_shape,
+                        **checkpoint_extra_meta,
                     },
-                    os.path.join(staging_ckpt, "training_meta.pkl"),
+                    staging_ckpt,
                 )
-                _atomic_pickle_dump(scaler, os.path.join(staging_ckpt, "scaler.pkl"))
-                shutil.rmtree(interrupted_ckpt_path, ignore_errors=True)
-                os.replace(staging_ckpt, interrupted_ckpt_path)
+                save_scaler(scaler, staging_ckpt)
+                _publish_staged_checkpoint(
+                    staging_ckpt, interrupted_ckpt_path, backup_ckpt
+                )
                 logger.info("   💾 Emergency checkpoint saved")
                 if scheduler_step_per_batch:
                     logger.warning(

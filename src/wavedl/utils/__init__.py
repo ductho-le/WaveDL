@@ -97,6 +97,12 @@ def setup_hpc_cache_dirs() -> None:
 
 
 if TYPE_CHECKING:
+    from .checkpoint_io import (
+        load_scaler,
+        load_training_meta,
+        save_scaler,
+        save_training_meta,
+    )
     from .config import (
         create_default_config,
         load_config,
@@ -172,6 +178,7 @@ if TYPE_CHECKING:
     )
     from .preprocessing import (
         ManifestInputs,
+        ManifestTargets,
         MinMaxTargetScaler,
         ShardManifestDataset,
         configure_tf32,
@@ -199,6 +206,11 @@ if TYPE_CHECKING:
 
 
 _LAZY_SUBMODULE_EXPORTS: dict[str, str] = {
+    # checkpoint_io
+    "load_scaler": ".checkpoint_io",
+    "load_training_meta": ".checkpoint_io",
+    "save_scaler": ".checkpoint_io",
+    "save_training_meta": ".checkpoint_io",
     # config
     "create_default_config": ".config",
     "load_config": ".config",
@@ -266,6 +278,7 @@ _LAZY_SUBMODULE_EXPORTS: dict[str, str] = {
     "list_optimizers": ".optimizers",
     # preprocessing
     "ManifestInputs": ".preprocessing",
+    "ManifestTargets": ".preprocessing",
     "MinMaxTargetScaler": ".preprocessing",
     "ShardManifestDataset": ".preprocessing",
     "configure_tf32": ".preprocessing",
@@ -319,6 +332,7 @@ __all__ = [
     "LogCoshLoss",
     "MATSource",
     "ManifestInputs",
+    "ManifestTargets",
     "MemmapDataset",
     "MetricTracker",
     "MinMaxTargetScaler",
@@ -357,8 +371,10 @@ __all__ = [
     "list_schedulers",
     "load_config",
     "load_outputs_only",
+    "load_scaler",
     "load_test_data",
     "load_training_data",
+    "load_training_meta",
     "memmap_worker_init_fn",
     "merge_config_with_args",
     "plot_bland_altman",
@@ -375,6 +391,8 @@ __all__ = [
     "preprocessing_from_args",
     "run_cross_validation",
     "save_config",
+    "save_scaler",
+    "save_training_meta",
     "scaler_target_shape",
     "setup_hpc_cache_dirs",
     "sync_tensor",

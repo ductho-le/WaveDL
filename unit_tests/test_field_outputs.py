@@ -2,7 +2,6 @@
 
 import argparse
 import logging
-import pickle
 from pathlib import Path
 
 import pytest
@@ -466,15 +465,17 @@ def test_inversionnet_model_kwargs_checkpoint_roundtrip(tmp_path, legacy):
         scaler,
         logging.getLogger(__name__),
     )
+    import json
+
     checkpoint = tmp_path / "best_checkpoint"
-    meta_path = checkpoint / "training_meta.pkl"
-    with meta_path.open("rb") as file:
-        metadata = pickle.load(file)
+    meta_path = checkpoint / "training_meta.json"
+    with meta_path.open("r", encoding="utf-8") as file:
+        metadata = json.load(file)
     assert metadata["model_kwargs"] == overrides
     if legacy:
         del metadata["model_kwargs"]
-        with meta_path.open("wb") as file:
-            pickle.dump(metadata, file)
+        with meta_path.open("w", encoding="utf-8") as file:
+            json.dump(metadata, file)
 
     _validate_resume_metadata(
         metadata, model_name, in_shape, 1, out_shape, model_kwargs=overrides

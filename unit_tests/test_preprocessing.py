@@ -370,11 +370,15 @@ def test_checkpoint_metadata_restored_and_inference_applies_transform(
         scaler,
         logging.getLogger(__name__),
     )
+    import json
+
     checkpoint = tmp_path / "best_checkpoint"
-    with (checkpoint / "training_meta.pkl").open("rb") as file:
-        metadata = pickle.load(file)
+    with (checkpoint / "training_meta.json").open("r", encoding="utf-8") as file:
+        metadata = json.load(file)
     assert metadata["in_channels"] == 5
     assert metadata["preprocessing"] == config
+    assert not (checkpoint / "training_meta.pkl").exists()
+    assert (checkpoint / "scaler.json").is_file()
     monkeypatch.setattr(inference, "get_model", lambda name: TinyMultiChannelDense)
     monkeypatch.setattr(
         inference,
@@ -1102,3 +1106,505 @@ def test_transform_inputs_rejects_nonpositive_log_k_and_degenerate_range():
             arr,
             {"input_transform": "signed_log_minmax", "input_range": (1.0, 1.0)},
         )
+
+
+class _ExactNormalizedVectorModel(BaseModel):
+    """Returns exact normalized target encoded in input channel 0, pixel 0."""
+
+    supports_spatial_output = False
+    requires_spatial_output = False
+    supported_input_channels = None
+
+    def __init__(self, in_shape=(4, 4), out_size=1, in_channels=1, **kwargs):
+        super().__init__(in_shape, out_size)
+        self.scale = nn.Parameter(torch.ones(1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x[:, 0, 0, : self.out_size] * self.scale
+
+
+class _ExactNormalizedFieldModel(BaseModel):
+    """Returns exact normalized field encoded directly in input channel 0."""
+
+    supports_spatial_output = True
+    requires_spatial_output = True
+    supported_input_channels = None
+
+    def __init__(
+        self, in_shape=(4, 4), out_size=1, in_channels=1, out_shape=(1, 4, 4), **kwargs
+    ):
+        super().__init__(in_shape, out_size)
+        self.out_shape = tuple(out_shape)
+        self.scale = nn.Parameter(torch.ones(1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return (
+            x[:, : self.out_shape[0], : self.out_shape[1], : self.out_shape[2]]
+            * self.scale
+        )
+
+
+@pytest.mark.parametrize("source_kind", ["npz", "manifest"])
+@pytest.mark.parametrize("target_dtype", ["=f8", ">f8"])
+def test_inference_preserves_float64_large_offset_targets_end_to_end(
+    tmp_path, monkeypatch, capsys, source_kind, target_dtype
+):
+    """Loader through wavedl-test scoring and CSV export must preserve float64 precision."""
+    import csv
+
+    from wavedl.models.registry import MODEL_REGISTRY
+    from wavedl.utils.checkpoint_io import save_scaler, save_training_meta
+    from wavedl.utils.targets import create_target_scaler
+
+    monkeypatch.setitem(MODEL_REGISTRY, "exact_vec_test", _ExactNormalizedVectorModel)
+
+    # 12 distinct values around 1e8 collapse to <=2 values under float32 quantization
+    y_true_f64 = (1e8 + np.arange(12, dtype=np.float64)).reshape(12, 1)
+    assert len(np.unique(y_true_f64.astype(np.float32))) <= 2
+
+    scaler = create_target_scaler(y_true_f64)
+    y_norm_f32 = scaler.transform(y_true_f64).astype(np.float32)
+
+    x_data = np.zeros((12, 1, 4, 4), dtype=np.float32)
+    x_data[:, 0, 0, 0] = y_norm_f32[:, 0]
+    stored_targets = y_true_f64.astype(target_dtype)
+
+    if source_kind == "npz":
+        data_path = tmp_path / "large_offset.npz"
+        np.savez(data_path, input_test=x_data[:, 0], output_test=stored_targets)
+    else:
+        np.save(tmp_path / "x0.npy", x_data[:6])
+        np.save(tmp_path / "y0.npy", stored_targets[:6])
+        np.save(tmp_path / "x1.npy", x_data[6:])
+        np.save(tmp_path / "y1.npy", stored_targets[6:])
+        data_path = tmp_path / "test.txt"
+        data_path.write_text("x0.npy\ty0.npy\nx1.npy\ty1.npy\n", encoding="utf-8")
+
+    loaded_x, loaded_y = load_test_data(str(data_path))
+    try:
+        assert loaded_y is not None
+        assert loaded_y.dtype == torch.float64
+        assert len(np.unique(loaded_y.numpy())) == 12
+        np.testing.assert_array_equal(loaded_y.numpy(), y_true_f64)
+    finally:
+        if hasattr(loaded_x, "close"):
+            loaded_x.close()
+
+    ckpt_dir = tmp_path / "ckpt"
+    ckpt_dir.mkdir()
+    model = _ExactNormalizedVectorModel(in_shape=(4, 4), out_size=1, in_channels=1)
+    torch.save(model.state_dict(), ckpt_dir / "model.bin")
+    save_scaler(scaler, ckpt_dir)
+    save_training_meta(
+        {
+            "epoch": 1,
+            "best_val_loss": 0.0,
+            "model_name": "exact_vec_test",
+            "in_shape": (4, 4),
+            "in_channels": 1,
+            "out_dim": 1,
+            "target_shape": (1,),
+        },
+        ckpt_dir,
+    )
+
+    out_dir = tmp_path / f"results_{source_kind}"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "wavedl-test",
+            "--checkpoint",
+            str(ckpt_dir),
+            "--data_path",
+            str(data_path),
+            "--batch_size",
+            "4",
+            "--output_dir",
+            str(out_dir),
+            "--save_predictions",
+        ],
+    )
+    inference.main()
+    stdout = capsys.readouterr().out
+    assert "R² Score:         1.000000" in stdout
+    rmse_line = next(line for line in stdout.splitlines() if line.startswith("RMSE:"))
+    assert float(rmse_line.split(":", 1)[1].strip()) < 1e-4
+
+    with (out_dir / "predictions.csv").open("r", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 12
+    saved_true = np.array([float(r["True_P0"]) for r in rows], dtype=np.float64)
+    saved_pred = np.array([float(r["Pred_P0"]) for r in rows], dtype=np.float64)
+    assert len(np.unique(saved_true)) == 12
+    np.testing.assert_array_equal(saved_true, y_true_f64[:, 0])
+    np.testing.assert_allclose(saved_pred, y_true_f64[:, 0], rtol=0, atol=1e-4)
+
+
+def test_dense_field_inference_preserves_float64_large_offset(
+    tmp_path, monkeypatch, capsys
+):
+    """Dense 2D field evaluation on large-offset float64 targets scores near-zero RMSE."""
+    from wavedl.models.registry import MODEL_REGISTRY
+    from wavedl.utils.checkpoint_io import save_scaler, save_training_meta
+    from wavedl.utils.targets import SpatialTargetScaler
+
+    monkeypatch.setitem(MODEL_REGISTRY, "exact_field_test", _ExactNormalizedFieldModel)
+
+    y_true_f64 = (1e8 + np.arange(8 * 16, dtype=np.float64)).reshape(8, 1, 4, 4)
+    scaler = SpatialTargetScaler().fit(y_true_f64)
+    y_norm_f32 = scaler.transform(y_true_f64).astype(np.float32)
+
+    data_path = tmp_path / "dense_large.npz"
+    np.savez(data_path, input_test=y_norm_f32[:, 0], output_test=y_true_f64)
+
+    ckpt_dir = tmp_path / "ckpt_field"
+    ckpt_dir.mkdir()
+    model = _ExactNormalizedFieldModel(
+        in_shape=(4, 4), out_size=1, in_channels=1, out_shape=(1, 4, 4)
+    )
+    torch.save(model.state_dict(), ckpt_dir / "model.bin")
+    save_scaler(scaler, ckpt_dir)
+    save_training_meta(
+        {
+            "epoch": 1,
+            "best_val_loss": 0.0,
+            "model_name": "exact_field_test",
+            "in_shape": (4, 4),
+            "in_channels": 1,
+            "out_dim": 1,
+            "target_shape": (1, 4, 4),
+        },
+        ckpt_dir,
+    )
+
+    out_dir = tmp_path / "field_out"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "wavedl-test",
+            "--checkpoint",
+            str(ckpt_dir),
+            "--data_path",
+            str(data_path),
+            "--batch_size",
+            "4",
+            "--output_dir",
+            str(out_dir),
+            "--save_predictions",
+        ],
+    )
+    inference.main()
+    stdout = capsys.readouterr().out
+    assert "R² Score:         1.000000" in stdout
+    rmse_line = next(line for line in stdout.splitlines() if line.startswith("RMSE:"))
+    assert float(rmse_line.split(":", 1)[1].strip()) < 1e-4
+
+    with np.load(out_dir / "predictions.npz") as saved:
+        assert saved["target"].dtype == np.float64
+        assert saved["prediction"].dtype == np.float64
+        np.testing.assert_allclose(saved["prediction"], y_true_f64, rtol=0, atol=1e-4)
+
+
+def test_export_only_skips_manifest_target_loading(tmp_path, monkeypatch):
+    """wavedl-test --export onnx (export-only) must never load manifest targets."""
+    pytest.importorskip("onnx")
+    pytest.importorskip("onnxruntime")
+    from wavedl.models.registry import MODEL_REGISTRY
+    from wavedl.utils.checkpoint_io import save_scaler, save_training_meta
+    from wavedl.utils.targets import SpatialTargetScaler
+
+    monkeypatch.setitem(
+        MODEL_REGISTRY, "exact_field_export", _ExactNormalizedFieldModel
+    )
+
+    np.save(tmp_path / "x0.npy", np.ones((4, 1, 4, 4), dtype=np.float32))
+    np.save(tmp_path / "y0.npy", np.ones((4, 1, 4, 4), dtype=np.float32))
+    manifest = tmp_path / "test.txt"
+    manifest.write_text("x0.npy\ty0.npy\n", encoding="utf-8")
+
+    ckpt_dir = tmp_path / "ckpt"
+    ckpt_dir.mkdir()
+    model = _ExactNormalizedFieldModel(
+        in_shape=(4, 4), out_size=1, in_channels=1, out_shape=(1, 4, 4)
+    )
+    scaler = SpatialTargetScaler().fit(
+        np.arange(64, dtype=np.float32).reshape(4, 1, 4, 4)
+    )
+    torch.save(model.state_dict(), ckpt_dir / "model.bin")
+    save_scaler(scaler, ckpt_dir)
+    save_training_meta(
+        {
+            "epoch": 1,
+            "best_val_loss": 0.0,
+            "model_name": "exact_field_export",
+            "in_shape": (4, 4),
+            "in_channels": 1,
+            "out_dim": 1,
+            "target_shape": (1, 4, 4),
+        },
+        ckpt_dir,
+    )
+
+    monkeypatch.setattr(
+        ShardManifestDataset,
+        "target_batches",
+        lambda *a, **k: pytest.fail("export-only must not read manifest targets"),
+    )
+
+    onnx_out = tmp_path / "out" / "exported.onnx"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "wavedl-test",
+            "--checkpoint",
+            str(ckpt_dir),
+            "--data_path",
+            str(manifest),
+            "--export",
+            "onnx",
+            "--export_path",
+            str(onnx_out),
+            "--output_dir",
+            str(tmp_path / "out"),
+        ],
+    )
+    inference.main()
+    assert onnx_out.is_file()
+
+
+def test_manifest_evaluation_streams_and_saves_without_materializing_all_arrays(
+    tmp_path, monkeypatch, capsys
+):
+    """Manifest evaluation and saving should stream through the CLI."""
+    from wavedl.models.registry import MODEL_REGISTRY
+    from wavedl.utils.checkpoint_io import save_scaler, save_training_meta
+    from wavedl.utils.preprocessing import ManifestTargets
+    from wavedl.utils.targets import SpatialTargetScaler
+
+    monkeypatch.setitem(
+        MODEL_REGISTRY, "exact_field_stream", _ExactNormalizedFieldModel
+    )
+
+    rng = np.random.default_rng(23)
+    y_all = (1500.0 + rng.normal(scale=200.0, size=(6, 1, 4, 4))).astype(np.float32)
+    scaler = SpatialTargetScaler().fit(y_all)
+    x_all = scaler.transform(y_all).astype(np.float32)
+
+    np.save(tmp_path / "x0.npy", x_all[:3])
+    np.save(tmp_path / "y0.npy", y_all[:3])
+    np.save(tmp_path / "x1.npy", x_all[3:])
+    np.save(tmp_path / "y1.npy", y_all[3:].astype(">f8"))
+    manifest = tmp_path / "stream.txt"
+    manifest.write_text("x0.npy\ty0.npy\nx1.npy\ty1.npy\n", encoding="utf-8")
+
+    ckpt_dir = tmp_path / "ckpt"
+    ckpt_dir.mkdir()
+    model = _ExactNormalizedFieldModel(
+        in_shape=(4, 4), out_size=1, in_channels=1, out_shape=(1, 4, 4)
+    )
+    torch.save(model.state_dict(), ckpt_dir / "model.bin")
+    save_scaler(scaler, ckpt_dir)
+    save_training_meta(
+        {
+            "epoch": 1,
+            "best_val_loss": 0.0,
+            "model_name": "exact_field_stream",
+            "in_shape": (4, 4),
+            "in_channels": 1,
+            "out_dim": 1,
+            "target_shape": (1, 4, 4),
+        },
+        ckpt_dir,
+    )
+
+    monkeypatch.setattr(
+        inference,
+        "run_inference",
+        lambda *a, **k: pytest.fail(
+            "manifest CLI evaluation must stream, not call run_inference"
+        ),
+    )
+    monkeypatch.setattr(
+        ManifestTargets,
+        "materialize",
+        lambda *a, **k: pytest.fail(
+            "manifest CLI evaluation must not materialize all targets"
+        ),
+    )
+    monkeypatch.setattr(
+        inference,
+        "save_predictions",
+        lambda *a, **k: pytest.fail("dense manifest saving must stream its output"),
+    )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "wavedl-test",
+            "--checkpoint",
+            str(ckpt_dir),
+            "--data_path",
+            str(manifest),
+            "--batch_size",
+            "2",
+            "--save_predictions",
+            "--output_dir",
+            str(tmp_path / "out"),
+        ],
+    )
+    inference.main()
+    out = capsys.readouterr().out
+    assert "Samples:          6" in out
+    assert "R² Score:         1.000000" in out
+    with np.load(tmp_path / "out/predictions.npz", allow_pickle=False) as saved:
+        assert saved["target"].dtype == np.float64
+        assert saved["prediction"].dtype == np.float64
+        np.testing.assert_array_equal(saved["target"], y_all)
+        np.testing.assert_allclose(saved["prediction"], y_all, atol=1e-4)
+        np.testing.assert_array_equal(saved["error"], saved["prediction"] - y_all)
+        np.testing.assert_array_equal(saved["channel_names"], ["C0"])
+
+
+@pytest.mark.parametrize("suffix", [".h5", ".mat"])
+def test_preprocessed_pipeline_streams_hdf5_and_mat_v73_lazily(
+    tmp_path, monkeypatch, suffix
+):
+    """Fixed validation / custom preprocessing on HDF5 & MAT v7.3 must not load eagerly."""
+    import h5py
+
+    import wavedl.utils.data as data_mod
+    from wavedl.utils.preprocessing import _LazyH5MatDataset
+
+    rng = np.random.default_rng(31)
+    x_tr = rng.normal(size=(6, 2, 8, 8)).astype(np.float32)
+    y_tr = rng.uniform(1500.0, 4500.0, size=(6, 1, 4, 4)).astype(np.float32)
+    x_va = rng.normal(size=(3, 2, 8, 8)).astype(np.float32)
+    y_va = rng.uniform(1500.0, 4500.0, size=(3, 1, 4, 4)).astype(np.float32)
+
+    train_path = tmp_path / f"train{suffix}"
+    val_path = tmp_path / f"val{suffix}"
+    for p, x_arr, y_arr in ((train_path, x_tr, y_tr), (val_path, x_va, y_va)):
+        with h5py.File(p, "w") as f:
+            f.create_dataset("input_train", data=x_arr.T if suffix == ".mat" else x_arr)
+            f.create_dataset(
+                "output_train", data=y_arr.T if suffix == ".mat" else y_arr
+            )
+
+    monkeypatch.setattr(
+        data_mod,
+        "load_training_data",
+        lambda *a, **k: pytest.fail("HDF5/MAT v7.3 must stream lazily, not eager load"),
+    )
+
+    args = Namespace(
+        data_path=str(train_path),
+        val_data_path=str(val_path),
+        batch_size=2,
+        workers=0,
+        seed=42,
+        single_channel=False,
+        input_channels=2,
+        allow_pickle=False,
+        input_transform="signed_log_minmax",
+        input_range=[-10.0, 10.0],
+        target_scaling="minmax",
+        target_range=[1500.0, 4500.0],
+    )
+    cfg = preprocessing_from_args(args)
+    train_dl, val_dl, scaler, in_shape, out_dim = prepare_preprocessed_data(
+        args,
+        cfg,
+        logging.getLogger(__name__),
+        CPUAccelerator(),
+        str(tmp_path / "cache"),
+        0.2,
+    )
+    try:
+        assert isinstance(train_dl.dataset, _LazyH5MatDataset)
+        assert isinstance(val_dl.dataset, _LazyH5MatDataset)
+        assert in_shape == (8, 8)
+        assert out_dim == 1
+        assert args.in_channels == 2
+        bx, by = next(iter(val_dl))
+        assert bx.shape == (2, 2, 8, 8)
+        assert by.shape == (2, 1, 4, 4)
+        np.testing.assert_allclose(by.numpy(), scaler.transform(y_va[:2]), atol=1e-6)
+        restored = pickle.loads(pickle.dumps(train_dl.dataset))
+        assert restored._handle is None
+        rx, _ = restored[0]
+        assert rx.shape == (2, 8, 8)
+        restored.close()
+    finally:
+        train_dl.dataset.close()
+        val_dl.dataset.close()
+
+
+def test_safe_json_checkpoint_inference_never_invokes_pickle(tmp_path, monkeypatch):
+    """JSON checkpoints load and run inference without calling pickle.load()."""
+    from wavedl.models.registry import MODEL_REGISTRY
+    from wavedl.utils.checkpoint_io import (
+        load_scaler,
+        load_training_meta,
+        save_scaler,
+        save_training_meta,
+    )
+    from wavedl.utils.targets import SpatialTargetScaler, create_target_scaler
+
+    monkeypatch.setitem(MODEL_REGISTRY, "exact_json_test", _ExactNormalizedVectorModel)
+
+    y_vals = (1e8 + np.arange(8, dtype=np.float64)).reshape(8, 1)
+    scaler = create_target_scaler(y_vals)
+    ckpt = tmp_path / "ckpt_json"
+    ckpt.mkdir()
+    model = _ExactNormalizedVectorModel(in_shape=(4, 4), out_size=1, in_channels=1)
+    torch.save(model.state_dict(), ckpt / "model.bin")
+    save_scaler(scaler, ckpt)
+    save_training_meta(
+        {
+            "epoch": 3,
+            "best_val_loss": float("inf"),
+            "model_name": "exact_json_test",
+            "in_shape": (4, 4),
+            "in_channels": 1,
+            "out_dim": 1,
+            "target_shape": (1,),
+        },
+        ckpt,
+    )
+    assert (ckpt / "training_meta.json").is_file()
+    assert (ckpt / "scaler.json").is_file()
+    assert not (ckpt / "training_meta.pkl").exists()
+    assert not (ckpt / "scaler.pkl").exists()
+
+    for sc_dir, sc in (
+        (tmp_path / "sc_std", scaler),
+        (
+            tmp_path / "sc_sp",
+            SpatialTargetScaler().fit(
+                np.arange(32, dtype=np.float64).reshape(2, 1, 4, 4) + 1e9
+            ),
+        ),
+        (tmp_path / "sc_mm", MinMaxTargetScaler([1500.0, 4500.0], (1, 4, 4))),
+    ):
+        save_scaler(sc, sc_dir)
+        loaded_sc, loaded_path = load_scaler(sc_dir)
+        assert loaded_path.name == "scaler.json"
+        np.testing.assert_allclose(loaded_sc.mean_, sc.mean_, rtol=0, atol=0)
+        np.testing.assert_allclose(loaded_sc.scale_, sc.scale_, rtol=0, atol=0)
+
+    monkeypatch.setattr(
+        pickle,
+        "load",
+        lambda *a, **k: pytest.fail(
+            "JSON checkpoint inference must not call pickle.load"
+        ),
+    )
+    meta = load_training_meta(ckpt)
+    assert meta["best_val_loss"] == float("inf")
+    loaded_model, loaded_scaler = inference.load_checkpoint(ckpt, (4, 4), 1)
+    assert loaded_model is not None
+    np.testing.assert_allclose(loaded_scaler.mean_, scaler.mean_, rtol=0, atol=0)

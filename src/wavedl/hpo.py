@@ -131,16 +131,109 @@ QUICK_LOSSES = ["mse"]
 MEDIUM_LOSSES = ["mse", "mae", "huber"]
 
 
-def _detect_input_channels(data_path: str) -> int:
-    """Return input channel count for manifests (defaults to 1 for array files)."""
+def _peek_array_input_shape(
+    data_path: str, *, allow_pickle: bool = False
+) -> tuple[int, ...] | None:
+    """Inspect input tensor shape for NPZ/HDF5/MAT without loading full HDF5/MAT data."""
+    import zipfile
+
+    import numpy as np
+    from numpy.lib import format as np_format
+
+    from wavedl.utils.data import INPUT_KEYS, OUTPUT_KEYS, DataSource, get_data_source
+
+    data_format = DataSource.detect_format(data_path)
+    if data_format in ("hdf5", "mat"):
+        handle = get_data_source(data_format, allow_pickle=allow_pickle).load_mmap(
+            data_path
+        )
+        try:
+            return tuple(int(d) for d in handle.inputs.shape)
+        finally:
+            handle.close()
+
+    if data_format == "npz":
+        # Fast header-only peek inside the NPZ zip archive (avoids materializing large arrays)
+        try:
+            with zipfile.ZipFile(data_path, "r") as zf:
+                names = zf.namelist()
+                keys = [n[:-4] for n in names if n.endswith(".npy")]
+                inp_key, _ = DataSource._find_paired_keys(keys, INPUT_KEYS, OUTPUT_KEYS)
+                if inp_key is not None and f"{inp_key}.npy" in names:
+                    with zf.open(f"{inp_key}.npy") as member:
+                        version = np_format.read_magic(member)
+                        shape, _, dtype = np_format._read_array_header(member, version)
+                    if dtype != object:
+                        return tuple(int(d) for d in shape)
+        except Exception:
+            pass
+        # Fallback for object/sparse NPZ archives
+        inp, _ = get_data_source("npz", allow_pickle=allow_pickle).load(data_path)
+        return tuple(int(d) for d in np.shape(inp))
+
+    return None
+
+
+def _detect_input_channels(
+    data_path: str,
+    *,
+    input_channels: int | None = None,
+    single_channel: bool = False,
+    allow_pickle: bool = False,
+) -> int:
+    """Detect and validate input channel count for manifests and array datasets."""
+    if input_channels is not None and (
+        isinstance(input_channels, bool)
+        or not isinstance(input_channels, int)
+        or input_channels < 1
+    ):
+        raise ValueError(
+            f"--input_channels must be a positive integer >= 1, got {input_channels!r}."
+        )
+    if input_channels not in (None, 1) and single_channel:
+        raise ValueError("--single_channel conflicts with --input_channels > 1.")
+
     if str(data_path).lower().endswith(".txt"):
         from wavedl.utils.preprocessing import ShardManifestDataset
 
         dataset = ShardManifestDataset(data_path)
         try:
-            return int(dataset.in_channels)
+            detected = int(dataset.in_channels)
         finally:
             dataset.close()
+        if input_channels is not None and input_channels != detected:
+            raise ValueError(
+                f"Requested --input_channels={input_channels}, "
+                f"but manifest has {detected} channels."
+            )
+        return detected
+
+    raw_shape = _peek_array_input_shape(data_path, allow_pickle=allow_pickle)
+    if raw_shape is None:
+        return input_channels if input_channels is not None else 1
+
+    ndim = len(raw_shape)
+    if input_channels is not None:
+        if ndim >= 5 or (ndim in (3, 4) and input_channels > 1):
+            if raw_shape[1] != input_channels:
+                raise ValueError(
+                    f"Requested --input_channels={input_channels}, "
+                    f"but input data has shape {raw_shape} (axis 1 = {raw_shape[1]})."
+                )
+        return int(input_channels)
+
+    if ndim >= 5:
+        return int(raw_shape[1])
+    if ndim == 4 and not single_channel:
+        # Reject channels-last (N, H, W, C) mistake consistently with load_test_data
+        if raw_shape[-1] <= 4 and raw_shape[1] > 16 and raw_shape[2] > 16:
+            raise ValueError(
+                f"Input appears to be channels-last format: {raw_shape}. "
+                "WaveDL expects channels-first (N, C, H, W). "
+                "If this is a shallow 3D volume, pass --single_channel."
+            )
+        if raw_shape[1] <= 16:
+            return int(raw_shape[1])
     return 1
 
 
@@ -273,6 +366,28 @@ def _resolve_batch_sizes(
 # =============================================================================
 
 
+def _trial_input_channels(args: argparse.Namespace) -> int | None:
+    """Return the channel override to use for both trials and retraining."""
+    explicit = getattr(args, "input_channels", None)
+    if isinstance(explicit, int) and not isinstance(explicit, bool):
+        return explicit
+    detected = vars(args).get("in_channels", 1)
+    return detected if isinstance(detected, int) and detected > 1 else None
+
+
+def _trial_runtime_flags(args: argparse.Namespace) -> list[str]:
+    flags = []
+    precision = getattr(args, "precision", None)
+    if isinstance(precision, str) and precision in {"bf16", "fp16", "no"}:
+        flags.extend(["--precision", precision])
+    input_channels = _trial_input_channels(args)
+    if input_channels is not None:
+        flags.extend(["--input_channels", str(input_channels)])
+    if getattr(args, "single_channel", False) is True:
+        flags.append("--single_channel")
+    return flags
+
+
 def create_objective(args):
     """Create Optuna objective function with configurable search space.
 
@@ -321,10 +436,11 @@ def create_objective(args):
 
     n_jobs = getattr(args, "n_jobs", 1)
     n_jobs = n_jobs if isinstance(n_jobs, int) and not isinstance(n_jobs, bool) else 1
+    # Exclusive GPU leasing: place each visible GPU ID into the pool once so two
+    # concurrent trials can never share the same GPU even if n_jobs > len(gpu_ids).
     if gpu_ids:
-        pool_slots = max(len(gpu_ids), max(1, n_jobs))
-        for slot in range(pool_slots):
-            gpu_pool.put(gpu_ids[slot % len(gpu_ids)])
+        for gpu_id in gpu_ids:
+            gpu_pool.put(gpu_id)
 
     def objective(trial):
         # Select search space based on mode (quick < medium < full)
@@ -387,6 +503,11 @@ def create_objective(args):
             hpo_prec = getattr(args, "precision", None)
             if isinstance(hpo_prec, str) and hpo_prec in {"bf16", "fp16", "no"}:
                 trial_kwargs["precision"] = hpo_prec
+            input_channels = _trial_input_channels(args)
+            if input_channels is not None:
+                trial_kwargs["input_channels"] = input_channels
+            if getattr(args, "single_channel", False) is True:
+                trial_kwargs["single_channel"] = True
 
             try:
                 result = train_single_trial(
@@ -476,9 +597,7 @@ def create_objective(args):
         ]
         if model_kwargs:
             cmd.extend(["--model_kwargs", json.dumps(model_kwargs)])
-        precision = getattr(args, "precision", None)
-        if isinstance(precision, str) and precision in {"bf16", "fp16", "no"}:
-            cmd.extend(["--precision", precision])
+        cmd.extend(_trial_runtime_flags(args))
         if shared_cache_dir is not None and (
             n_jobs == 1 or getattr(args, "_shared_cache_ready", False) is True
         ):
@@ -642,6 +761,17 @@ Examples:
         action="store_true",
         help="Allow trusted legacy NPZ object arrays (can execute arbitrary code).",
     )
+    parser.add_argument(
+        "--input_channels",
+        type=int,
+        default=None,
+        help="Explicit input channel count for multi-channel arrays or shallow 3D volumes",
+    )
+    parser.add_argument(
+        "--single_channel",
+        action="store_true",
+        help="Confirm 4D array data is a single-channel 3D volume (N, D, H, W)",
+    )
 
     parser.add_argument(
         "--import",
@@ -802,7 +932,12 @@ Examples:
         args.target_shape = _detect_target_shape(
             args.data_path, allow_pickle=args.allow_pickle
         )
-        args.in_channels = _detect_input_channels(args.data_path)
+        args.in_channels = _detect_input_channels(
+            args.data_path,
+            input_channels=args.input_channels,
+            single_channel=args.single_channel,
+            allow_pickle=args.allow_pickle,
+        )
         args.models = _resolve_models_for_target(
             args.target_shape,
             args.models,
@@ -816,7 +951,7 @@ Examples:
     except (KeyError, OSError, ValueError) as error:
         parser.error(str(error))
 
-    # Detect GPU count once (reused by subprocess trials for round-robin pinning).
+    # Detect GPU count once (reused by subprocess trials for exclusive leasing).
     args._cuda_device_ids = _detect_cuda_device_ids()
     args.n_gpus = max(1, len(args._cuda_device_ids))
 
@@ -827,6 +962,17 @@ Examples:
     elif args.n_jobs < 1:
         print(f"Error: --n_jobs must be -1 (auto-detect) or >= 1, got {args.n_jobs}.")
         sys.exit(1)
+    elif (
+        not args.inprocess
+        and args._cuda_device_ids
+        and args.n_jobs > len(args._cuda_device_ids)
+    ):
+        print(
+            f"⚠️  --n_jobs={args.n_jobs} exceeds visible GPU count "
+            f"({len(args._cuda_device_ids)}); capping n_jobs → "
+            f"{len(args._cuda_device_ids)} to preserve exclusive per-GPU leasing."
+        )
+        args.n_jobs = len(args._cuda_device_ids)
 
     # Create study
     print("=" * 60)
@@ -905,11 +1051,14 @@ Examples:
     )
 
     if storage_url:
-        from wavedl.utils.data import _compute_file_hash
+        from wavedl.utils.data import _compute_dataset_fingerprint
 
-        data_digest = _compute_file_hash(args.data_path, mode="fast")
         signature = {
-            "data_fast_hash": data_digest,
+            "data_fingerprint": _compute_dataset_fingerprint(args.data_path),
+            "in_channels": args.in_channels,
+            "input_channels": _trial_input_channels(args),
+            "single_channel": args.single_channel,
+            "precision": args.precision,
             "target_shape": list(args.target_shape),
             "selection_metric": "normalized_mse_v1",
             "seed": args.seed,
@@ -959,6 +1108,7 @@ Examples:
             not args.inprocess
             and args.n_jobs > 1
             and not str(args.data_path).lower().endswith(".txt")
+            and args.in_channels == 1
         ):
             try:
                 import logging as _logging
@@ -982,7 +1132,7 @@ Examples:
                     workers=0,
                     seed=args.seed,
                     cache_validate="fast",
-                    single_channel=False,
+                    single_channel=args.single_channel,
                     allow_pickle=args.allow_pickle,
                 )
                 _prepare_data(
@@ -1058,6 +1208,9 @@ Examples:
     cmd_parts.append("--selection_metric mse")
     cmd_parts.append(f"--epochs {args.max_epochs}")
     cmd_parts.append(f"--seed {args.seed}")
+    runtime_flags = _trial_runtime_flags(args)
+    if runtime_flags:
+        cmd_parts.append(shlex.join(runtime_flags))
     if args.import_modules:
         cmd_parts.append(
             "--import " + " ".join(shlex.quote(name) for name in args.import_modules)
