@@ -75,8 +75,9 @@ python3 examples/openfwi_style_a/score_openfwi.py "$RUN/test/predictions.npz" \
 
 `wavedl-test` restores preprocessing from the checkpoint and saves the targets
 and predictions in physical units. `score_openfwi.py` reports MAE and RMSE both
-in m/s and on OpenFWI's `[-1, 1]` scale (divide the physical errors by 1500).
-It also reports SSIM on maps rescaled to `[0, 1]` without clipping, using the
+in m/s and on OpenFWI's `[-1, 1]` scale (divide the physical errors by 1500),
+alongside pixel-pooled $R^2$, Pearson $r$, and SSIM on maps rescaled to `[0, 1]`
+without clipping, using the
 [OpenFWI reference](https://github.com/lanl/OpenFWI/blob/main/pytorch_ssim.py):
 an 11 × 11 Gaussian window with σ = 1.5. Every test sample has equal weight,
 including samples in a partial final batch.
@@ -101,7 +102,7 @@ prediction, and signed error (prediction minus ground truth) with sample MAE.
 |------|-------------|
 | `unet_fwi.py` | U-Net model built on WaveDL's `unet_field` with a 4-stage time-compressing stem |
 | `make_manifests.py` | Builds train, validation, and test `.txt` shard manifests from `Style_A/` |
-| `score_openfwi.py` | Computes physical-unit and OpenFWI-normalized MAE, RMSE, and SSIM from `predictions.npz` |
+| `score_openfwi.py` | Computes physical-unit and OpenFWI-normalized MAE, RMSE, SSIM, $R^2$, and Pearson $r$ from `predictions.npz` |
 | `plot_sample.py` | Plots shot gathers, ground truth, prediction, and signed error for a test sample |
 | `training_history.csv` | Per-epoch training and evaluation metrics from the 120-epoch reference run |
 | `training_curves.png` | Training loss, evaluation loss, and cosine learning-rate schedule across 120 epochs |
@@ -120,7 +121,10 @@ Checkpoint weights (~125 MB) are omitted from the repository.
 > [!NOTE]
 > In the archived `training_history.csv` and `training_curves.png`, the `val_*`
 > columns logged the 7,000 test maps while training ran on a fixed 120-epoch
-> cosine schedule (`--patience 200`) that never read them. The metrics in
+> cosine schedule (`--patience 200`) that never read them, and three extra
+> `val_normalized_*` columns were logged by the benchmark driver (standard
+> `wavedl-train` omits those columns; `score_openfwi.py` computes the same
+> OpenFWI metrics from `predictions.npz`). The metrics in
 > `test_results/openfwi_scores.json` come from the final (epoch-120) row with
 > no checkpoint selection. Rerunning the commands in Sections 1–2 logs the
 > monitoring split (`style-a_val.txt`) in `val_*` instead.

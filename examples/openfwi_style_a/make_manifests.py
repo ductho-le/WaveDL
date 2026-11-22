@@ -11,6 +11,14 @@ from pathlib import Path
 SPLITS = {"train": range(1, 121), "val": range(109, 121), "test": range(121, 135)}
 
 
+def _manifest_path(path: Path, base_dir: Path) -> str:
+    """Return a path relative to base_dir, falling back to absolute across drives."""
+    try:
+        return relpath(path, base_dir)
+    except ValueError:
+        return str(path)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -38,7 +46,7 @@ def main() -> None:
                 if not path.is_file():
                     parser.error(f"missing {split} shard: {path}")
             # WaveDL resolves relative paths from the manifest, not the working directory.
-            rows.append("\t".join(relpath(path, output_dir) for path in pair))
+            rows.append("\t".join(_manifest_path(path, output_dir) for path in pair))
         manifests[split] = "\n".join(rows) + "\n"
 
     # Check every required pair before replacing any manifests.

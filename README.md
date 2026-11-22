@@ -1374,6 +1374,10 @@ wavedl-test --checkpoint ./examples/elasticity_prediction/best_checkpoint \
   <em>Figure 10: Error distribution summary (median, quartiles, outliers)</em>
 </p>
 
+### 🌊 OpenFWI Style-A: 2D Subsurface Velocity-Map Regression
+
+For dense 2D property-map reconstruction with decoupled input/output grids and shard manifests, see [`examples/openfwi_style_a/`](examples/openfwi_style_a/README.md). It trains a multi-shot U-Net (`unet_fwi.py`, loaded via `--import`) on 60,000 five-shot seismic gathers `(5, 1000, 70)` to predict 70×70 velocity maps `(1, 70, 70)` in `[1500, 4500]` m/s, and includes manifest generation, OpenFWI-normalized MAE/RMSE/SSIM scoring, and sample visualization scripts.
+
 ---
 
 ## 🔬 Broader Applications

@@ -665,6 +665,75 @@ class TestGUIWorkspace(unittest.TestCase):
                 )
                 self.assertNotIn("grid.innerHTML =", content)
 
+    def test_model_kwargs_yaml_roundtrip(self):
+        raw_block = (
+            "model: inversionnet_resize\n"
+            "model_kwargs:\n"
+            "  base_channels: 16\n"
+            "  bottleneck_grid: 2\n"
+            "  upsample_mode: nearest\n"
+        )
+        raw_nested = (
+            "model: inversionnet\n"
+            "training:\n"
+            "  model_kwargs:\n"
+            "    base_channels: 8\n"
+            "    norm: none\n"
+        )
+        raw_flow = 'model: cnn\nmodel_kwargs: {"base_channels": 12}\n'
+
+        expected_block = {
+            "base_channels": 16,
+            "bottleneck_grid": 2,
+            "upsample_mode": "nearest",
+        }
+        for label, use_pyyaml in (("pyyaml", True), ("stdlib", False)):
+            with self.subTest(parser=label):
+                ctx = (
+                    patch.object(app, "_pyyaml", None)
+                    if not use_pyyaml
+                    else patch.object(app, "_pyyaml", app._pyyaml)
+                )
+                with ctx:
+                    parsed = app._flatten_config(app.parse_yaml_text(raw_block))
+                    self.assertEqual(parsed["model"], "inversionnet_resize")
+                    self.assertEqual(parsed["model_kwargs"], expected_block)
+                    self.assertNotIn("model_kwargs_base_channels", parsed)
+
+                    nested = app._flatten_config(app.parse_yaml_text(raw_nested))
+                    self.assertEqual(
+                        nested["model_kwargs"], {"base_channels": 8, "norm": "none"}
+                    )
+
+                    flow = app._flatten_config(app.parse_yaml_text(raw_flow))
+                    self.assertEqual(flow["model_kwargs"], {"base_channels": 12})
+
+        # API parse, save (structured config), and reload round-trip
+        parsed_api = json.loads(
+            self.request("/api/config/parse", {"raw_yaml": raw_block})
+        )
+        self.assertEqual(parsed_api["config"]["model_kwargs"], expected_block)
+
+        saved = json.loads(
+            self.request(
+                "/api/config",
+                {
+                    "config": {
+                        "model": "inversionnet_resize",
+                        "model_kwargs": expected_block,
+                    }
+                },
+            )
+        )
+        self.assertIn("model_kwargs:\n  base_channels: 16", saved["yaml"])
+        reloaded = json.loads(self.request("/api/config"))
+        self.assertEqual(reloaded["config"]["model_kwargs"], expected_block)
+
+        # Client JS must preserve nested mappings instead of stringifying them
+        script = self.request("/app.js").decode()
+        self.assertIn('"model_kwargs"', script)
+        self.assertIn("fmtEntry(", script)
+
 
 if __name__ == "__main__":
     unittest.main()

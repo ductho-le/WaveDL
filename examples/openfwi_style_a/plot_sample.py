@@ -186,7 +186,7 @@ def plot_sample(
     output.parent.mkdir(parents=True, exist_ok=True)
     try:
         for fmt in ("png", "pdf"):
-            path = output.with_suffix(f".{fmt}")
+            path = Path(f"{output}.{fmt}")
             fig.savefig(path, dpi=300)
             print(path)
     finally:
@@ -206,8 +206,8 @@ def main() -> None:
         "--output", type=Path, required=True, help="Output path without an extension"
     )
     args = parser.parse_args()
-    if args.output.suffix:
-        parser.error("--output must be a path without an extension")
+    if args.output.suffix.lower() in {".png", ".pdf"}:
+        parser.error("--output must be a path without a .png or .pdf extension")
     try:
         plot_sample(
             *load_sample(args.predictions, args.test_manifest, args.sample), args.output

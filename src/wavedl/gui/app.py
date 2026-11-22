@@ -95,6 +95,7 @@ _KNOWN_CONFIG_SECTIONS: tuple[str, ...] = (
 _CANONICAL_CONFIG_KEYS: frozenset[str] = frozenset(
     {
         "model",
+        "model_kwargs",
         "pretrained",
         "import_modules",
         "batch_size",
@@ -179,6 +180,11 @@ def _strip_known_section_prefix(key: str) -> str | None:
         if key.startswith(prefix) and len(key) > len(prefix):
             return key[len(prefix) :]
     return None
+
+
+def _is_preserved_mapping_key(key: str) -> bool:
+    """Return True for keys whose YAML mapping value must stay nested."""
+    return "model_kwargs" in (key, _strip_known_section_prefix(key))
 
 
 def _normalize_yaml_bool_choices(config: dict[str, Any]) -> dict[str, Any]:
@@ -307,6 +313,29 @@ def _parse_yaml_scalar(raw: str) -> Any:
         except Exception:
             pass
         return [_parse_yaml_scalar(part) for part in _split_yaml_flow_items(inner)]
+    if val.startswith("{") and val.endswith("}"):
+        inner = val[1:-1].strip()
+        if not inner:
+            return {}
+        try:
+            parsed = json.loads(val)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+        try:
+            parsed = ast.literal_eval(val)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+        mapping: dict[str, Any] = {}
+        for part in _split_yaml_flow_items(inner):
+            if ":" not in part:
+                raise ValueError(f"Invalid YAML flow mapping entry: {part}")
+            k_part, v_part = part.split(":", 1)
+            mapping[str(_parse_yaml_scalar(k_part))] = _parse_yaml_scalar(v_part)
+        return mapping
     try:
         return int(val)
     except ValueError:
@@ -325,6 +354,8 @@ def _sanitize_yaml_value(value: Any) -> Any:
         return None
     if isinstance(value, list):
         return [_sanitize_yaml_value(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _sanitize_yaml_value(v) for k, v in value.items()}
     return value
 
 
@@ -333,7 +364,7 @@ def _flatten_yaml_mapping(mapping: dict[str, Any], prefix: str = "") -> dict[str
     flat: dict[str, Any] = {}
     for raw_key, value in mapping.items():
         key = f"{prefix}_{raw_key}" if prefix else str(raw_key)
-        if isinstance(value, dict):
+        if isinstance(value, dict) and not _is_preserved_mapping_key(key):
             flat.update(_flatten_yaml_mapping(value, key))
         else:
             flat[key] = _sanitize_yaml_value(value)
@@ -351,8 +382,8 @@ def parse_yaml_text(text: str) -> dict[str, Any]:
         return _normalize_yaml_bool_choices(_flatten_yaml_mapping(loaded))
 
     result: dict[str, Any] = {}
-    current_list_key: str | None = None
-    prefix_stack: list[tuple[int, str]] = []
+    current_list_target: tuple[dict[str, Any], str] | None = None
+    prefix_stack: list[tuple[int, str, str]] = []
     for raw_line in text.splitlines():
         cleaned = _strip_yaml_comment(raw_line)
         if not cleaned.strip():
@@ -360,11 +391,13 @@ def parse_yaml_text(text: str) -> dict[str, Any]:
         indent = len(cleaned) - len(cleaned.lstrip(" "))
         stripped = cleaned.strip()
         if stripped.startswith("- ") or stripped == "-":
-            if current_list_key is not None:
+            if current_list_target is not None:
+                container, list_key = current_list_target
                 item_raw = stripped[2:] if stripped.startswith("- ") else ""
-                result.setdefault(current_list_key, []).append(
-                    _parse_yaml_scalar(item_raw)
-                )
+                existing = container.get(list_key)
+                if isinstance(existing, dict) and not existing:
+                    container[list_key] = []
+                container.setdefault(list_key, []).append(_parse_yaml_scalar(item_raw))
             continue
         if ":" not in stripped:
             raise ValueError(f"Invalid YAML line: {raw_line}")
@@ -374,11 +407,38 @@ def parse_yaml_text(text: str) -> dict[str, Any]:
         key = key_part.strip()
         val_str = val_part.strip()
         full_key = f"{prefix_stack[-1][1]}_{key}" if prefix_stack else key
-        if val_str == "":
-            prefix_stack.append((indent, full_key))
-            current_list_key = full_key
+        mapping_idx = next(
+            (
+                idx
+                for idx, (_, pkey, _) in enumerate(prefix_stack)
+                if _is_preserved_mapping_key(pkey)
+            ),
+            None,
+        )
+        if mapping_idx is not None:
+            root_key = prefix_stack[mapping_idx][1]
+            container = result.setdefault(root_key, {})
+            if not isinstance(container, dict):
+                container = {}
+                result[root_key] = container
+            for _, _, sub_key in prefix_stack[mapping_idx + 1 :]:
+                nested = container.get(sub_key)
+                if not isinstance(nested, dict):
+                    nested = {}
+                    container[sub_key] = nested
+                container = nested
+            if val_str == "":
+                container.setdefault(key, {})
+                prefix_stack.append((indent, full_key, key))
+                current_list_target = (container, key)
+            else:
+                current_list_target = None
+                container[key] = _parse_yaml_scalar(val_str)
+        elif val_str == "":
+            prefix_stack.append((indent, full_key, key))
+            current_list_target = (result, full_key)
         else:
-            current_list_key = None
+            current_list_target = None
             result[full_key] = _parse_yaml_scalar(val_str)
     return _normalize_yaml_bool_choices(result)
 
@@ -429,12 +489,20 @@ def _dump_yaml_scalar(val: Any) -> str:
     return json.dumps(s)
 
 
-def _dump_yaml_kv(key: str, val: Any) -> str:
+def _dump_yaml_kv(key: str, val: Any, indent: int = 0) -> str:
     """Serialize a single key-value pair to clean YAML."""
+    pad = " " * indent
+    if isinstance(val, dict):
+        if not val:
+            return f"{pad}{key}: {{}}"
+        sub_lines = [
+            _dump_yaml_kv(str(k), v, indent=indent + 2) for k, v in val.items()
+        ]
+        return f"{pad}{key}:\n" + "\n".join(sub_lines)
     if isinstance(val, list):
         items = ", ".join(_dump_yaml_scalar(x) for x in val)
-        return f"{key}: [{items}]"
-    return f"{key}: {_dump_yaml_scalar(val)}"
+        return f"{pad}{key}: [{items}]"
+    return f"{pad}{key}: {_dump_yaml_scalar(val)}"
 
 
 def _sanitize_json_value(value: Any) -> Any:
@@ -447,6 +515,8 @@ def _sanitize_json_value(value: Any) -> Any:
         return [_sanitize_json_value(item) for item in value]
     if isinstance(value, tuple):
         return [_sanitize_json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(k): _sanitize_json_value(v) for k, v in value.items()}
     return value
 
 
@@ -474,7 +544,7 @@ def _flatten_config(
         if key == "_metadata" or not isinstance(key, str):
             continue
         new_key = f"{parent_key}{sep}{key}" if parent_key else key
-        if isinstance(value, dict):
+        if isinstance(value, dict) and not _is_preserved_mapping_key(new_key):
             raw_items.update(_flatten_config(value, new_key, sep))
         else:
             raw_items[new_key] = _sanitize_json_value(value)
@@ -499,7 +569,7 @@ def _flatten_config(
 def format_config_yaml(cfg: dict[str, Any]) -> str:
     """Format a configuration dictionary into a clean, sectioned YAML string."""
     sections: list[tuple[str, list[str]]] = [
-        ("MODEL", ["model", "pretrained", "import_modules"]),
+        ("MODEL", ["model", "model_kwargs", "pretrained", "import_modules"]),
         (
             "TRAINING HYPERPARAMETERS",
             [
@@ -583,7 +653,7 @@ def format_config_yaml(cfg: dict[str, Any]) -> str:
             if k not in cfg:
                 continue
             val = cfg[k]
-            if val is None or val == "" or val == []:
+            if val is None or val == "" or val == [] or val == {}:
                 continue
             used_keys.add(k)
             section_lines.append(_dump_yaml_kv(k, val))
@@ -596,7 +666,14 @@ def format_config_yaml(cfg: dict[str, Any]) -> str:
 
     extra_lines = []
     for k, val in cfg.items():
-        if k in used_keys or k.startswith("_") or val is None or val == "" or val == []:
+        if (
+            k in used_keys
+            or k.startswith("_")
+            or val is None
+            or val == ""
+            or val == []
+            or val == {}
+        ):
             continue
         extra_lines.append(_dump_yaml_kv(k, val))
     if extra_lines:

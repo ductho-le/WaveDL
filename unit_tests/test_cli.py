@@ -637,6 +637,80 @@ class TestHPOObjective:
         ]
         assert choices_seen["batch_size"] == [1, 2, 4, 8]
 
+    def test_hpo_model_kwargs_forwarding_and_validation(self):
+        """create_objective validates model_kwargs and forwards them to trials."""
+        import json
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        from wavedl.hpo import create_objective
+
+        base = {
+            "data_path": "/fake/field.npz",
+            "target_shape": (1, 16, 16),
+            "in_channels": 1,
+            "max_epochs": 1,
+            "quick": False,
+            "medium": False,
+            "inprocess": True,
+            "seed": 2025,
+            "timeout": 30,
+            "models": ["inversionnet_resize"],
+            "optimizers": ["adamw"],
+            "schedulers": ["plateau"],
+            "losses": ["mse"],
+            "batch_sizes": [2],
+            "n_jobs": 1,
+            "import_modules": [],
+            "allow_pickle": False,
+            "model_kwargs": {"base_channels": 4, "upsample_mode": "nearest"},
+        }
+
+        # Invalid override rejected upfront
+        bad_args = SimpleNamespace(**{**base, "model_kwargs": {"not_a_key": 1}})
+        with pytest.raises(ValueError, match="Unknown model_kwargs"):
+            create_objective(bad_args)
+
+        trial = MagicMock()
+        trial.number = 0
+        trial.suggest_categorical.side_effect = lambda _name, choices: choices[0]
+        trial.suggest_float.side_effect = lambda _name, low, _high, **_kw: low
+        trial.suggest_int.side_effect = lambda _name, low, _high, **_kw: low
+
+        # In-process mode forwards model_kwargs dict to train_single_trial
+        captured = {}
+
+        def fake_trial(**kwargs):
+            captured.update(kwargs)
+            return {"pruned": False, "best_val_loss": 0.25, "epochs_trained": 1}
+
+        with patch("wavedl.train.train_single_trial", side_effect=fake_trial):
+            assert create_objective(SimpleNamespace(**base))(trial) == 0.25
+        assert captured["model_kwargs"] == {
+            "base_channels": 4,
+            "upsample_mode": "nearest",
+        }
+
+        # Subprocess mode appends --model_kwargs JSON argument
+        sub_args = SimpleNamespace(**{**base, "inprocess": False})
+        seen_cmd = {}
+
+        def fake_run(cmd, **_kwargs):
+            seen_cmd["cmd"] = cmd
+            out_dir = Path(cmd[cmd.index("--output_dir") + 1])
+            (out_dir / "training_history.csv").write_text(
+                "epoch,val_loss\n1,0.3\n", encoding="utf-8"
+            )
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            assert create_objective(sub_args)(trial) == pytest.approx(0.3)
+        idx = seen_cmd["cmd"].index("--model_kwargs")
+        assert json.loads(seen_cmd["cmd"][idx + 1]) == {
+            "base_channels": 4,
+            "upsample_mode": "nearest",
+        }
+
     def test_inprocess_forces_single_job(self):
         """Test that --inprocess mode overrides n_jobs to 1.
 

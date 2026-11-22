@@ -613,6 +613,7 @@ def validate_config(
             if (
                 not _is_sequence_action(action)
                 and action.dest not in comma_list_str_args
+                and action.dest != "model_kwargs"
                 and isinstance(value, (list, tuple))
             ):
                 warnings.append(

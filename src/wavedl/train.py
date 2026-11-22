@@ -87,6 +87,7 @@ def _setup_per_rank_compile_cache() -> None:
 # =============================================================================
 import argparse
 import contextlib
+import inspect
 import logging
 import math
 import pickle
@@ -314,10 +315,23 @@ def _validate_resume_metadata(
         ):
             mismatches.append("preprocessing differs from legacy defaults")
     if model_kwargs is not None:
-        saved_kwargs = metadata.get("model_kwargs", {})
+        saved_kwargs = metadata.get("model_kwargs") or {}
         if saved_kwargs != model_kwargs:
-            get_defaults = getattr(get_model(model_name), "get_default_config", None)
+            model_class = get_model(model_name)
+            get_defaults = getattr(model_class, "get_default_config", None)
             defaults = get_defaults() if callable(get_defaults) else {}
+            if not defaults:
+                defaults = {
+                    key: param.default
+                    for key, param in inspect.signature(model_class).parameters.items()
+                    if param.kind
+                    in (
+                        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                        inspect.Parameter.KEYWORD_ONLY,
+                    )
+                    and param.default is not inspect.Parameter.empty
+                    and not key.startswith("_")
+                }
             if {**defaults, **saved_kwargs} != {**defaults, **model_kwargs}:
                 mismatches.append(
                     f"model_kwargs={saved_kwargs!r} (current {model_kwargs!r})"

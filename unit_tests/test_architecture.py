@@ -463,7 +463,12 @@ class TestModelRegistry:
 
 def test_model_kwargs_cli_and_yaml_validation(tmp_path, monkeypatch):
     from wavedl.train import parse_args
-    from wavedl.utils.config import load_config, merge_config_with_args, validate_config
+    from wavedl.utils.config import (
+        load_config,
+        merge_config_with_args,
+        save_config,
+        validate_config,
+    )
 
     overrides = {"base_channels": 8, "norm": "none"}
     path = tmp_path / "config.yaml"
@@ -477,6 +482,13 @@ def test_model_kwargs_cli_and_yaml_validation(tmp_path, monkeypatch):
     merge_config_with_args(config, args, parser=parser)
     assert validate_model_kwargs(args.model, args.model_kwargs) == overrides
 
+    # save_config -> load_config -> validate_config round-trip preserves model_kwargs
+    saved_path = tmp_path / "effective_config.yaml"
+    save_config(args, saved_path)
+    reloaded = load_config(saved_path)
+    assert reloaded["model_kwargs"] == overrides
+    assert validate_config(reloaded, parser=parser) == []
+
     monkeypatch.setattr(
         "sys.argv", ["wavedl-train", "--model_kwargs", '{"base_channels": 2}']
     )
@@ -484,6 +496,9 @@ def test_model_kwargs_cli_and_yaml_validation(tmp_path, monkeypatch):
     merge_config_with_args(config, args, parser=parser)
     assert args.model_kwargs == {"base_channels": 2}
     assert validate_config({"model_kwargs": "not a mapping"}, parser=parser) == [
+        "model_kwargs must be a mapping with string keys."
+    ]
+    assert validate_config({"model_kwargs": [1, 2]}, parser=parser) == [
         "model_kwargs must be a mapping with string keys."
     ]
 
@@ -496,6 +511,8 @@ def test_model_kwargs_cli_and_yaml_validation(tmp_path, monkeypatch):
 
 
 def test_model_kwargs_support_vector_and_custom_model_options(monkeypatch):
+    from wavedl.train import _validate_resume_metadata
+
     class CustomModel(torch.nn.Module):
         def __init__(self, in_shape, out_size, width=4, **kwargs):
             super().__init__()
@@ -505,6 +522,16 @@ def test_model_kwargs_support_vector_and_custom_model_options(monkeypatch):
     assert validate_model_kwargs("custom_test_model", {"width": 8}) == {"width": 8}
     with pytest.raises(ValueError, match=r"Unknown model_kwargs.*other"):
         validate_model_kwargs("custom_test_model", {"other": True})
+
+    # Resume metadata handles explicit None and falls back to __init__ defaults
+    meta_none = {"model_name": "custom_test_model", "model_kwargs": None}
+    _validate_resume_metadata(
+        meta_none, "custom_test_model", (16,), 2, (2,), model_kwargs={"width": 4}
+    )
+    with pytest.raises(ValueError, match=r"Checkpoint is incompatible.*model_kwargs"):
+        _validate_resume_metadata(
+            meta_none, "custom_test_model", (16,), 2, (2,), model_kwargs={"width": 8}
+        )
 
 
 # ==============================================================================

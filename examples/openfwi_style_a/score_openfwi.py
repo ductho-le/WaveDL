@@ -66,7 +66,9 @@ def ssim_per_sample(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
 def score(path: Path, batch_size: int) -> dict[str, float | int]:
     target, prediction = load_velocity_maps(path)
     span = VELOCITY_MAX - VELOCITY_MIN
+    midpoint = 0.5 * (VELOCITY_MIN + VELOCITY_MAX)
     abs_error, squared_error, ssim_total = 0.0, 0.0, 0.0
+    sum_t, sum_t2, sum_p, sum_p2, sum_tp = 0.0, 0.0, 0.0, 0.0, 0.0
     for start in range(0, len(target), batch_size):
         truth = torch.from_numpy(target[start : start + batch_size]).double()
         pred = torch.from_numpy(prediction[start : start + batch_size]).double()
@@ -75,6 +77,14 @@ def score(path: Path, batch_size: int) -> dict[str, float | int]:
         error = pred - truth
         abs_error += error.abs().sum().item()
         squared_error += error.square().sum().item()
+        # Shift by midpoint to preserve precision in pixel-pooled variance/covariance.
+        t_centered = truth - midpoint
+        p_centered = pred - midpoint
+        sum_t += t_centered.sum().item()
+        sum_t2 += t_centered.square().sum().item()
+        sum_p += p_centered.sum().item()
+        sum_p2 += p_centered.square().sum().item()
+        sum_tp += (t_centered * p_centered).sum().item()
         # OpenFWI test.py scores all samples together on [0, 1], without clipping.
         # Accumulate sample scores, not batch means, so the last batch is weighted correctly.
         truth_unit = ((truth - VELOCITY_MIN) / span).float()
@@ -83,8 +93,15 @@ def score(path: Path, batch_size: int) -> dict[str, float | int]:
             ssim_per_sample(truth_unit, pred_unit).sum(dtype=torch.float64).item()
         )
 
-    mae = abs_error / target.size
-    rmse = math.sqrt(squared_error / target.size)
+    n_pixels = target.size
+    mae = abs_error / n_pixels
+    rmse = math.sqrt(squared_error / n_pixels)
+    ss_tot = max(0.0, sum_t2 - (sum_t * sum_t) / n_pixels)
+    var_p = max(0.0, sum_p2 - (sum_p * sum_p) / n_pixels)
+    cov_tp = sum_tp - (sum_t * sum_p) / n_pixels
+    r2 = 1.0 - squared_error / ss_tot if ss_tot > 0.0 else 0.0
+    denom = math.sqrt(ss_tot * var_p)
+    pearson = cov_tp / denom if denom > 0.0 else 0.0
     return {
         "samples": len(target),
         "mae_normalized": mae / (span / 2),
@@ -92,6 +109,8 @@ def score(path: Path, batch_size: int) -> dict[str, float | int]:
         "ssim": ssim_total / len(target),
         "mae_m_s": mae,
         "rmse_m_s": rmse,
+        "r2": r2,
+        "pearson": pearson,
     }
 
 

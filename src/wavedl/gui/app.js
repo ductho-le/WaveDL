@@ -899,7 +899,8 @@ function buildEffectiveConfig() {
   }
 
   for (const [k, v] of Object.entries(extraConfigKeys)) {
-    if (cfg[k] === undefined && v !== null && v !== undefined && v !== "" && !(Array.isArray(v) && v.length === 0)) {
+    const isEmptyObj = Boolean(v) && typeof v === "object" && !Array.isArray(v) && Object.keys(v).length === 0;
+    if (cfg[k] === undefined && v !== null && v !== undefined && v !== "" && !(Array.isArray(v) && v.length === 0) && !isEmptyObj) {
       cfg[k] = v;
     }
   }
@@ -947,10 +948,21 @@ function renderYamlPreview() {
     const safeUnquoted = /^[a-zA-Z0-9_./-]+$/.test(s) && (/^[a-zA-Z]/.test(s) || s.startsWith("./") || s.startsWith("../") || s.startsWith("/"));
     return safeUnquoted && !reserved ? s : JSON.stringify(s);
   };
+  const isPlainObj = (v) => Boolean(v) && typeof v === "object" && !Array.isArray(v);
+  const isEmptyVal = (v) => v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0) || (isPlainObj(v) && Object.keys(v).length === 0);
   const fmtVal = (v) => Array.isArray(v) ? `[${v.map(fmtScalar).join(", ")}]` : fmtScalar(v);
+  const fmtEntry = (key, val, indent = 0) => {
+    const pad = " ".repeat(indent);
+    if (isPlainObj(val)) {
+      const entries = Object.entries(val);
+      if (entries.length === 0) return `${pad}${key}: {}`;
+      return `${pad}${key}:\n` + entries.map(([sk, sv]) => fmtEntry(sk, sv, indent + 2)).join("\n");
+    }
+    return `${pad}${key}: ${fmtVal(val)}`;
+  };
 
   const groups = [
-    ["MODEL", ["model", "pretrained", "import_modules"]],
+    ["MODEL", ["model", "model_kwargs", "pretrained", "import_modules"]],
     ["TRAINING HYPERPARAMETERS", ["batch_size", "lr", "epochs", "patience", "weight_decay", "grad_clip", "grad_accum_steps"]],
     ["LOSS FUNCTION", ["loss", "huber_delta", "loss_weights", "selection_metric"]],
     ["OPTIMIZER", ["optimizer", "momentum", "nesterov", "betas"]],
@@ -969,22 +981,22 @@ function renderYamlPreview() {
     ""
   ];
   for (const [title, keys] of groups) {
-    const present = keys.filter(k => c[k] !== undefined && c[k] !== "" && !(Array.isArray(c[k]) && c[k].length === 0));
+    const present = keys.filter(k => !isEmptyVal(c[k]));
     if (present.length === 0) continue;
     const heading = title.toLowerCase().replace(/\b[a-z]/g, c => c.toUpperCase());
     lines.push(`# ── ${heading}`);
     for (const k of present) {
       used.add(k);
-      lines.push(`${k}: ${fmtVal(c[k])}`);
+      lines.push(fmtEntry(k, c[k]));
     }
     lines.push("");
   }
 
-  const extras = Object.keys(c).filter(k => !used.has(k) && !k.startsWith("_") && c[k] !== undefined && c[k] !== "" && !(Array.isArray(c[k]) && c[k].length === 0));
+  const extras = Object.keys(c).filter(k => !used.has(k) && !k.startsWith("_") && !isEmptyVal(c[k]));
   if (extras.length > 0) {
     lines.push("# ── Additional Options");
     for (const k of extras) {
-      lines.push(`${k}: ${fmtVal(c[k])}`);
+      lines.push(fmtEntry(k, c[k]));
     }
     lines.push("");
   }

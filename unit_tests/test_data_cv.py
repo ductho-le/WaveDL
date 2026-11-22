@@ -1002,3 +1002,38 @@ class TestLeakageDetection:
         )
 
         # If this assertion fails, validation data was included in fit()
+
+    def test_run_cross_validation_persists_model_kwargs(self, tmp_path):
+        """run_cross_validation applies model_kwargs and saves them for wavedl-test."""
+        import pickle
+
+        from wavedl.test import load_checkpoint
+        from wavedl.utils.cross_validation import run_cross_validation
+
+        rng = np.random.default_rng(42)
+        X = rng.normal(size=(8, 32, 32)).astype(np.float32)
+        y = rng.normal(size=(8, 2)).astype(np.float32)
+
+        run_cross_validation(
+            X=X,
+            y=y,
+            model_name="cnn",
+            in_shape=(32, 32),
+            out_size=2,
+            folds=2,
+            epochs=1,
+            batch_size=4,
+            patience=5,
+            workers=0,
+            output_dir=str(tmp_path),
+            seed=42,
+            model_kwargs={"base_channels": 8},
+        )
+
+        fold_dir = tmp_path / "fold_1"
+        with (fold_dir / "training_meta.pkl").open("rb") as f:
+            meta = pickle.load(f)
+        assert meta["model_kwargs"] == {"base_channels": 8}
+
+        rebuilt, _ = load_checkpoint(fold_dir, (32, 32), 2)
+        assert rebuilt.base_channels == 8
